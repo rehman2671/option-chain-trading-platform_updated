@@ -1,0 +1,6 @@
+{
+  "name": "Option Chain Trading Platform",
+  "description": "Personal AI Trading Platform spanning 5 Core Pillars: Equity Intraday, Swing, Long-Term, F&O Derivatives, and MCX Commodities with real-time scanners, Black-Scholes Greeks, auto-indexed DB, and paper execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
