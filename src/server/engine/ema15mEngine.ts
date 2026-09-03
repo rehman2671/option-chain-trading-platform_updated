@@ -87,7 +87,9 @@ export class Ema15mEngine {
       }
 
       let candles = dbEngine.getEma15mCandles(inst, 2000);
-      if (candles.length < 100) {
+      const isFlatVolume = candles.length > 0 && candles.slice(0, 20).every(c => c.volume === 15000 || !c.volume);
+
+      if (candles.length < 100 || isFlatVolume) {
         // Real market sync without fake generator (fetch 1 month of authentic 15m exchange candles)
         this.syncRealMarketData(inst, 600).catch(err => {
           console.warn(`[EMA 15M ENGINE] Initial sync note for ${inst}:`, err.message);
