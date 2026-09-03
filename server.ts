@@ -20,7 +20,9 @@ import { startFullHistoricalSync, getSyncStatus } from './src/server/engine/hist
 import { generateAiNarration } from './src/server/ai/narrator.js';
 import { globalAutonomousEngine } from './src/server/engine/autonomousEngine.js';
 import { globalStrategyPlatformEngine } from './src/server/engine/strategyPlatformEngine.js';
-import { PaperPosition, TradingPillarId } from './src/types.js';
+import { globalEma15mEngine } from './src/server/engine/ema15mEngine.js';
+import { globalNotificationService } from './src/server/engine/notificationService.js';
+import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
 import { authRouter, attachUser, getUserFromRequest, requireAuth } from './src/server/auth.js';
 
@@ -219,6 +221,8 @@ setInterval(() => {
 async function startServer() {
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
+  // Initialize 15-Minute 23/50 EMA Alert Engine
+  await globalEma15mEngine.initialize();
 
   // -------------------------------------------------------------
   // API ENDPOINTS
@@ -1133,13 +1137,242 @@ async function startServer() {
     }
   });
 
+  // ========================================================
+  // 15-MINUTE 23 EMA / 50 EMA CROSSOVER ALERT SYSTEM ROUTES
+  // ========================================================
+
+  // 1. Get Live Status of All 3 Monitored Instruments (NIFTY 50, BANK NIFTY, SENSEX)
+  app.get('/api/ema15m/status', (req, res) => {
+    try {
+      const statusList = globalEma15mEngine.getAllStatus();
+      const marketHours = globalEma15mEngine.getMarketHoursStatus();
+      res.json({
+        instruments: statusList,
+        marketHours,
+        isEngineRunning: true,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. Get 15-Minute Candles with Full Indicator Suite (EMA 23/50, RSI 14, VWAP, Bollinger Bands, ATR) for Charting
+  app.get('/api/ema15m/candles', (req, res) => {
+    try {
+      const symbol = (req.query.symbol as string || 'NIFTY').toUpperCase() as Ema15mInstrument;
+      const limit = Number(req.query.limit) || 100;
+      const timeframe = (req.query.timeframe as string || '15m').toLowerCase();
+      const range = req.query.range as string | undefined;
+      const startDate = req.query.startDate as string | undefined;
+      const endDate = req.query.endDate as string | undefined;
+      const candles = globalEma15mEngine.getCandles(symbol, limit, timeframe, range, startDate, endDate);
+      res.json(candles);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2b. Force Sync Real Market Candles from Live Exchanges
+  app.post('/api/ema15m/sync', async (req, res) => {
+    try {
+      const symbol = (req.body?.symbol || req.query?.symbol || 'NIFTY').toUpperCase() as Ema15mInstrument;
+      const candles = await globalEma15mEngine.syncRealMarketData(symbol, 600);
+      res.json({
+        success: true,
+        symbol,
+        count: candles.length,
+        latestPrice: candles[candles.length - 1]?.close,
+        message: `Successfully synchronized ${candles.length} real market candles for ${symbol}`
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. Get Crossover Signal History with Optional Filtering
+  app.get('/api/ema15m/signals', (req, res) => {
+    try {
+      const symbol = req.query.symbol as string | undefined;
+      const signalType = req.query.signalType as string | undefined;
+      const limit = Number(req.query.limit) || 100;
+      const signals = dbEngine.getEma15mSignals(symbol, signalType, limit);
+      res.json(signals);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. Run 15-Minute 23/50 EMA Strategy Backtester
+  app.post('/api/ema15m/backtest', (req, res) => {
+    try {
+      const config = req.body;
+      if (!config.instrument) {
+        return res.status(400).json({ error: 'Instrument is required (NIFTY, BANKNIFTY, SENSEX)' });
+      }
+      const result = globalEma15mEngine.runBacktest(config);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 5. Get Notification Settings
+  app.get('/api/ema15m/settings', (req, res) => {
+    try {
+      const user = getUserFromRequest(req);
+      const userId = user ? user.id : 'GLOBAL';
+      const settings = dbEngine.getEmaNotificationSettings(userId);
+      res.json(settings);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 6. Save Notification Settings
+  app.post('/api/ema15m/settings', (req, res) => {
+    try {
+      const user = getUserFromRequest(req);
+      const userId = user ? user.id : 'GLOBAL';
+      const settings = req.body;
+      dbEngine.saveEmaNotificationSettings(settings, userId);
+      const updated = dbEngine.getEmaNotificationSettings(userId);
+      res.json({ success: true, settings: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 7. Send Test Alert (Telegram or Email)
+  app.post('/api/ema15m/test-notification', async (req, res) => {
+    try {
+      const { channel, target } = req.body;
+      if (!channel || (channel !== 'TELEGRAM' && channel !== 'EMAIL')) {
+        return res.status(400).json({ error: 'Channel must be TELEGRAM or EMAIL' });
+      }
+      const result = await globalNotificationService.testNotification(channel, target);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 8. Trigger Mock Crossover for Testing / Verification
+  app.post('/api/ema15m/mock-crossover', (req, res) => {
+    try {
+      const { symbol, targetType } = req.body;
+      const inst = (symbol || 'NIFTY').toUpperCase() as Ema15mInstrument;
+      const type = (targetType || 'BULLISH') as 'BULLISH' | 'BEARISH';
+      const result = globalEma15mEngine.triggerMockCrossover(inst, type);
+      res.json({
+        success: true,
+        message: `Triggered mock ${type} crossover on ${inst}`,
+        ...result
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 9. Get Notification Dispatch Audit Logs
+  app.get('/api/ema15m/notification-logs', (req, res) => {
+    try {
+      const signalId = req.query.signalId as string | undefined;
+      const limit = Number(req.query.limit) || 50;
+      const logs = dbEngine.getEmaNotificationLogs(signalId, limit);
+      res.json(logs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 10. Get EMA Paper Trading Positions & Trade History
+  app.get('/api/ema15m/paper-trades', (req, res) => {
+    try {
+      const instrument = req.query.instrument as string | undefined;
+      const status = req.query.status as string | undefined;
+      const limit = Number(req.query.limit) || 100;
+      const trades = dbEngine.getEmaPaperTrades(instrument, status, limit);
+      res.json(trades);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 11. Get EMA Paper Trading P&L Performance Summary
+  app.get('/api/ema15m/paper-summary', (req, res) => {
+    try {
+      const summary = dbEngine.getEmaPaperTradingSummary();
+      const statusList = globalEma15mEngine.getAllStatus();
+      const dataSource = globalEma15mEngine.getDataSource();
+      res.json({
+        ...summary,
+        dataSource: dataSource.source,
+        dataSourceMessage: dataSource.message,
+        instruments: statusList.map(s => ({
+          instrument: s.instrument,
+          currentPrice: s.currentPrice,
+          activePaperTrade: s.activePaperTrade
+        }))
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 12. Manually Square Off / Close an EMA Paper Trade
+  app.post('/api/ema15m/paper-trades/close', (req, res) => {
+    try {
+      const { id, exitPrice, reason } = req.body;
+      if (!id) {
+        return res.status(400).json({ error: 'Trade ID is required' });
+      }
+      const trades = dbEngine.getEmaPaperTrades('ALL', 'OPEN', 100);
+      const trade = trades.find(t => t.id === id);
+      if (!trade) {
+        return res.status(404).json({ error: 'Open paper trade not found' });
+      }
+
+      const closePrice = exitPrice !== undefined ? Number(exitPrice) : trade.currentPrice;
+      const closed = dbEngine.closeEmaPaperTrade(id, closePrice, reason || 'MANUAL_SQUARE_OFF');
+      if (closed) {
+        const summary = dbEngine.getEmaPaperTradingSummary();
+        res.json({ success: true, message: `Trade ${id} closed successfully @ ₹${closePrice}`, summary });
+      } else {
+        res.status(500).json({ error: 'Failed to close trade' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 13. Toggle EMA Automatic Paper Trading Setting
+  app.post('/api/ema15m/paper-trades/toggle', (req, res) => {
+    try {
+      const user = getUserFromRequest(req);
+      const userId = user ? user.id : 'GLOBAL';
+      const settings = dbEngine.getEmaNotificationSettings(userId);
+      const enabled = req.body?.enabled !== undefined ? req.body.enabled : !settings.autoPaperTradingEnabled;
+      settings.autoPaperTradingEnabled = enabled;
+      dbEngine.saveEmaNotificationSettings(settings, userId);
+      const updated = dbEngine.getEmaNotificationSettings(userId);
+      res.json({
+        success: true,
+        autoPaperTradingEnabled: updated.autoPaperTradingEnabled,
+        settings: updated
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   // -------------------------------------------------------------
   // VITE DEVELOPMENT MIDDLEWARE / PRODUCTION STATIC FALLBACK
   // -------------------------------------------------------------
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true },
       appType: 'spa'
     });
     app.use(vite.middlewares);
@@ -1155,6 +1388,14 @@ async function startServer() {
     console.log(`Option Chain Trading Platform Server running on http://0.0.0.0:${PORT}`);
   });
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('[SERVER] Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SERVER] Unhandled rejection at:', promise, 'reason:', reason);
+});
 
 startServer().catch((err) => {
   console.error('Fatal error starting dev server:', err);

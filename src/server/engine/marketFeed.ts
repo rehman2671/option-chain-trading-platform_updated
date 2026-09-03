@@ -9,6 +9,7 @@ import { calculateEuropeanOptionGreeks, calculateAmericanOptionGreeks, calculate
 import { calculateMaxPainStrike, calculatePCR, classifyOIBuildup, calculateIVRankAndPercentile, detectUnusualOIAnomalies, processEventReactiveState } from './optionAnalytics.js';
 import { dbEngine } from '../db.js';
 import { activeProvider, initActiveProvider } from './providers/index.js';
+import { globalEma15mEngine } from './ema15mEngine.js';
 
 interface UnderlyingConfig {
   symbol: string;
@@ -92,6 +93,16 @@ export const UNDERLYING_CONFIGS: Record<string, UnderlyingConfig> = {
     indiaVixBase: 13.5,
     lotSize: 15,
     get expiries() { return getUpcomingExpiriesForSymbol('BANKNIFTY'); }
+  },
+  SENSEX: {
+    symbol: 'SENSEX',
+    style: 'EUROPEAN',
+    baseSpotPrice: 76944.28,
+    stepSize: 100,
+    strikeCountAboveBelow: 15,
+    indiaVixBase: 11.8,
+    lotSize: 10,
+    get expiries() { return getUpcomingExpiriesForSymbol('SENSEX'); }
   },
   FINNIFTY: {
     symbol: 'FINNIFTY',
@@ -294,6 +305,18 @@ export class MarketFeedEngine {
       this.providerConnected = status.connected;
       this.providerStatusMessage = status.message;
 
+      // Synchronize 15m EMA Engine Data Source
+      const isUpstoxMode = (process.env.DATA_PROVIDER || '').toLowerCase() === 'upstox';
+      if (isUpstoxMode) {
+        if (status.connected) {
+          globalEma15mEngine.setDataSource('UPSTOX_LIVE', 'Real-time Live Upstox Feed');
+        } else {
+          globalEma15mEngine.setDataSource('LIVE_DATA_UNAVAILABLE', status.message || 'Upstox Live Feed Unavailable - Token not configured');
+        }
+      } else {
+        globalEma15mEngine.setDataSource('PRACTICE', 'Calibrated NSE/BSE Practice Feed');
+      }
+
       // Initial spot refresh
       await this.refreshUnderlyingSpots(Object.keys(UNDERLYING_CONFIGS));
 
@@ -406,6 +429,11 @@ export class MarketFeedEngine {
 
           // Record tick to SQLite
           dbEngine.recordTick(sym, spot, vix, uq.volume || 0);
+
+          // Ingest into 15m EMA Engine for NIFTY, BANKNIFTY, SENSEX
+          if (sym === 'NIFTY' || sym === 'BANKNIFTY' || sym === 'SENSEX') {
+            globalEma15mEngine.ingestTick(sym, spot, uq.volume || 0);
+          }
 
           // Track historical IVs
           const ivList = this.historicalIVs.get(sym) || [];

@@ -24,6 +24,7 @@ export class UpstoxProvider implements IMarketDataProvider {
   private symbolInstrumentKeyMap: Record<string, string> = {
     'NIFTY': 'NSE_INDEX|Nifty 50',
     'BANKNIFTY': 'NSE_INDEX|Nifty Bank',
+    'SENSEX': 'BSE_INDEX|SENSEX',
     'FINNIFTY': 'NSE_INDEX|NIFTY FIN SERVICE',
     'MIDCPNIFTY': 'NSE_INDEX|NIFTY MID SELECT',
     'RELIANCE': 'NSE_EQ|INE002A01018',
@@ -33,6 +34,19 @@ export class UpstoxProvider implements IMarketDataProvider {
     'GOLD': 'MCX_COMM|GOLD',
     'CRUDEOIL': 'MCX_COMM|CRUDEOIL'
   };
+
+  public isUpstoxLiveConnected(): boolean {
+    return this.isConnected && !!this.accessToken;
+  }
+
+  public getLiveConnectionStatus(): { isConnected: boolean; message: string; userId?: string; userName?: string } {
+    return {
+      isConnected: this.isConnected && !!this.accessToken,
+      message: this.statusMessage,
+      userId: this.userId,
+      userName: this.userName
+    };
+  }
 
   public getProviderMode(): DataProviderMode {
     return 'LIVE';
@@ -147,7 +161,19 @@ export class UpstoxProvider implements IMarketDataProvider {
       for (const sym of symbols) {
         const upstoxKey = this.symbolInstrumentKeyMap[sym] || `NSE_EQ|${sym}`;
         const keyWithColon = upstoxKey.replace('|', ':');
-        const quote = quotesData[upstoxKey] || quotesData[keyWithColon] || quotesData[upstoxKey.split('|')[1]];
+        const altSensexKeys = sym === 'SENSEX' || sym === 'BSESENSEX'
+          ? ['BSE_INDEX|SENSEX', 'BSE_INDEX:SENSEX', 'BSE_INDEX|Sensex', 'BSE_INDEX:Sensex', 'BSE_INDEX|BSE SENSEX', 'BSE_INDEX:BSE SENSEX', 'SENSEX', 'Sensex']
+          : [];
+
+        let quote = quotesData[upstoxKey] || quotesData[keyWithColon] || quotesData[upstoxKey.split('|')[1]];
+        if (!quote && altSensexKeys.length > 0) {
+          for (const k of altSensexKeys) {
+            if (quotesData[k]) {
+              quote = quotesData[k];
+              break;
+            }
+          }
+        }
 
         if (quote && typeof quote.last_price === 'number' && quote.last_price > 0) {
           resultMap.set(sym, {

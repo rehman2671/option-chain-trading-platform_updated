@@ -12,6 +12,7 @@ import { PaperTradingManager } from './components/PaperTradingManager.js';
 import { BacktesterView } from './components/BacktesterView.js';
 import { AutonomousRunnerView } from './components/AutonomousRunnerView.js';
 import { PersonalAiPlatformView } from './components/PersonalAiPlatformView.js';
+import { Ema15mDashboardView } from './components/Ema15mDashboardView.js';
 import { AiNarrationPanel } from './components/AiNarrationPanel.js';
 import { DocumentationView } from './components/DocumentationView.js';
 import { AuthModal } from './components/AuthModal.js';
@@ -176,6 +177,10 @@ export default function App() {
             onSelectSymbol={handleSymbolChange}
             onNavigateTab={(tab) => setActiveTab(tab)}
           />
+        )}
+
+        {activeTab === 'ema15m' && (
+          <Ema15mDashboardView />
         )}
 
         {activeTab === 'chain' && (

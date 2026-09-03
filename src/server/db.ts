@@ -6,7 +6,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User } from '../types.js';
+import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary } from '../types.js';
 
 export interface MigrationReport {
   engine: string;
@@ -1175,6 +1175,126 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 004 - Multi-User Auth & Per-User Isolation.');
     }
+
+    // Migration 005: 15-Minute 23 EMA / 50 EMA Crossover Alert System Schema
+    if (!appliedVersions.has(5)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_15m_candles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          instrument TEXT NOT NULL,
+          timeframe TEXT NOT NULL DEFAULT '15m',
+          timestamp DATETIME NOT NULL,
+          open REAL NOT NULL,
+          high REAL NOT NULL,
+          low REAL NOT NULL,
+          close REAL NOT NULL,
+          volume INTEGER DEFAULT 0,
+          is_closed INTEGER DEFAULT 1,
+          ema_23 REAL,
+          ema_50 REAL,
+          ema_difference REAL,
+          signal TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(instrument, timeframe, timestamp)
+        );
+
+        CREATE TABLE IF NOT EXISTS ema_15m_signals (
+          id TEXT PRIMARY KEY,
+          instrument TEXT NOT NULL,
+          timeframe TEXT NOT NULL DEFAULT '15m',
+          signal_type TEXT NOT NULL,
+          price REAL NOT NULL,
+          ema_23 REAL NOT NULL,
+          ema_50 REAL NOT NULL,
+          ema_difference REAL NOT NULL,
+          candle_timestamp DATETIME NOT NULL,
+          signal_confirmed_at DATETIME NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          user_id TEXT,
+          notification_status TEXT DEFAULT 'PENDING',
+          UNIQUE(instrument, timeframe, candle_timestamp, signal_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS ema_notification_logs (
+          id TEXT PRIMARY KEY,
+          signal_id TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          error_message TEXT,
+          payload_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS ema_notification_settings (
+          user_id TEXT PRIMARY KEY,
+          telegram_enabled INTEGER DEFAULT 1,
+          email_enabled INTEGER DEFAULT 0,
+          browser_enabled INTEGER DEFAULT 1,
+          sound_enabled INTEGER DEFAULT 1,
+          telegram_chat_id TEXT,
+          email_address TEXT,
+          sound_volume REAL DEFAULT 0.8,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (5, '15-Minute 23/50 EMA Crossover Alert System Tables');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 005 - 15m EMA Crossover Alert System Tables.');
+    }
+
+    // Migration 006: 15-Minute EMA Automatic Paper Trading Engine
+    if (!appliedVersions.has(6)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_paper_trades (
+          id TEXT PRIMARY KEY,
+          signal_id TEXT UNIQUE,
+          instrument TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          entry_timestamp DATETIME NOT NULL,
+          entry_price REAL NOT NULL,
+          quantity INTEGER NOT NULL,
+          lot_size INTEGER NOT NULL,
+          strategy TEXT NOT NULL DEFAULT 'EMA_15M_23_50',
+          source TEXT NOT NULL DEFAULT 'UPSTOX_LIVE',
+          status TEXT NOT NULL DEFAULT 'OPEN',
+          current_price REAL NOT NULL,
+          unrealized_pnl REAL DEFAULT 0,
+          exit_timestamp DATETIME,
+          exit_price REAL,
+          exit_reason TEXT,
+          gross_pnl REAL DEFAULT 0,
+          brokerage REAL DEFAULT 40,
+          charges REAL DEFAULT 0,
+          net_pnl REAL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_status ON ema_paper_trades(status);
+        CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_inst ON ema_paper_trades(instrument, status);
+        CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_created ON ema_paper_trades(created_at DESC);
+      `);
+
+      // Ensure auto_paper_trading_enabled column exists on settings table
+      try {
+        const settingsCols = this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[];
+        const colNames = new Set(settingsCols.map(c => c.name as string));
+        if (!colNames.has('auto_paper_trading_enabled')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN auto_paper_trading_enabled INTEGER DEFAULT 1;`);
+        }
+      } catch (e) {
+        // Ignore column check error
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (6, '15-Minute EMA Automatic Paper Trading Engine Tables');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 006 - 15m EMA Paper Trading Engine Tables.');
+    }
   }
 
   /**
@@ -1198,7 +1318,11 @@ class DatabaseEngine {
       'CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token);',
       'CREATE INDEX IF NOT EXISTS idx_paper_positions_user ON paper_positions(user_id, status);',
       'CREATE INDEX IF NOT EXISTS idx_basket_orders_user ON basket_orders(user_id, status);',
-      'CREATE INDEX IF NOT EXISTS idx_autonomous_strategies_user ON autonomous_strategies(user_id, status);'
+      'CREATE INDEX IF NOT EXISTS idx_autonomous_strategies_user ON autonomous_strategies(user_id, status);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_candles_inst_ts ON ema_15m_candles(instrument, timestamp DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_signals_inst_ts ON ema_15m_signals(instrument, candle_timestamp DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_signals_type ON ema_15m_signals(signal_type, candle_timestamp DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_notif_logs_sig ON ema_notification_logs(signal_id, attempted_at DESC);'
     ];
 
     for (const sql of indexes) {
@@ -1752,6 +1876,683 @@ class DatabaseEngine {
       return fs.readFileSync(migrationSqlPath, 'utf-8');
     }
     return '-- DDL Export Unavailable';
+  }
+
+  // ========================================================
+  // 15-MINUTE 23 EMA / 50 EMA SYSTEM PERSISTENCE METHODS
+  // ========================================================
+
+  public saveEma15mCandle(candle: Ema15mCandle): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_15m_candles (
+          instrument, timeframe, timestamp, open, high, low, close, volume, is_closed, ema_23, ema_50, ema_difference, signal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(instrument, timeframe, timestamp) DO UPDATE SET
+          open = excluded.open,
+          high = excluded.high,
+          low = excluded.low,
+          close = excluded.close,
+          volume = excluded.volume,
+          is_closed = excluded.is_closed,
+          ema_23 = excluded.ema_23,
+          ema_50 = excluded.ema_50,
+          ema_difference = excluded.ema_difference,
+          signal = excluded.signal
+      `).run(
+        candle.instrument,
+        candle.timeframe || '15m',
+        candle.timestamp,
+        candle.open,
+        candle.high,
+        candle.low,
+        candle.close,
+        candle.volume || 0,
+        candle.isClosed ? 1 : 0,
+        candle.ema23 ?? null,
+        candle.ema50 ?? null,
+        candle.emaDifference ?? null,
+        candle.signal ?? null
+      );
+    } catch (err) {
+      console.error(`[DB] Error saving EMA candle for ${candle.instrument}:`, err);
+    }
+  }
+
+  public saveEma15mCandlesBatch(candles: Ema15mCandle[]): void {
+    if (!this.db || candles.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT INTO ema_15m_candles (
+        instrument, timeframe, timestamp, open, high, low, close, volume, is_closed, ema_23, ema_50, ema_difference, signal
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(instrument, timeframe, timestamp) DO UPDATE SET
+        open = excluded.open,
+        high = excluded.high,
+        low = excluded.low,
+        close = excluded.close,
+        volume = excluded.volume,
+        is_closed = excluded.is_closed,
+        ema_23 = excluded.ema_23,
+        ema_50 = excluded.ema_50,
+        ema_difference = excluded.ema_difference,
+        signal = excluded.signal
+    `);
+
+    const tx = this.db.transaction((items: Ema15mCandle[]) => {
+      for (const candle of items) {
+        stmt.run(
+          candle.instrument,
+          candle.timeframe || '15m',
+          candle.timestamp,
+          candle.open,
+          candle.high,
+          candle.low,
+          candle.close,
+          candle.volume || 0,
+          candle.isClosed ? 1 : 0,
+          candle.ema23 ?? null,
+          candle.ema50 ?? null,
+          candle.emaDifference ?? null,
+          candle.signal ?? null
+        );
+      }
+    });
+
+    try {
+      tx(candles);
+    } catch (err) {
+      console.error('[DB] Error batch saving EMA candles:', err);
+    }
+  }
+
+  public getEma15mCandles(instrument: string, limit: number = 200, fromDate?: string, toDate?: string): Ema15mCandle[] {
+    if (!this.db) return [];
+    try {
+      let rows: any[];
+      if (fromDate && toDate) {
+        rows = this.db.prepare(`
+          SELECT * FROM ema_15m_candles
+          WHERE instrument = ? AND timeframe = '15m' AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp ASC
+        `).all(instrument, fromDate, toDate) as any[];
+      } else {
+        rows = this.db.prepare(`
+          SELECT * FROM (
+            SELECT * FROM ema_15m_candles
+            WHERE instrument = ? AND timeframe = '15m'
+            ORDER BY timestamp DESC LIMIT ?
+          ) ORDER BY timestamp ASC
+        `).all(instrument, limit) as any[];
+      }
+
+      return rows.map(r => ({
+        id: String(r.id),
+        instrument: r.instrument,
+        timeframe: r.timeframe,
+        timestamp: r.timestamp,
+        open: r.open,
+        high: r.high,
+        low: r.low,
+        close: r.close,
+        volume: r.volume,
+        isClosed: r.is_closed === 1,
+        ema23: r.ema_23 !== null ? Number(r.ema_23) : undefined,
+        ema50: r.ema_50 !== null ? Number(r.ema_50) : undefined,
+        emaDifference: r.ema_difference !== null ? Number(r.ema_difference) : undefined,
+        signal: r.signal || undefined
+      }));
+    } catch (err) {
+      console.error(`[DB] Error fetching EMA candles for ${instrument}:`, err);
+      return [];
+    }
+  }
+
+  public purgeCorruptEmaCandles(instrument: string, minPrice: number): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`DELETE FROM ema_15m_candles WHERE instrument = ? AND close < ?`).run(instrument, minPrice);
+      this.db.prepare(`DELETE FROM ema_15m_signals WHERE instrument = ? AND price < ?`).run(instrument, minPrice);
+      this.db.prepare(`DELETE FROM ema_paper_trades WHERE instrument = ? AND entry_price < ?`).run(instrument, minPrice);
+    } catch (err) {
+      console.error(`[DB] Error purging corrupt EMA candles for ${instrument}:`, err);
+    }
+  }
+
+  public getLatestEma15mCandle(instrument: string): Ema15mCandle | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare(`
+        SELECT * FROM ema_15m_candles
+        WHERE instrument = ? AND timeframe = '15m'
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(instrument) as any;
+
+      if (!row) return null;
+      return {
+        id: String(row.id),
+        instrument: row.instrument,
+        timeframe: row.timeframe,
+        timestamp: row.timestamp,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        volume: row.volume,
+        isClosed: row.is_closed === 1,
+        ema23: row.ema_23 !== null ? Number(row.ema_23) : undefined,
+        ema50: row.ema_50 !== null ? Number(row.ema_50) : undefined,
+        emaDifference: row.ema_difference !== null ? Number(row.ema_difference) : undefined,
+        signal: row.signal || undefined
+      };
+    } catch (err) {
+      console.error(`[DB] Error fetching latest EMA candle for ${instrument}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Persists an EMA 15m crossover signal atomically with unique constraint.
+   * Returns true if newly inserted, false if duplicate already existed.
+   */
+  public saveEma15mSignal(signal: Ema15mSignal): boolean {
+    if (!this.db) return false;
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO ema_15m_signals (
+          id, instrument, timeframe, signal_type, price, ema_23, ema_50, ema_difference, candle_timestamp, signal_confirmed_at, user_id, notification_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(instrument, timeframe, candle_timestamp, signal_type) DO NOTHING
+      `);
+
+      const info = stmt.run(
+        signal.id,
+        signal.instrument,
+        signal.timeframe || '15m',
+        signal.signalType,
+        signal.price,
+        signal.ema23,
+        signal.ema50,
+        signal.emaDifference,
+        signal.candleTimestamp,
+        signal.signalConfirmedAt,
+        signal.userId || null,
+        signal.notificationStatus || 'PENDING'
+      );
+
+      return info.changes > 0;
+    } catch (err) {
+      console.error('[DB] Error saving EMA signal:', err);
+      return false;
+    }
+  }
+
+  public updateEmaSignalNotificationStatus(signalId: string, status: string): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`UPDATE ema_15m_signals SET notification_status = ? WHERE id = ?`).run(status, signalId);
+    } catch (err) {
+      console.error('[DB] Error updating signal notification status:', err);
+    }
+  }
+
+  public getEma15mSignals(instrument?: string, signalType?: string, limit: number = 100): Ema15mSignal[] {
+    if (!this.db) return [];
+    try {
+      let query = 'SELECT * FROM ema_15m_signals WHERE 1=1';
+      const params: any[] = [];
+
+      if (instrument && instrument !== 'ALL') {
+        query += ' AND instrument = ?';
+        params.push(instrument);
+      }
+      if (signalType && signalType !== 'ALL') {
+        query += ' AND signal_type = ?';
+        params.push(signalType);
+      }
+
+      query += ' ORDER BY candle_timestamp DESC LIMIT ?';
+      params.push(limit);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        instrument: r.instrument,
+        timeframe: r.timeframe,
+        signalType: r.signal_type,
+        price: r.price,
+        ema23: r.ema_23,
+        ema50: r.ema_50,
+        emaDifference: r.ema_difference,
+        candleTimestamp: r.candle_timestamp,
+        signalConfirmedAt: r.signal_confirmed_at,
+        createdAt: r.created_at,
+        userId: r.user_id || undefined,
+        notificationStatus: r.notification_status
+      }));
+    } catch (err) {
+      console.error('[DB] Error fetching EMA signals:', err);
+      return [];
+    }
+  }
+
+  public getLatestEma15mSignal(instrument: string): Ema15mSignal | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare(`
+        SELECT * FROM ema_15m_signals
+        WHERE instrument = ?
+        ORDER BY candle_timestamp DESC LIMIT 1
+      `).get(instrument) as any;
+
+      if (!row) return null;
+      return {
+        id: row.id,
+        instrument: row.instrument,
+        timeframe: row.timeframe,
+        signalType: row.signal_type,
+        price: row.price,
+        ema23: row.ema_23,
+        ema50: row.ema_50,
+        emaDifference: row.ema_difference,
+        candleTimestamp: row.candle_timestamp,
+        signalConfirmedAt: row.signal_confirmed_at,
+        createdAt: row.created_at,
+        userId: row.user_id || undefined,
+        notificationStatus: row.notification_status
+      };
+    } catch (err) {
+      console.error(`[DB] Error fetching latest signal for ${instrument}:`, err);
+      return null;
+    }
+  }
+
+  public logEmaNotification(log: EmaNotificationLog): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_notification_logs (
+          id, signal_id, channel, status, attempted_at, error_message, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        log.id,
+        log.signalId,
+        log.channel,
+        log.status,
+        log.attemptedAt || new Date().toISOString(),
+        log.errorMessage || null,
+        log.payload ? JSON.stringify(log.payload) : null
+      );
+    } catch (err) {
+      console.error('[DB] Error logging EMA notification:', err);
+    }
+  }
+
+  public getEmaNotificationLogs(signalId?: string, limit: number = 50): EmaNotificationLog[] {
+    if (!this.db) return [];
+    try {
+      let rows: any[];
+      if (signalId) {
+        rows = this.db.prepare(`
+          SELECT * FROM ema_notification_logs WHERE signal_id = ? ORDER BY attempted_at DESC LIMIT ?
+        `).all(signalId, limit) as any[];
+      } else {
+        rows = this.db.prepare(`
+          SELECT * FROM ema_notification_logs ORDER BY attempted_at DESC LIMIT ?
+        `).all(limit) as any[];
+      }
+
+      return rows.map(r => ({
+        id: r.id,
+        signalId: r.signal_id,
+        channel: r.channel,
+        status: r.status,
+        attemptedAt: r.attempted_at,
+        errorMessage: r.error_message || undefined,
+        payload: r.payload_json ? JSON.parse(r.payload_json) : undefined
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting notification logs:', err);
+      return [];
+    }
+  }
+
+  public getEmaNotificationSettings(userId?: string | null): EmaNotificationSettings {
+    const defaultSettings: EmaNotificationSettings = {
+      userId: userId || 'GLOBAL',
+      telegramEnabled: true,
+      emailEnabled: false,
+      browserEnabled: true,
+      soundEnabled: true,
+      autoPaperTradingEnabled: true,
+      telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+      emailAddress: process.env.SMTP_USER || '',
+      soundVolume: 0.8
+    };
+
+    if (!this.db) return defaultSettings;
+    try {
+      const uId = userId || 'GLOBAL';
+      const row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = ?`).get(uId) as any;
+      if (!row) return defaultSettings;
+      return {
+        userId: row.user_id,
+        telegramEnabled: row.telegram_enabled === 1,
+        emailEnabled: row.email_enabled === 1,
+        browserEnabled: row.browser_enabled === 1,
+        soundEnabled: row.sound_enabled === 1,
+        autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
+        telegramChatId: row.telegram_chat_id || process.env.TELEGRAM_CHAT_ID || '',
+        emailAddress: row.email_address || process.env.SMTP_USER || '',
+        soundVolume: row.sound_volume !== null ? Number(row.sound_volume) : 0.8,
+        updatedAt: row.updated_at
+      };
+    } catch {
+      return defaultSettings;
+    }
+  }
+
+  public saveEmaNotificationSettings(settings: EmaNotificationSettings, userId?: string | null): void {
+    if (!this.db) return;
+    try {
+      const uId = userId || settings.userId || 'GLOBAL';
+      this.db.prepare(`
+        INSERT INTO ema_notification_settings (
+          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, telegram_chat_id, email_address, sound_volume, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+          telegram_enabled = excluded.telegram_enabled,
+          email_enabled = excluded.email_enabled,
+          browser_enabled = excluded.browser_enabled,
+          sound_enabled = excluded.sound_enabled,
+          auto_paper_trading_enabled = excluded.auto_paper_trading_enabled,
+          telegram_chat_id = excluded.telegram_chat_id,
+          email_address = excluded.email_address,
+          sound_volume = excluded.sound_volume,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(
+        uId,
+        settings.telegramEnabled ? 1 : 0,
+        settings.emailEnabled ? 1 : 0,
+        settings.browserEnabled ? 1 : 0,
+        settings.soundEnabled ? 1 : 0,
+        settings.autoPaperTradingEnabled !== false ? 1 : 0,
+        settings.telegramChatId || null,
+        settings.emailAddress || null,
+        settings.soundVolume ?? 0.8
+      );
+    } catch (err) {
+      console.error('[DB] Error saving notification settings:', err);
+    }
+  }
+
+  // ========================================================
+  // 15-MINUTE 23/50 EMA AUTOMATIC PAPER TRADING PERSISTENCE
+  // ========================================================
+
+  public saveEmaPaperTrade(trade: EmaPaperTrade): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_paper_trades (
+          id, signal_id, instrument, direction, entry_timestamp, entry_price, quantity, lot_size, strategy, source, status, current_price, unrealized_pnl, exit_timestamp, exit_price, exit_reason, gross_pnl, brokerage, charges, net_pnl, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          current_price = excluded.current_price,
+          unrealized_pnl = excluded.unrealized_pnl,
+          status = excluded.status,
+          exit_timestamp = excluded.exit_timestamp,
+          exit_price = excluded.exit_price,
+          exit_reason = excluded.exit_reason,
+          gross_pnl = excluded.gross_pnl,
+          brokerage = excluded.brokerage,
+          charges = excluded.charges,
+          net_pnl = excluded.net_pnl,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(
+        trade.id,
+        trade.signalId,
+        trade.instrument,
+        trade.direction,
+        trade.entryTimestamp,
+        trade.entryPrice,
+        trade.quantity,
+        trade.lotSize,
+        trade.strategy || 'EMA_15M_23_50',
+        trade.source || 'UPSTOX_LIVE',
+        trade.status || 'OPEN',
+        trade.currentPrice,
+        trade.unrealizedPnl || 0,
+        trade.exitTimestamp || null,
+        trade.exitPrice !== undefined && trade.exitPrice !== null ? trade.exitPrice : null,
+        trade.exitReason || null,
+        trade.grossPnl || 0,
+        trade.brokerage !== undefined ? trade.brokerage : 40,
+        trade.charges || 0,
+        trade.netPnl || 0,
+        trade.createdAt || new Date().toISOString(),
+        trade.updatedAt || new Date().toISOString()
+      );
+    } catch (err) {
+      console.error('[DB] Error saving EMA paper trade:', err);
+    }
+  }
+
+  public getEmaPaperTrades(instrument?: string, status?: string, limit: number = 100): EmaPaperTrade[] {
+    if (!this.db) return [];
+    try {
+      let query = 'SELECT * FROM ema_paper_trades WHERE 1=1';
+      const params: any[] = [];
+
+      if (instrument && instrument !== 'ALL') {
+        query += ' AND instrument = ?';
+        params.push(instrument);
+      }
+      if (status && status !== 'ALL') {
+        query += ' AND status = ?';
+        params.push(status);
+      }
+
+      query += ' ORDER BY created_at DESC LIMIT ?';
+      params.push(limit);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        direction: r.direction,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        strategy: r.strategy,
+        source: r.source,
+        status: r.status,
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        charges: Number(r.charges || 0),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error fetching EMA paper trades:', err);
+      return [];
+    }
+  }
+
+  public getOpenEmaPaperTradeByInstrument(instrument: string): EmaPaperTrade | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare(`
+        SELECT * FROM ema_paper_trades WHERE instrument = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1
+      `).get(instrument) as any;
+
+      if (!row) return null;
+      return {
+        id: row.id,
+        signalId: row.signal_id,
+        instrument: row.instrument,
+        direction: row.direction,
+        entryTimestamp: row.entry_timestamp,
+        entryPrice: Number(row.entry_price),
+        quantity: Number(row.quantity),
+        lotSize: Number(row.lot_size),
+        strategy: row.strategy,
+        source: row.source,
+        status: row.status,
+        currentPrice: Number(row.current_price),
+        unrealizedPnl: Number(row.unrealized_pnl || 0),
+        exitTimestamp: row.exit_timestamp || null,
+        exitPrice: row.exit_price !== null ? Number(row.exit_price) : null,
+        exitReason: row.exit_reason || null,
+        grossPnl: Number(row.gross_pnl || 0),
+        brokerage: Number(row.brokerage || 40),
+        charges: Number(row.charges || 0),
+        netPnl: Number(row.net_pnl || 0),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      };
+    } catch (err) {
+      console.error(`[DB] Error fetching open trade for ${instrument}:`, err);
+      return null;
+    }
+  }
+
+  public closeEmaPaperTrade(id: string, exitPrice: number, exitReason: string = 'MANUAL', exitTimestamp?: string): boolean {
+    if (!this.db) return false;
+    try {
+      const trade = this.db.prepare(`SELECT * FROM ema_paper_trades WHERE id = ? AND status = 'OPEN'`).get(id) as any;
+      if (!trade) return false;
+
+      const entryPrice = Number(trade.entry_price);
+      const qty = Number(trade.quantity);
+      const isLong = trade.direction === 'LONG';
+      const grossPnl = Number((isLong ? (exitPrice - entryPrice) * qty : (entryPrice - exitPrice) * qty).toFixed(2));
+      const brokerage = 40; // ₹40 round trip (₹20 entry + ₹20 exit)
+      const netPnl = Number((grossPnl - brokerage).toFixed(2));
+      const now = exitTimestamp || new Date().toISOString();
+
+      const res = this.db.prepare(`
+        UPDATE ema_paper_trades SET
+          status = 'CLOSED',
+          current_price = ?,
+          exit_price = ?,
+          exit_timestamp = ?,
+          exit_reason = ?,
+          gross_pnl = ?,
+          brokerage = ?,
+          net_pnl = ?,
+          unrealized_pnl = 0,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'OPEN'
+      `).run(exitPrice, exitPrice, now, exitReason, grossPnl, brokerage, netPnl, id);
+
+      return res.changes > 0;
+    } catch (err) {
+      console.error(`[DB] Error closing EMA paper trade ${id}:`, err);
+      return false;
+    }
+  }
+
+  public updateEmaPaperTradePrices(instrument: string, currentPrice: number): void {
+    if (!this.db) return;
+    try {
+      const openTrades = this.db.prepare(`SELECT * FROM ema_paper_trades WHERE instrument = ? AND status = 'OPEN'`).all(instrument) as any[];
+      if (openTrades.length === 0) return;
+
+      const stmt = this.db.prepare(`
+        UPDATE ema_paper_trades SET
+          current_price = ?,
+          unrealized_pnl = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `);
+
+      for (const t of openTrades) {
+        const entryPrice = Number(t.entry_price);
+        const qty = Number(t.quantity);
+        const isLong = t.direction === 'LONG';
+        const unrealizedPnl = Number((isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty).toFixed(2));
+        stmt.run(currentPrice, unrealizedPnl, t.id);
+      }
+    } catch (err) {
+      console.error(`[DB] Error updating EMA paper trade prices for ${instrument}:`, err);
+    }
+  }
+
+  public getEmaPaperTradingSummary(): EmaPaperTradingSummary {
+    const defaultSummary: EmaPaperTradingSummary = {
+      totalTrades: 0,
+      openTradesCount: 0,
+      closedTradesCount: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      winRatePercent: 0,
+      realizedGrossPnl: 0,
+      realizedBrokerage: 0,
+      realizedNetPnl: 0,
+      unrealizedPnl: 0,
+      totalNetPnl: 0,
+      autoTradingEnabled: true
+    };
+
+    if (!this.db) return defaultSummary;
+    try {
+      const allTrades = this.db.prepare(`SELECT * FROM ema_paper_trades`).all() as any[];
+      const openTrades = allTrades.filter(t => t.status === 'OPEN');
+      const closedTrades = allTrades.filter(t => t.status === 'CLOSED');
+
+      let realizedGrossPnl = 0;
+      let realizedBrokerage = 0;
+      let realizedNetPnl = 0;
+      let winningTrades = 0;
+      let losingTrades = 0;
+
+      for (const ct of closedTrades) {
+        const net = Number(ct.net_pnl || 0);
+        realizedGrossPnl += Number(ct.gross_pnl || 0);
+        realizedBrokerage += Number(ct.brokerage || 40);
+        realizedNetPnl += net;
+        if (net > 0) winningTrades++;
+        else if (net < 0) losingTrades++;
+      }
+
+      let unrealizedPnl = 0;
+      for (const ot of openTrades) {
+        unrealizedPnl += Number(ot.unrealized_pnl || 0);
+      }
+
+      const totalTrades = allTrades.length;
+      const winRatePercent = closedTrades.length > 0 ? Number(((winningTrades / closedTrades.length) * 100).toFixed(1)) : 0;
+      const totalNetPnl = Number((realizedNetPnl + unrealizedPnl).toFixed(2));
+
+      const settings = this.getEmaNotificationSettings('GLOBAL');
+
+      return {
+        totalTrades,
+        openTradesCount: openTrades.length,
+        closedTradesCount: closedTrades.length,
+        winningTrades,
+        losingTrades,
+        winRatePercent,
+        realizedGrossPnl: Number(realizedGrossPnl.toFixed(2)),
+        realizedBrokerage: Number(realizedBrokerage.toFixed(2)),
+        realizedNetPnl: Number(realizedNetPnl.toFixed(2)),
+        unrealizedPnl: Number(unrealizedPnl.toFixed(2)),
+        totalNetPnl,
+        autoTradingEnabled: settings.autoPaperTradingEnabled !== false
+      };
+    } catch (err) {
+      console.error('[DB] Error computing EMA paper trading summary:', err);
+      return defaultSummary;
+    }
   }
 }
 

@@ -17,6 +17,8 @@ import { calculateEuropeanOptionGreeks, calculateAmericanOptionGreeks } from '..
 export const LIVE_MARKET_TICKERS: Record<string, string> = {
   NIFTY: '^NSEI',
   BANKNIFTY: '^NSEBANK',
+  SENSEX: '^BSESN',
+  BSESENSEX: '^BSESN',
   FINNIFTY: 'NIFTY_FIN_SERVICE.NS',
   MIDCPNIFTY: 'NIFTY_MID_SELECT.NS',
   RELIANCE: 'RELIANCE.NS',
@@ -44,6 +46,8 @@ export const DEFAULT_SYMBOL_METRICS: Record<string, {
 }> = {
   NIFTY: { spot: 24055.80, prevClose: 24175.70, stepSize: 50, baseIV: 11.2, lotSize: 25, style: 'EUROPEAN' },
   BANKNIFTY: { spot: 57409.60, prevClose: 57496.30, stepSize: 100, baseIV: 13.5, lotSize: 15, style: 'EUROPEAN' },
+  SENSEX: { spot: 76944.28, prevClose: 76957.27, stepSize: 100, baseIV: 11.8, lotSize: 10, style: 'EUROPEAN' },
+  BSESENSEX: { spot: 76944.28, prevClose: 76957.27, stepSize: 100, baseIV: 11.8, lotSize: 10, style: 'EUROPEAN' },
   FINNIFTY: { spot: 26003.90, prevClose: 26293.65, stepSize: 50, baseIV: 12.0, lotSize: 65, style: 'EUROPEAN' },
   MIDCPNIFTY: { spot: 14813.35, prevClose: 15028.60, stepSize: 25, baseIV: 14.5, lotSize: 75, style: 'EUROPEAN' },
   RELIANCE: { spot: 1309.00, prevClose: 1277.00, stepSize: 20, baseIV: 16.5, lotSize: 250, style: 'AMERICAN' },

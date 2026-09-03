@@ -577,3 +577,183 @@ export interface SectorRotationData {
   topPicks: string[];
 }
 
+// ========================================================
+// 15-MINUTE 23 EMA / 50 EMA CROSSOVER ALERT SYSTEM TYPES
+// ========================================================
+
+export type Ema15mInstrument = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
+export type Ema15mSignalType = 'BULLISH' | 'BEARISH' | 'NONE';
+
+export interface Ema15mCandle {
+  id?: string;
+  instrument: Ema15mInstrument;
+  timeframe: string; // '1m' | '3m' | '5m' | '15m' | '1h' | '1d'
+  timestamp: string; // ISO string representing candle start or boundary (e.g. 2026-09-01T09:15:00.000Z)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  isClosed: boolean;
+  ema23?: number;
+  ema50?: number;
+  emaDifference?: number;
+  rsi14?: number;
+  vwap?: number;
+  bbUpper?: number;
+  bbMiddle?: number;
+  bbLower?: number;
+  atr?: number;
+  signal?: Ema15mSignalType;
+}
+
+export interface Ema15mSignal {
+  id: string;
+  instrument: Ema15mInstrument;
+  timeframe: '15m';
+  signalType: 'BULLISH' | 'BEARISH';
+  price: number; // Candle Close price
+  ema23: number;
+  ema50: number;
+  emaDifference: number; // ema23 - ema50
+  candleTimestamp: string; // The completed 15m candle period
+  signalConfirmedAt: string; // Confirmation timestamp (candle close boundary)
+  createdAt: string;
+  userId?: string;
+  notificationStatus?: 'PENDING' | 'DELIVERED' | 'PARTIAL' | 'FAILED' | 'SKIPPED';
+}
+
+export interface Ema15mInstrumentStatus {
+  instrument: Ema15mInstrument;
+  displayName: string;
+  currentPrice: number;
+  ema23: number;
+  ema50: number;
+  emaDifference: number;
+  currentTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  lastSignalType: 'BULLISH' | 'BEARISH' | 'NONE';
+  lastSignalTime: string | null;
+  lastSignalPrice: number | null;
+  lastCompletedCandleTime: string | null;
+  candleCount: number;
+  isMarketOpen: boolean;
+  marketStatusMessage: string;
+  isDataFeedConnected: boolean;
+  isSignalEngineRunning: boolean;
+  isMock: boolean;
+  dataSource: 'UPSTOX_LIVE' | 'PRACTICE' | 'LIVE_DATA_UNAVAILABLE';
+  dataSourceMessage?: string;
+  activePaperTrade?: EmaPaperTrade | null;
+}
+
+export interface EmaPaperTrade {
+  id: string;
+  signalId: string;
+  instrument: Ema15mInstrument;
+  direction: 'LONG' | 'SHORT';
+  entryTimestamp: string;
+  entryPrice: number;
+  quantity: number;
+  lotSize: number;
+  strategy: 'EMA_15M_23_50';
+  source: 'UPSTOX_LIVE' | 'PRACTICE';
+  status: 'OPEN' | 'CLOSED';
+  currentPrice: number;
+  unrealizedPnl: number;
+  exitTimestamp?: string | null;
+  exitPrice?: number | null;
+  exitReason?: 'OPPOSITE_CROSSOVER' | 'SL_HIT' | 'TARGET_HIT' | 'MANUAL' | 'EOD' | null;
+  grossPnl: number;
+  brokerage: number;
+  charges: number;
+  netPnl: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmaPaperTradingSummary {
+  totalTrades: number;
+  openTradesCount: number;
+  closedTradesCount: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRatePercent: number;
+  realizedGrossPnl: number;
+  realizedBrokerage: number;
+  realizedNetPnl: number;
+  unrealizedPnl: number;
+  totalNetPnl: number;
+  autoTradingEnabled: boolean;
+}
+
+export interface EmaNotificationSettings {
+  userId?: string;
+  telegramEnabled: boolean;
+  emailEnabled: boolean;
+  browserEnabled: boolean;
+  soundEnabled: boolean;
+  autoPaperTradingEnabled?: boolean;
+  telegramChatId?: string;
+  emailAddress?: string;
+  soundVolume?: number; // 0 to 1
+  updatedAt?: string;
+}
+
+export interface EmaNotificationLog {
+  id: string;
+  signalId: string;
+  channel: 'TELEGRAM' | 'EMAIL' | 'BROWSER' | 'SOUND';
+  status: 'SUCCESS' | 'FAILED' | 'SKIPPED';
+  attemptedAt: string;
+  errorMessage?: string;
+  payload?: any;
+}
+
+export interface Ema15mBacktestConfig {
+  instrument: Ema15mInstrument;
+  startDate: string;
+  endDate: string;
+  initialCapital?: number;
+}
+
+export interface Ema15mBacktestTrade {
+  id: string;
+  instrument: Ema15mInstrument;
+  signalType: 'BULLISH' | 'BEARISH';
+  entryTimestamp: string;
+  entryPrice: number;
+  exitTimestamp: string;
+  exitPrice: number;
+  pnlPoints: number;
+  pnlPercent: number;
+  barsHeld: number;
+  maxFavorableExcursionPoints: number;
+  maxAdverseExcursionPoints: number;
+  exitReason: 'OPPOSITE_CROSSOVER' | 'END_OF_PERIOD';
+}
+
+export interface Ema15mBacktestResult {
+  instrument: Ema15mInstrument;
+  startDate: string;
+  endDate: string;
+  totalCandles: number;
+  totalSignals: number;
+  bullishSignalsCount: number;
+  bearishSignalsCount: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRatePercent: number;
+  totalPnlPoints: number;
+  avgPnlPointsPerTrade: number;
+  avgPnlPercentPerTrade: number;
+  profitFactor: number;
+  maxDrawdownPoints: number;
+  maxDrawdownPercent: number;
+  maxFavorableExcursionAvg: number;
+  maxAdverseExcursionAvg: number;
+  disclaimer: string;
+  trades: Ema15mBacktestTrade[];
+}
+
+
