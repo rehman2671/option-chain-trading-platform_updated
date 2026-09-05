@@ -604,6 +604,13 @@ export interface Ema15mCandle {
   bbMiddle?: number;
   bbLower?: number;
   atr?: number;
+  cprP?: number;
+  cprBC?: number;
+  cprTC?: number;
+  cprR1?: number;
+  cprS1?: number;
+  cprR2?: number;
+  cprS2?: number;
   signal?: Ema15mSignalType;
 }
 
@@ -694,6 +701,7 @@ export interface EmaNotificationSettings {
   soundEnabled: boolean;
   autoPaperTradingEnabled?: boolean;
   telegramChatId?: string;
+  telegramBotToken?: string;
   emailAddress?: string;
   soundVolume?: number; // 0 to 1
   updatedAt?: string;

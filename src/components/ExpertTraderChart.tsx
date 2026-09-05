@@ -145,14 +145,91 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     return () => clearInterval(interval);
   }, [timeframe]);
 
-  // Convert raw candles to Heikin-Ashi if selected
+  // Convert raw candles to Heikin-Ashi if selected and ensure complete continuous indicator coverage
   const displayCandles = useMemo(() => {
-    if (chartStyle !== 'HEIKIN_ASHI') return candles;
     if (candles.length === 0) return [];
 
+    // Ensure all technical indicators (EMA 23, EMA 50, Bollinger, RSI, Signals) have complete coverage
+    const enriched = candles.map(c => ({ ...c }));
+    let needsEnrichment = false;
+    for (const c of enriched) {
+      if (c.ema23 === undefined || c.ema50 === undefined || c.bbUpper === undefined || c.rsi14 === undefined) {
+        needsEnrichment = true;
+        break;
+      }
+    }
+
+    if (needsEnrichment) {
+      let e23 = enriched[0].close;
+      let e50 = enriched[0].close;
+      for (let i = 0; i < enriched.length; i++) {
+        const cl = enriched[i].close;
+        if (i === 0) {
+          e23 = cl;
+          e50 = cl;
+        } else {
+          const k23 = i < 23 ? 2 / (i + 2) : 2 / 24;
+          const k50 = i < 50 ? 2 / (i + 2) : 2 / 51;
+          e23 = (cl - e23) * k23 + e23;
+          e50 = (cl - e50) * k50 + e50;
+        }
+        if (enriched[i].ema23 === undefined) enriched[i].ema23 = Number(e23.toFixed(2));
+        if (enriched[i].ema50 === undefined) enriched[i].ema50 = Number(e50.toFixed(2));
+        if (enriched[i].emaDifference === undefined) enriched[i].emaDifference = Number((e23 - e50).toFixed(2));
+      }
+
+      // Bollinger Bands fallback
+      for (let i = 0; i < enriched.length; i++) {
+        if (enriched[i].bbUpper === undefined) {
+          const w = Math.min(i + 1, 20);
+          const sl = enriched.slice(Math.max(0, i - w + 1), i + 1);
+          const m = sl.reduce((a, b) => a + b.close, 0) / w;
+          const v = sl.reduce((a, b) => a + Math.pow(b.close - m, 2), 0) / w;
+          const s = Math.sqrt(v) || m * 0.002;
+          enriched[i].bbMiddle = Number(m.toFixed(2));
+          enriched[i].bbUpper = Number((m + 2 * s).toFixed(2));
+          enriched[i].bbLower = Number((m - 2 * s).toFixed(2));
+        }
+      }
+
+      // RSI fallback
+      let sG = 0;
+      let sL = 0;
+      for (let i = 0; i < enriched.length; i++) {
+        if (enriched[i].rsi14 === undefined) {
+          if (i === 0) {
+            enriched[i].rsi14 = 50;
+            continue;
+          }
+          const ch = enriched[i].close - enriched[i - 1].close;
+          sG += ch > 0 ? ch : 0;
+          sL += ch < 0 ? -ch : 0;
+          const r = sL === 0 ? 100 : (sG / i) / (sL / i);
+          enriched[i].rsi14 = Number((100 - 100 / (1 + r)).toFixed(2));
+        }
+      }
+
+      // Signal Crossovers fallback
+      for (let i = 1; i < enriched.length; i++) {
+        if (!enriched[i].signal || enriched[i].signal === 'NONE') {
+          const p = enriched[i - 1];
+          const c = enriched[i];
+          if (p.ema23 !== undefined && p.ema50 !== undefined && c.ema23 !== undefined && c.ema50 !== undefined) {
+            if (p.ema23 < p.ema50 && c.ema23 >= c.ema50) {
+              c.signal = 'BULLISH';
+            } else if (p.ema23 > p.ema50 && c.ema23 <= c.ema50) {
+              c.signal = 'BEARISH';
+            }
+          }
+        }
+      }
+    }
+
+    if (chartStyle !== 'HEIKIN_ASHI') return enriched;
+
     const haCandles: Ema15mCandle[] = [];
-    for (let i = 0; i < candles.length; i++) {
-      const c = candles[i];
+    for (let i = 0; i < enriched.length; i++) {
+      const c = enriched[i];
       if (i === 0) {
         haCandles.push({
           ...c,
@@ -308,7 +385,9 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
       }
       if (c.vwap !== undefined && showVwap) {
         const yV = getY(c.vwap);
-        vwapPath += vwapPath === '' ? `M ${x} ${yV}` : ` L ${x} ${yV}`;
+        const prev = idx > 0 ? slicedCandles[idx - 1] : null;
+        const isNewDay = prev && c.timestamp.split('T')[0] !== prev.timestamp.split('T')[0];
+        vwapPath += (vwapPath === '' || isNewDay) ? ` M ${x} ${yV}` : ` L ${x} ${yV}`;
       }
       if (showBollinger && c.bbUpper && c.bbLower) {
         const yU = getY(c.bbUpper);
@@ -364,27 +443,59 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
       });
     }
 
-    // Classic Pivot Points calculation
+    // Classic Central Pivot Range (CPR) & Daily Pivot Points calculation
     let pivotLevels: { label: string; price: number; y: number; color: string }[] = [];
-    if (showPivots && slicedCandles.length >= 10) {
-      const prevCandles = slicedCandles.slice(0, Math.floor(slicedCandles.length / 2));
-      const pH = Math.max(...prevCandles.map(c => c.high));
-      const pL = Math.min(...prevCandles.map(c => c.low));
-      const pC = prevCandles[prevCandles.length - 1].close;
+    if (showPivots && (slicedCandles.length > 0 || candles.length > 0)) {
+      const activeCandle = slicedCandles[slicedCandles.length - 1] || candles[candles.length - 1];
+      let P = activeCandle?.cprP;
+      let BC = activeCandle?.cprBC;
+      let TC = activeCandle?.cprTC;
+      let R1 = activeCandle?.cprR1;
+      let S1 = activeCandle?.cprS1;
+      let R2 = activeCandle?.cprR2;
+      let S2 = activeCandle?.cprS2;
 
-      const P = (pH + pL + pC) / 3;
-      const R1 = 2 * P - pL;
-      const S1 = 2 * P - pH;
-      const R2 = P + (pH - pL);
-      const S2 = P - (pH - pL);
+      // Fallback calculation if candle doesn't have precalculated CPR
+      if (P === undefined) {
+        const sourceCandles = candles.length >= 5 ? candles : slicedCandles;
+        const distinctDates = Array.from(new Set(sourceCandles.map(c => c.timestamp.split('T')[0]))).sort();
+        let prevDayCandles: Ema15mCandle[] = [];
 
-      pivotLevels = [
-        { label: 'R2', price: Math.round(R2), y: getY(R2), color: '#ef4444' },
-        { label: 'R1', price: Math.round(R1), y: getY(R1), color: '#f87171' },
-        { label: 'CPR (P)', price: Math.round(P), y: getY(P), color: '#38bdf8' },
-        { label: 'S1', price: Math.round(S1), y: getY(S1), color: '#4ade80' },
-        { label: 'S2', price: Math.round(S2), y: getY(S2), color: '#22c55e' }
-      ];
+        if (distinctDates.length >= 2) {
+          const prevDate = distinctDates[distinctDates.length - 2];
+          prevDayCandles = sourceCandles.filter(c => c.timestamp.split('T')[0] === prevDate);
+        } else {
+          prevDayCandles = sourceCandles.slice(0, Math.max(1, Math.floor(sourceCandles.length / 2)));
+        }
+
+        if (prevDayCandles.length > 0) {
+          const pH = Math.max(...prevDayCandles.map(c => c.high));
+          const pL = Math.min(...prevDayCandles.map(c => c.low));
+          const pC = prevDayCandles[prevDayCandles.length - 1].close;
+
+          P = Number(((pH + pL + pC) / 3).toFixed(2));
+          BC = Number(((pH + pL) / 2).toFixed(2));
+          TC = Number(((P - BC) + P).toFixed(2));
+          R1 = Number((2 * P - pL).toFixed(2));
+          S1 = Number((2 * P - pH).toFixed(2));
+          R2 = Number((P + (pH - pL)).toFixed(2));
+          S2 = Number((P - (pH - pL)).toFixed(2));
+        }
+      }
+
+      if (P !== undefined && BC !== undefined && TC !== undefined && R1 !== undefined && S1 !== undefined && R2 !== undefined && S2 !== undefined) {
+        const allLevels = [
+          { label: 'R2', price: Number(R2.toFixed(1)), y: getY(R2), color: '#ef4444' },
+          { label: 'R1', price: Number(R1.toFixed(1)), y: getY(R1), color: '#f87171' },
+          { label: 'TC', price: Number(TC.toFixed(1)), y: getY(TC), color: '#0284c7' },
+          { label: 'CPR (P)', price: Number(P.toFixed(1)), y: getY(P), color: '#38bdf8' },
+          { label: 'BC', price: Number(BC.toFixed(1)), y: getY(BC), color: '#0284c7' },
+          { label: 'S1', price: Number(S1.toFixed(1)), y: getY(S1), color: '#4ade80' },
+          { label: 'S2', price: Number(S2.toFixed(1)), y: getY(S2), color: '#22c55e' }
+        ];
+        // Only include levels whose y is inside the main chart area
+        pivotLevels = allLevels.filter(lvl => lvl.y >= padding.top - 5 && lvl.y <= mainHeight - padding.bottom + 5);
+      }
     }
 
     return {
@@ -447,7 +558,8 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     if (isDragging) {
       const deltaX = (e.clientX - dragStartX) * scaleX;
       const candleShift = Math.round(deltaX / geometry.slotStep);
-      const newPan = Math.max(0, Math.min(displayCandles.length - visibleCount, dragStartPan + candleShift));
+      const maxPan = Math.max(0, displayCandles.length - visibleCount);
+      const newPan = Math.max(0, Math.min(maxPan, dragStartPan + candleShift));
       setPanOffset(newPan);
     }
   };
@@ -460,6 +572,18 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     setIsDragging(false);
     setHoverIndex(null);
     setMousePos(null);
+  };
+
+  // Mouse Wheel Zoom: scroll up = zoom in, scroll down = zoom out
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (e.deltaY < 0) {
+      // Zoom In
+      setVisibleCount(prev => Math.max(15, Math.round(prev * 0.85)));
+    } else if (e.deltaY > 0) {
+      // Zoom Out
+      setVisibleCount(prev => Math.min(displayCandles.length, Math.round(prev * 1.18)));
+    }
   };
 
   // Zoom In / Out Handlers
@@ -527,12 +651,12 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     { label: 'ALL', value: 'ALL', desc: 'All Historical Records' }
   ];
 
-  // Helper date formatter
+  // Helper date formatter - strictly formatted in Indian Standard Time (IST)
   const formatIstTime = (isoString?: string) => {
     if (!isoString) return '--:--';
     try {
       const d = new Date(isoString);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      return d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
     } catch {
       return '--:--';
     }
@@ -542,7 +666,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     if (!isoString) return '--';
     try {
       const d = new Date(isoString);
-      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
     } catch {
       return '--';
     }
@@ -829,6 +953,20 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
               </span>
             )}
 
+            {/* Bollinger Bands */}
+            {showBollinger && activeHoverCandle.bbUpper !== undefined && activeHoverCandle.bbLower !== undefined && (
+              <span className="text-blue-400">
+                BB: ₹{activeHoverCandle.bbUpper.toFixed(1)} / ₹{activeHoverCandle.bbLower.toFixed(1)}
+              </span>
+            )}
+
+            {/* CPR Pivots */}
+            {showPivots && activeHoverCandle.cprP !== undefined && (
+              <span className="text-purple-300">
+                CPR: ₹{activeHoverCandle.cprP.toFixed(1)} [R1: ₹{activeHoverCandle.cprR1?.toFixed(1)} S1: ₹{activeHoverCandle.cprS1?.toFixed(1)}]
+              </span>
+            )}
+
             {/* RSI */}
             {showRsi && activeHoverCandle.rsi14 !== undefined && (
               <span className="text-violet-400">
@@ -847,7 +985,12 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
       </div>
 
       {/* 4. MAIN SVG CHART CANVAS */}
-      <div className="relative select-none bg-slate-950 overflow-hidden cursor-crosshair">
+      <div
+        onWheel={handleWheel}
+        className={`relative select-none bg-slate-950 overflow-hidden ${
+          isDragging ? 'cursor-grabbing' : 'cursor-crosshair'
+        }`}
+      >
         {geometry && slicedCandles.length > 0 ? (
           <svg
             ref={svgRef}
@@ -860,6 +1003,16 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
             onMouseLeave={handleMouseLeave}
           >
             <defs>
+              {/* Main Price Chart Clip Boundary to prevent spillover */}
+              <clipPath id="mainPriceClip">
+                <rect
+                  x={padding.left}
+                  y={padding.top}
+                  width={plotWidth}
+                  height={mainHeight - padding.top - padding.bottom}
+                />
+              </clipPath>
+
               {/* EMA Ribbon Shading Gradient */}
               <linearGradient id="bullRibbonGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.25" />
@@ -875,6 +1028,29 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
             {/* GRID BACKGROUND */}
             <g className="grid-lines" opacity="0.35">
+              {/* Day Boundary Vertical Delimiter Lines */}
+              {slicedCandles.map((c, idx) => {
+                if (idx === 0) return null;
+                const prev = slicedCandles[idx - 1];
+                const isDayBoundary = c.timestamp.split('T')[0] !== prev.timestamp.split('T')[0];
+                if (!isDayBoundary) return null;
+                const x = geometry.getX(idx) - geometry.slotStep / 2;
+                return (
+                  <g key={`day-boundary-${idx}`}>
+                    <line
+                      x1={x}
+                      y1={padding.top}
+                      x2={x}
+                      y2={mainHeight + volumeHeight + rsiHeight}
+                      stroke="#475569"
+                      strokeWidth="1.2"
+                      strokeDasharray="4 3"
+                      opacity="0.75"
+                    />
+                  </g>
+                );
+              })}
+
               {/* Horizontal Price Grid Lines */}
               {geometry.priceTicks.map((tick, i) => (
                 <g key={`ptick-${i}`}>
@@ -926,6 +1102,8 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
               )}
             </g>
 
+            {/* MAIN PRICE SERIES (CLIPPED TO MAIN CHART PLOT AREA) */}
+            <g id="main-price-series" clipPath="url(#mainPriceClip)">
             {/* CLASSIC PIVOT POINT LEVELS */}
             {showPivots &&
               geometry.pivotLevels.map((p, i) => (
@@ -1078,17 +1256,27 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
             {/* CROSSOVER SIGNAL MARKERS ON CHART */}
             {showSignals &&
               slicedCandles.map((c, idx) => {
-                if (!c.signal || c.signal === 'NONE') return null;
+                let sigType = c.signal;
+                if (!sigType || sigType === 'NONE') {
+                  const matchingSig = signals.find(s => s.instrument === symbol && s.candleTimestamp === c.timestamp && s.signalType !== 'NONE');
+                  if (matchingSig) {
+                    sigType = matchingSig.signalType;
+                  }
+                }
+                if (!sigType || sigType === 'NONE') return null;
                 const x = geometry.getX(idx);
-                const isBull = c.signal === 'BULLISH';
-                const y = isBull ? geometry.getY(c.low) + 18 : geometry.getY(c.high) - 18;
+                const isBull = sigType === 'BULLISH';
+                const y = isBull
+                  ? Math.min(mainHeight - padding.bottom - 12, geometry.getY(c.low) + 18)
+                  : Math.max(padding.top + 12, geometry.getY(c.high) - 18);
 
                 return (
                   <g key={`sig-marker-${idx}`} className="cursor-pointer">
+                    <title>{`${sigType} Crossover @ ₹${c.close} (${formatIstDate(c.timestamp)} ${formatIstTime(c.timestamp)})`}</title>
                     <circle
                       cx={x}
                       cy={y}
-                      r="8"
+                      r="9"
                       fill={isBull ? '#059669' : '#dc2626'}
                       stroke="#ffffff"
                       strokeWidth="1.5"
@@ -1109,18 +1297,22 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
             {/* LIVE LASER PRICE LINE ACROSS CANVAS */}
             {currentPrice > 0 && (
+              <line
+                x1={padding.left}
+                y1={geometry.getY(currentPrice)}
+                x2={containerWidth - padding.right}
+                y2={geometry.getY(currentPrice)}
+                stroke="#38bdf8"
+                strokeWidth="1.2"
+                strokeDasharray="4 3"
+                opacity="0.85"
+              />
+            )}
+            </g>
+
+            {/* Live Price Tag on Right Axis (outside clip) */}
+            {currentPrice > 0 && (
               <g>
-                <line
-                  x1={padding.left}
-                  y1={geometry.getY(currentPrice)}
-                  x2={containerWidth - padding.right}
-                  y2={geometry.getY(currentPrice)}
-                  stroke="#38bdf8"
-                  strokeWidth="1.2"
-                  strokeDasharray="4 3"
-                  opacity="0.85"
-                />
-                {/* Live Price Tag on Right Axis */}
                 <rect
                   x={containerWidth - padding.right + 2}
                   y={geometry.getY(currentPrice) - 9}
@@ -1232,6 +1424,16 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
                   RSI (14) OSCILLATOR
                 </text>
 
+                {/* 30-70 Envelope Shading */}
+                <rect
+                  x={padding.left}
+                  y={geometry.getRsiY(70)}
+                  width={plotWidth}
+                  height={Math.max(0, geometry.getRsiY(30) - geometry.getRsiY(70))}
+                  fill="#8b5cf6"
+                  fillOpacity="0.06"
+                />
+
                 {/* Overbought (70) and Oversold (30) Reference Lines */}
                 <line
                   x1={padding.left}
@@ -1252,6 +1454,18 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
                 >
                   70 OB
                 </text>
+
+                {/* 50 Midline */}
+                <line
+                  x1={padding.left}
+                  y1={geometry.getRsiY(50)}
+                  x2={containerWidth - padding.right}
+                  y2={geometry.getRsiY(50)}
+                  stroke="#475569"
+                  strokeDasharray="1 3"
+                  strokeWidth="0.8"
+                  opacity="0.4"
+                />
 
                 <line
                   x1={padding.left}
@@ -1288,33 +1502,61 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
             {/* X-AXIS TIMESTAMPS & DATES */}
             <g className="x-axis-labels">
-              {slicedCandles.map((c, idx) => {
-                // Show label every ~6 candles or on day boundaries
-                const prev = slicedCandles[idx - 1];
-                const isDayBoundary = prev && c.timestamp.split('T')[0] !== prev.timestamp.split('T')[0];
-                const shouldShow = idx % 6 === 0 || isDayBoundary;
-                if (!shouldShow) return null;
+              {/* Horizontal baseline */}
+              <line
+                x1={padding.left}
+                y1={mainHeight + volumeHeight + rsiHeight}
+                x2={containerWidth - padding.right}
+                y2={mainHeight + volumeHeight + rsiHeight}
+                stroke="#334155"
+                strokeWidth="1"
+              />
 
-                const x = geometry.getX(idx);
-                const y = totalSvgHeight - 12;
+              {(() => {
+                const totalCandles = slicedCandles.length;
+                const approxStep = Math.max(1, Math.round(totalCandles / 8));
+                let lastRenderedX = -999;
 
-                return (
-                  <g key={`x-time-${idx}`}>
-                    <line x1={x} y1={mainHeight + volumeHeight + rsiHeight} x2={x} y2={mainHeight + volumeHeight + rsiHeight + 4} stroke="#475569" />
-                    <text
-                      x={x}
-                      y={y}
-                      fill={isDayBoundary ? '#38bdf8' : '#94a3b8'}
-                      fontSize="9.5"
-                      fontFamily="monospace"
-                      fontWeight={isDayBoundary ? 'bold' : 'normal'}
-                      textAnchor="middle"
-                    >
-                      {isDayBoundary ? formatIstDate(c.timestamp) : formatIstTime(c.timestamp)}
-                    </text>
-                  </g>
-                );
-              })}
+                return slicedCandles.map((c, idx) => {
+                  const prev = slicedCandles[idx - 1];
+                  const isDayBoundary = prev && c.timestamp.split('T')[0] !== prev.timestamp.split('T')[0];
+                  const isRegularInterval = idx % approxStep === 0;
+
+                  if (!isDayBoundary && !isRegularInterval && idx !== totalCandles - 1) return null;
+
+                  const x = geometry.getX(idx);
+                  if (x - lastRenderedX < 60 && !isDayBoundary) return null;
+                  lastRenderedX = x;
+
+                  const y = totalSvgHeight - 12;
+
+                  return (
+                    <g key={`x-time-${idx}`}>
+                      <line
+                        x1={x}
+                        y1={mainHeight + volumeHeight + rsiHeight}
+                        x2={x}
+                        y2={mainHeight + volumeHeight + rsiHeight + 5}
+                        stroke={isDayBoundary ? '#38bdf8' : '#475569'}
+                        strokeWidth={isDayBoundary ? '1.5' : '1'}
+                      />
+                      <text
+                        x={x}
+                        y={y}
+                        fill={isDayBoundary ? '#38bdf8' : '#94a3b8'}
+                        fontSize="9.5"
+                        fontFamily="monospace"
+                        fontWeight={isDayBoundary ? '700' : '500'}
+                        textAnchor="middle"
+                      >
+                        {isDayBoundary
+                          ? `${formatIstDate(c.timestamp)} ${formatIstTime(c.timestamp)}`
+                          : formatIstTime(c.timestamp)}
+                      </text>
+                    </g>
+                  );
+                });
+              })()}
             </g>
 
             {/* INTERACTIVE CROSSHAIR & MAGNETIC INDICATOR TRACKERS */}

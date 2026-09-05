@@ -1278,12 +1278,15 @@ class DatabaseEngine {
         CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_created ON ema_paper_trades(created_at DESC);
       `);
 
-      // Ensure auto_paper_trading_enabled column exists on settings table
+      // Ensure auto_paper_trading_enabled and telegram_bot_token columns exist on settings table
       try {
         const settingsCols = this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[];
         const colNames = new Set(settingsCols.map(c => c.name as string));
         if (!colNames.has('auto_paper_trading_enabled')) {
           this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN auto_paper_trading_enabled INTEGER DEFAULT 1;`);
+        }
+        if (!colNames.has('telegram_bot_token')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN telegram_bot_token TEXT;`);
         }
       } catch (e) {
         // Ignore column check error
@@ -1294,6 +1297,25 @@ class DatabaseEngine {
         VALUES (6, '15-Minute EMA Automatic Paper Trading Engine Tables');
       `).run();
       console.log('DatabaseEngine: Applied Migration 006 - 15m EMA Paper Trading Engine Tables.');
+    }
+
+    // Migration 007: Add telegram_bot_token column to ema_notification_settings
+    if (!appliedVersions.has(7)) {
+      try {
+        const settingsCols = this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[];
+        const colNames = new Set(settingsCols.map(c => c.name as string));
+        if (!colNames.has('telegram_bot_token')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN telegram_bot_token TEXT;`);
+        }
+      } catch (e) {
+        // Ignore column check error
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (7, 'Add telegram_bot_token column to ema_notification_settings');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 007 - Add telegram_bot_token column.');
     }
   }
 
@@ -2225,7 +2247,8 @@ class DatabaseEngine {
       browserEnabled: true,
       soundEnabled: true,
       autoPaperTradingEnabled: true,
-      telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+      telegramChatId: '-1003922058891',
+      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '8984654249:AAH617z02aocw8LIFGi2wpboA-DD40NAcp8',
       emailAddress: process.env.SMTP_USER || '',
       soundVolume: 0.8
     };
@@ -2233,7 +2256,10 @@ class DatabaseEngine {
     if (!this.db) return defaultSettings;
     try {
       const uId = userId || 'GLOBAL';
-      const row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = ?`).get(uId) as any;
+      let row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = ?`).get(uId) as any;
+      if (!row && uId !== 'GLOBAL') {
+        row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = 'GLOBAL'`).get() as any;
+      }
       if (!row) return defaultSettings;
       return {
         userId: row.user_id,
@@ -2242,7 +2268,8 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
-        telegramChatId: row.telegram_chat_id || process.env.TELEGRAM_CHAT_ID || '',
+        telegramChatId: row.telegram_chat_id || '-1003922058891',
+        telegramBotToken: row.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '8984654249:AAH617z02aocw8LIFGi2wpboA-DD40NAcp8',
         emailAddress: row.email_address || process.env.SMTP_USER || '',
         soundVolume: row.sound_volume !== null ? Number(row.sound_volume) : 0.8,
         updatedAt: row.updated_at
@@ -2258,8 +2285,8 @@ class DatabaseEngine {
       const uId = userId || settings.userId || 'GLOBAL';
       this.db.prepare(`
         INSERT INTO ema_notification_settings (
-          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, telegram_chat_id, email_address, sound_volume, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, telegram_chat_id, telegram_bot_token, email_address, sound_volume, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
           telegram_enabled = excluded.telegram_enabled,
           email_enabled = excluded.email_enabled,
@@ -2267,6 +2294,7 @@ class DatabaseEngine {
           sound_enabled = excluded.sound_enabled,
           auto_paper_trading_enabled = excluded.auto_paper_trading_enabled,
           telegram_chat_id = excluded.telegram_chat_id,
+          telegram_bot_token = excluded.telegram_bot_token,
           email_address = excluded.email_address,
           sound_volume = excluded.sound_volume,
           updated_at = CURRENT_TIMESTAMP
@@ -2278,6 +2306,7 @@ class DatabaseEngine {
         settings.soundEnabled ? 1 : 0,
         settings.autoPaperTradingEnabled !== false ? 1 : 0,
         settings.telegramChatId || null,
+        settings.telegramBotToken || null,
         settings.emailAddress || null,
         settings.soundVolume ?? 0.8
       );

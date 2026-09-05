@@ -1236,6 +1236,9 @@ async function startServer() {
       const userId = user ? user.id : 'GLOBAL';
       const settings = req.body;
       dbEngine.saveEmaNotificationSettings(settings, userId);
+      if (userId !== 'GLOBAL') {
+        dbEngine.saveEmaNotificationSettings(settings, 'GLOBAL');
+      }
       const updated = dbEngine.getEmaNotificationSettings(userId);
       res.json({ success: true, settings: updated });
     } catch (err: any) {
@@ -1246,11 +1249,11 @@ async function startServer() {
   // 7. Send Test Alert (Telegram or Email)
   app.post('/api/ema15m/test-notification', async (req, res) => {
     try {
-      const { channel, target } = req.body;
+      const { channel, target, botToken } = req.body;
       if (!channel || (channel !== 'TELEGRAM' && channel !== 'EMAIL')) {
         return res.status(400).json({ error: 'Channel must be TELEGRAM or EMAIL' });
       }
-      const result = await globalNotificationService.testNotification(channel, target);
+      const result = await globalNotificationService.testNotification(channel, target, botToken);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1355,6 +1358,11 @@ async function startServer() {
       const enabled = req.body?.enabled !== undefined ? req.body.enabled : !settings.autoPaperTradingEnabled;
       settings.autoPaperTradingEnabled = enabled;
       dbEngine.saveEmaNotificationSettings(settings, userId);
+      if (userId !== 'GLOBAL') {
+        const globalSettings = dbEngine.getEmaNotificationSettings('GLOBAL');
+        globalSettings.autoPaperTradingEnabled = enabled;
+        dbEngine.saveEmaNotificationSettings(globalSettings, 'GLOBAL');
+      }
       const updated = dbEngine.getEmaNotificationSettings(userId);
       res.json({
         success: true,
@@ -1372,7 +1380,7 @@ async function startServer() {
   // -------------------------------------------------------------
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa'
     });
     app.use(vite.middlewares);

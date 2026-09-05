@@ -58,7 +58,7 @@ export class NotificationService {
     // 1. Telegram Dispatch
     if (settings.telegramEnabled) {
       const chatId = settings.telegramChatId || process.env.TELEGRAM_CHAT_ID;
-      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      const botToken = settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
 
       if (botToken && chatId) {
         const tgSuccess = await this.sendTelegramAlert(signal, botToken, chatId);
@@ -71,7 +71,11 @@ export class NotificationService {
           channel: 'TELEGRAM',
           status: 'SKIPPED',
           attemptedAt: new Date().toISOString(),
-          errorMessage: 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured'
+          errorMessage: !botToken && !chatId
+            ? 'Neither Telegram Bot Token nor Chat ID is configured'
+            : !botToken
+              ? 'Telegram Bot Token is not configured'
+              : 'Telegram Chat ID is not configured'
         });
       }
     }
@@ -300,7 +304,11 @@ ${headerEmoji} <b>15-MINUTE EMA CROSSOVER ALERT</b> ${headerEmoji}
   /**
    * Test notification utility for checking user settings
    */
-  public async testNotification(channel: 'TELEGRAM' | 'EMAIL', target?: string): Promise<{ success: boolean; message: string }> {
+  public async testNotification(
+    channel: 'TELEGRAM' | 'EMAIL',
+    target?: string,
+    botTokenInput?: string
+  ): Promise<{ success: boolean; message: string }> {
     const dummySignal: Ema15mSignal = {
       id: `test-signal-${Date.now()}`,
       instrument: 'NIFTY',
@@ -315,26 +323,39 @@ ${headerEmoji} <b>15-MINUTE EMA CROSSOVER ALERT</b> ${headerEmoji}
       createdAt: new Date().toISOString()
     };
 
+    const currentSettings = dbEngine.getEmaNotificationSettings();
+
     if (channel === 'TELEGRAM') {
-      const botToken = process.env.TELEGRAM_BOT_TOKEN;
-      const chatId = target || process.env.TELEGRAM_CHAT_ID;
+      const botToken = botTokenInput || currentSettings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
+      const chatId = target || currentSettings.telegramChatId || process.env.TELEGRAM_CHAT_ID;
       if (!botToken || !chatId) {
-        return { success: false, message: 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured in .env' };
+        return {
+          success: false,
+          message: !botToken && !chatId
+            ? 'Both Telegram Bot Token and Chat ID are missing. Enter them in the settings dialog.'
+            : !botToken
+              ? 'Telegram Bot Token is missing. Enter your Bot Token from @BotFather.'
+              : 'Telegram Chat ID is missing. Enter your numeric Chat ID or channel username.'
+        };
       }
       const ok = await this.sendTelegramAlert(dummySignal, botToken, chatId);
       return {
         success: ok,
-        message: ok ? 'Telegram test alert delivered successfully!' : 'Failed to deliver Telegram test message. Check bot token and chat ID.'
+        message: ok
+          ? `Telegram test alert delivered successfully to ${chatId}!`
+          : 'Failed to deliver Telegram message. Please check that: 1) Bot Token is correct. 2) Chat ID is correct. 3) You sent /start to your bot in Telegram first!'
       };
     } else {
-      const email = target || process.env.SMTP_USER;
+      const email = target || currentSettings.emailAddress || process.env.SMTP_USER;
       if (!email) {
-        return { success: false, message: 'No target email address provided and SMTP_USER is empty.' };
+        return { success: false, message: 'No target email address provided. Please enter a valid recipient email.' };
       }
       const ok = await this.sendEmailAlert(dummySignal, email);
       return {
         success: ok,
-        message: ok ? `Email test alert sent successfully to ${email}!` : 'Failed to send test email. Verify SMTP credentials.'
+        message: ok
+          ? `Email test alert sent successfully to ${email}!`
+          : 'Failed to send test email. Please check your recipient email address and ensure SMTP is accessible.'
       };
     }
   }

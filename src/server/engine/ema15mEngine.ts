@@ -445,64 +445,72 @@ export class Ema15mEngine {
   public recalculateAllIndicators(candles: Ema15mCandle[]): void {
     if (candles.length === 0) return;
 
-    // 1. Calculate EMA 23 & EMA 50
-    let ema23 = 0;
-    let ema50 = 0;
+    // 1. Calculate EMA 23 & EMA 50 with continuous initialization
+    // Ensures indicators cover 100% of the chart without missing/undefined early spans
+    let ema23 = candles[0].close;
+    let ema50 = candles[0].close;
 
     for (let i = 0; i < candles.length; i++) {
       const close = candles[i].close;
 
-      // EMA 23
-      if (i < this.EMA_23_PERIOD - 1) {
-        candles[i].ema23 = undefined;
-      } else if (i === this.EMA_23_PERIOD - 1) {
-        const sum = candles.slice(0, this.EMA_23_PERIOD).reduce((acc, c) => acc + c.close, 0);
-        ema23 = sum / this.EMA_23_PERIOD;
-        candles[i].ema23 = Number(ema23.toFixed(2));
+      if (i === 0) {
+        ema23 = close;
+        ema50 = close;
       } else {
-        ema23 = (close - ema23) * this.EMA_23_MULTIPLIER + ema23;
-        candles[i].ema23 = Number(ema23.toFixed(2));
+        const k23 = i < this.EMA_23_PERIOD ? 2 / (i + 2) : this.EMA_23_MULTIPLIER;
+        const k50 = i < this.EMA_50_PERIOD ? 2 / (i + 2) : this.EMA_50_MULTIPLIER;
+        ema23 = (close - ema23) * k23 + ema23;
+        ema50 = (close - ema50) * k50 + ema50;
       }
 
-      // EMA 50
-      if (i < this.EMA_50_PERIOD - 1) {
-        candles[i].ema50 = undefined;
-        candles[i].emaDifference = undefined;
-      } else if (i === this.EMA_50_PERIOD - 1) {
-        const sum = candles.slice(0, this.EMA_50_PERIOD).reduce((acc, c) => acc + c.close, 0);
-        ema50 = sum / this.EMA_50_PERIOD;
-        candles[i].ema50 = Number(ema50.toFixed(2));
-        if (candles[i].ema23 !== undefined) {
-          candles[i].emaDifference = Number((candles[i].ema23! - ema50).toFixed(2));
-        }
+      candles[i].ema23 = Number(ema23.toFixed(2));
+      candles[i].ema50 = Number(ema50.toFixed(2));
+      candles[i].emaDifference = Number((ema23 - ema50).toFixed(2));
+    }
+
+    // 2. Evaluate historical crossover signals (Bullish ▲ and Bearish ▼)
+    for (let i = 0; i < candles.length; i++) {
+      if (i === 0) {
+        if (!candles[i].signal) candles[i].signal = 'NONE';
+        continue;
+      }
+      const prev = candles[i - 1];
+      const curr = candles[i];
+      if (prev.ema23 !== undefined && prev.ema50 !== undefined && curr.ema23 !== undefined && curr.ema50 !== undefined) {
+        curr.signal = this.evaluateCrossover(prev.ema23, prev.ema50, curr.ema23, curr.ema50);
       } else {
-        ema50 = (close - ema50) * this.EMA_50_MULTIPLIER + ema50;
-        candles[i].ema50 = Number(ema50.toFixed(2));
-        if (candles[i].ema23 !== undefined) {
-          candles[i].emaDifference = Number((candles[i].ema23! - ema50).toFixed(2));
-        }
+        curr.signal = 'NONE';
       }
     }
 
-    // 2. Calculate RSI (14)
+    // 3. Calculate RSI (14) with expanding window warmup for full span coverage
     const RSI_PERIOD = 14;
     let avgGain = 0;
     let avgLoss = 0;
+    let sumGain = 0;
+    let sumLoss = 0;
 
-    for (let i = 1; i < candles.length; i++) {
+    for (let i = 0; i < candles.length; i++) {
+      if (i === 0) {
+        candles[i].rsi14 = 50;
+        continue;
+      }
+
       const change = candles[i].close - candles[i - 1].close;
       const gain = change > 0 ? change : 0;
       const loss = change < 0 ? -change : 0;
 
-      if (i < RSI_PERIOD) {
-        avgGain += gain;
-        avgLoss += loss;
-        candles[i].rsi14 = undefined;
-      } else if (i === RSI_PERIOD) {
-        avgGain = (avgGain + gain) / RSI_PERIOD;
-        avgLoss = (avgLoss + loss) / RSI_PERIOD;
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+      if (i <= RSI_PERIOD) {
+        sumGain += gain;
+        sumLoss += loss;
+        const curAvgGain = sumGain / i;
+        const curAvgLoss = sumLoss / i;
+        const rs = curAvgLoss === 0 ? 100 : curAvgGain / curAvgLoss;
         candles[i].rsi14 = Number((100 - (100 / (1 + rs))).toFixed(2));
+        if (i === RSI_PERIOD) {
+          avgGain = curAvgGain;
+          avgLoss = curAvgLoss;
+        }
       } else {
         avgGain = (avgGain * (RSI_PERIOD - 1) + gain) / RSI_PERIOD;
         avgLoss = (avgLoss * (RSI_PERIOD - 1) + loss) / RSI_PERIOD;
@@ -511,7 +519,7 @@ export class Ema15mEngine {
       }
     }
 
-    // 3. Calculate Intraday VWAP (Resets on each trading day)
+    // 4. Calculate Intraday VWAP (Resets cleanly on each trading day)
     let cumVolumePrice = 0;
     let cumVolume = 0;
     let currentDayStr = '';
@@ -534,26 +542,22 @@ export class Ema15mEngine {
       candles[i].vwap = cumVolume > 0 ? Number((cumVolumePrice / cumVolume).toFixed(2)) : c.close;
     }
 
-    // 4. Calculate Bollinger Bands (20, 2)
+    // 5. Calculate Bollinger Bands (20, 2) with expanding window warmup
     const BB_PERIOD = 20;
     for (let i = 0; i < candles.length; i++) {
-      if (i < BB_PERIOD - 1) {
-        candles[i].bbUpper = undefined;
-        candles[i].bbMiddle = undefined;
-        candles[i].bbLower = undefined;
-      } else {
-        const slice = candles.slice(i - BB_PERIOD + 1, i + 1);
-        const mean = slice.reduce((acc, item) => acc + item.close, 0) / BB_PERIOD;
-        const variance = slice.reduce((acc, item) => acc + Math.pow(item.close - mean, 2), 0) / BB_PERIOD;
-        const stdDev = Math.sqrt(variance);
+      const windowSize = Math.min(i + 1, BB_PERIOD);
+      const slice = candles.slice(Math.max(0, i - windowSize + 1), i + 1);
+      const mean = slice.reduce((acc, item) => acc + item.close, 0) / windowSize;
+      const variance = slice.reduce((acc, item) => acc + Math.pow(item.close - mean, 2), 0) / windowSize;
+      const stdDev = Math.sqrt(variance);
 
-        candles[i].bbMiddle = Number(mean.toFixed(2));
-        candles[i].bbUpper = Number((mean + 2 * stdDev).toFixed(2));
-        candles[i].bbLower = Number((mean - 2 * stdDev).toFixed(2));
-      }
+      candles[i].bbMiddle = Number(mean.toFixed(2));
+      const effectiveStdDev = stdDev > 0 ? stdDev : mean * 0.002;
+      candles[i].bbUpper = Number((mean + 2 * effectiveStdDev).toFixed(2));
+      candles[i].bbLower = Number((mean - 2 * effectiveStdDev).toFixed(2));
     }
 
-    // 5. Calculate ATR (14)
+    // 6. Calculate ATR (14)
     const ATR_PERIOD = 14;
     let atr = 0;
     for (let i = 0; i < candles.length; i++) {
@@ -572,6 +576,55 @@ export class Ema15mEngine {
           atr = (atr * (ATR_PERIOD - 1) + tr) / ATR_PERIOD;
         }
         candles[i].atr = Number(atr.toFixed(2));
+      }
+    }
+
+    // 7. Calculate Central Pivot Range (CPR) and Daily Pivots for each trading day
+    // Group candles by calendar date (IST day)
+    const dayMap = new Map<string, Ema15mCandle[]>();
+    for (const c of candles) {
+      const day = c.timestamp.split('T')[0];
+      if (!dayMap.has(day)) {
+        dayMap.set(day, []);
+      }
+      dayMap.get(day)!.push(c);
+    }
+
+    const sortedDays = Array.from(dayMap.keys()).sort();
+    for (let d = 0; d < sortedDays.length; d++) {
+      const currentDay = sortedDays[d];
+      const currentDayCandles = dayMap.get(currentDay)!;
+
+      // Find the previous trading day
+      let prevDayCandles: Ema15mCandle[] = [];
+      if (d > 0) {
+        prevDayCandles = dayMap.get(sortedDays[d - 1])!;
+      } else {
+        prevDayCandles = currentDayCandles.slice(0, Math.max(1, Math.floor(currentDayCandles.length / 2)));
+      }
+
+      if (prevDayCandles.length > 0) {
+        const pH = Math.max(...prevDayCandles.map(c => c.high));
+        const pL = Math.min(...prevDayCandles.map(c => c.low));
+        const pC = prevDayCandles[prevDayCandles.length - 1].close;
+
+        const P = Number(((pH + pL + pC) / 3).toFixed(2));
+        const BC = Number(((pH + pL) / 2).toFixed(2));
+        const TC = Number(((P - BC) + P).toFixed(2));
+        const R1 = Number((2 * P - pL).toFixed(2));
+        const S1 = Number((2 * P - pH).toFixed(2));
+        const R2 = Number((P + (pH - pL)).toFixed(2));
+        const S2 = Number((P - (pH - pL)).toFixed(2));
+
+        for (const c of currentDayCandles) {
+          c.cprP = P;
+          c.cprBC = BC;
+          c.cprTC = TC;
+          c.cprR1 = R1;
+          c.cprS1 = S1;
+          c.cprR2 = R2;
+          c.cprS2 = S2;
+        }
       }
     }
   }
@@ -711,55 +764,12 @@ export class Ema15mEngine {
 
     if (raw.length === 0) return [];
 
-    // 1. Filter by explicit custom date range if supplied
-    if (startDate || endDate) {
-      const start = startDate ? new Date(startDate).getTime() : 0;
-      const end = endDate ? new Date(endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`).getTime() : Infinity;
-      raw = raw.filter(c => {
-        const t = new Date(c.timestamp).getTime();
-        return t >= start && t <= end;
-      });
-    } else if (range) {
-      // 2. Filter by Preset Ranges (1D, 2D, 3D, 4D, 5D, 6D, 1W, 1M, 3M, 6M, 1Y, ALL)
-      const r = range.toUpperCase();
-      const daysMatch = r.match(/^(\d+)D$/);
+    // Ensure raw candles are sorted chronologically
+    raw.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-      if (daysMatch) {
-        const daysCount = parseInt(daysMatch[1], 10);
-        // Extract distinct trading session dates present in the candle history
-        const distinctDates = Array.from(new Set(raw.map(c => c.timestamp.split('T')[0]))).sort();
-        const selectedDates = distinctDates.slice(-daysCount);
-        const selectedDateSet = new Set(selectedDates);
-        raw = raw.filter(c => selectedDateSet.has(c.timestamp.split('T')[0]));
-      } else if (r === '1W') {
-        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        raw = raw.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-      } else if (r === '1M') {
-        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-        raw = raw.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-      } else if (r === '3M') {
-        const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-        raw = raw.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-      } else if (r === '6M') {
-        const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
-        raw = raw.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-      } else if (r === '1Y') {
-        const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
-        raw = raw.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-      }
-      // If r === 'ALL', no filtering needed
-    }
-
-    if (raw.length === 0) return [];
-
-    // If requesting default 15m without explicit downsampling
-    if (timeframe === '15m') {
-      const sliced = (!range && !startDate && !endDate) ? raw.slice(-limit) : raw;
-      this.recalculateAllIndicators(sliced);
-      return sliced;
-    }
-
-    // Timeframe aggregation logic (for 1m, 3m, 5m, 1h, 1d)
+    // 1. Resample / aggregate to requested timeframe across the ENTIRE continuous series
+    // (This guarantees all technical indicators have complete historical warmup regardless of timeframe)
+    let processedSeries: Ema15mCandle[] = raw;
     const intervalMap: Record<string, number> = {
       '1m': 1,
       '3m': 3,
@@ -770,39 +780,61 @@ export class Ema15mEngine {
     };
     const targetMinutes = intervalMap[timeframe] || 15;
 
-    if (targetMinutes >= 15) {
-      const groupSize = Math.max(1, Math.round(targetMinutes / 15));
+    if (targetMinutes >= 375 || timeframe === '1d') {
+      // 1D: Group by actual calendar trading day
+      const dayMap = new Map<string, Ema15mCandle[]>();
+      for (const c of raw) {
+        const day = c.timestamp.split('T')[0];
+        if (!dayMap.has(day)) dayMap.set(day, []);
+        dayMap.get(day)!.push(c);
+      }
       const aggregated: Ema15mCandle[] = [];
-
-      for (let i = 0; i < raw.length; i += groupSize) {
-        const chunk = raw.slice(i, i + groupSize);
-        if (chunk.length === 0) continue;
-
-        const open = chunk[0].open;
-        const close = chunk[chunk.length - 1].close;
-        const high = Math.max(...chunk.map(c => c.high));
-        const low = Math.min(...chunk.map(c => c.low));
-        const volume = chunk.reduce((acc, c) => acc + (c.volume || 0), 0);
-        const timestamp = chunk[0].timestamp;
-
+      for (const [day, dayCandles] of dayMap.entries()) {
+        if (dayCandles.length === 0) continue;
         aggregated.push({
           instrument: inst,
-          timeframe,
-          timestamp,
-          open,
-          high,
-          low,
-          close,
-          volume,
-          isClosed: chunk[chunk.length - 1].isClosed
+          timeframe: '1d',
+          timestamp: `${day}T09:15:00.000Z`,
+          open: dayCandles[0].open,
+          high: Math.max(...dayCandles.map(c => c.high)),
+          low: Math.min(...dayCandles.map(c => c.low)),
+          close: dayCandles[dayCandles.length - 1].close,
+          volume: dayCandles.reduce((acc, c) => acc + (c.volume || 0), 0),
+          isClosed: dayCandles[dayCandles.length - 1].isClosed
         });
       }
+      processedSeries = aggregated;
+    } else if (targetMinutes > 15) {
+      // 1H: Group within each day (4 candles of 15m = 1 hour, without bleeding across days)
+      const dayMap = new Map<string, Ema15mCandle[]>();
+      for (const c of raw) {
+        const day = c.timestamp.split('T')[0];
+        if (!dayMap.has(day)) dayMap.set(day, []);
+        dayMap.get(day)!.push(c);
+      }
+      const aggregated: Ema15mCandle[] = [];
+      const groupSize = Math.max(1, Math.round(targetMinutes / 15));
 
-      const sliced = (!range && !startDate && !endDate) ? aggregated.slice(-limit) : aggregated;
-      this.recalculateAllIndicators(sliced);
-      return sliced;
-    } else {
-      const subRatio = 15 / targetMinutes;
+      for (const [, dayCandles] of dayMap.entries()) {
+        for (let i = 0; i < dayCandles.length; i += groupSize) {
+          const chunk = dayCandles.slice(i, i + groupSize);
+          if (chunk.length === 0) continue;
+          aggregated.push({
+            instrument: inst,
+            timeframe,
+            timestamp: chunk[0].timestamp,
+            open: chunk[0].open,
+            high: Math.max(...chunk.map(c => c.high)),
+            low: Math.min(...chunk.map(c => c.low)),
+            close: chunk[chunk.length - 1].close,
+            volume: chunk.reduce((acc, c) => acc + (c.volume || 0), 0),
+            isClosed: chunk[chunk.length - 1].isClosed
+          });
+        }
+      }
+      processedSeries = aggregated;
+    } else if (targetMinutes < 15) {
+      const subRatio = Math.max(1, Math.round(15 / targetMinutes));
       const subCandles: Ema15mCandle[] = [];
 
       for (const c of raw) {
@@ -810,13 +842,34 @@ export class Ema15mEngine {
         const stepMs = targetMinutes * 60 * 1000;
         let subOpen = c.open;
 
+        // Determine natural distribution for high and low excursions
+        const isBull = c.close >= c.open;
+        const peakIdx = isBull ? Math.min(subRatio - 2, Math.max(1, Math.floor(subRatio * 0.6))) : Math.max(0, Math.floor(subRatio * 0.25));
+        const troughIdx = isBull ? Math.max(0, Math.floor(subRatio * 0.25)) : Math.min(subRatio - 2, Math.max(1, Math.floor(subRatio * 0.6)));
+
         for (let s = 0; s < subRatio; s++) {
           const subFraction = (s + 1) / subRatio;
           const targetSubClose = s === subRatio - 1 ? c.close : c.open + (c.close - c.open) * subFraction;
           const subClose = Number(targetSubClose.toFixed(2));
-          const subHigh = Number(Math.max(subOpen, subClose, c.high).toFixed(2));
-          const subLow = Number(Math.min(subOpen, subClose, c.low).toFixed(2));
-          const subVol = Math.floor((c.volume || 1000) / subRatio);
+
+          let subHigh = Math.max(subOpen, subClose);
+          let subLow = Math.min(subOpen, subClose);
+
+          if (s === peakIdx) {
+            subHigh = Math.max(subHigh, c.high);
+          } else {
+            const microWick = Math.max(0.1, (c.high - Math.max(c.open, c.close)) * 0.18);
+            subHigh = Number((subHigh + microWick).toFixed(2));
+          }
+
+          if (s === troughIdx) {
+            subLow = Math.min(subLow, c.low);
+          } else {
+            const microWick = Math.max(0.1, (Math.min(c.open, c.close) - c.low) * 0.18);
+            subLow = Number((subLow - microWick).toFixed(2));
+          }
+
+          const subVol = Math.max(50, Math.floor((c.volume || 1000) / subRatio));
 
           subCandles.push({
             instrument: inst,
@@ -832,11 +885,56 @@ export class Ema15mEngine {
           subOpen = subClose;
         }
       }
-
-      const sliced = (!range && !startDate && !endDate) ? subCandles.slice(-limit) : subCandles;
-      this.recalculateAllIndicators(sliced);
-      return sliced;
+      processedSeries = subCandles;
     }
+
+    // 2. Compute ALL indicators (EMA 23, EMA 50, Bollinger, RSI, VWAP, ATR, Crossover Signals)
+    // on the COMPLETE continuous history so warmup is 100% complete and mature
+    this.recalculateAllIndicators(processedSeries);
+
+    // 3. Filter / Slice the mature series by user's requested range or custom dates
+    let result = processedSeries;
+
+    if (startDate || endDate) {
+      const start = startDate ? new Date(startDate).getTime() : 0;
+      const end = endDate ? new Date(endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`).getTime() : Infinity;
+      result = processedSeries.filter(c => {
+        const t = new Date(c.timestamp).getTime();
+        return t >= start && t <= end;
+      });
+    } else if (range) {
+      const r = range.toUpperCase();
+      const daysMatch = r.match(/^(\d+)D$/);
+
+      if (daysMatch) {
+        const daysCount = parseInt(daysMatch[1], 10);
+        // Extract distinct trading session dates present in the candle history
+        const distinctDates = Array.from(new Set(processedSeries.map(c => c.timestamp.split('T')[0]))).sort();
+        const selectedDates = distinctDates.slice(-daysCount);
+        const selectedDateSet = new Set(selectedDates);
+        result = processedSeries.filter(c => selectedDateSet.has(c.timestamp.split('T')[0]));
+      } else if (r === '1W') {
+        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        result = processedSeries.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+      } else if (r === '1M') {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        result = processedSeries.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+      } else if (r === '3M') {
+        const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        result = processedSeries.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+      } else if (r === '6M') {
+        const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
+        result = processedSeries.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+      } else if (r === '1Y') {
+        const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+        result = processedSeries.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+      }
+      // If r === 'ALL', no filtering needed
+    } else {
+      result = processedSeries.slice(-limit);
+    }
+
+    return result;
   }
 
   /**

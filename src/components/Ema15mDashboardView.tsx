@@ -25,8 +25,13 @@ import {
   X,
   Layers,
   Sparkles,
-  ExternalLink
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Info,
+  Mail
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext.js';
 import {
   Ema15mInstrument,
   Ema15mInstrumentStatus,
@@ -40,6 +45,7 @@ import {
 import { ExpertTraderChart } from './ExpertTraderChart.js';
 
 export const Ema15mDashboardView: React.FC = () => {
+  const { user } = useAuth();
   // State
   const [instrumentsStatus, setInstrumentsStatus] = useState<Ema15mInstrumentStatus[]>([]);
   const [marketHours, setMarketHours] = useState<{ isMarketOpen: boolean; message: string; istTime: string } | null>(null);
@@ -66,12 +72,14 @@ export const Ema15mDashboardView: React.FC = () => {
 
   // Notification Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [showBotToken, setShowBotToken] = useState<boolean>(false);
   const [settings, setSettings] = useState<EmaNotificationSettings>({
     telegramEnabled: true,
     emailEnabled: false,
     browserEnabled: true,
     soundEnabled: true,
     telegramChatId: '',
+    telegramBotToken: '',
     emailAddress: '',
     soundVolume: 0.8
   });
@@ -226,7 +234,11 @@ export const Ema15mDashboardView: React.FC = () => {
     try {
       const res = await fetch('/api/ema15m/settings');
       if (res.ok) {
-        const data = await res.json();
+        const data: EmaNotificationSettings = await res.json();
+        // If emailAddress is empty or default noreply, prefill with authenticated user's email
+        if ((!data.emailAddress || data.emailAddress.includes('noreply@aaditechs.in')) && user?.email) {
+          data.emailAddress = user.email;
+        }
         setSettings(data);
       }
     } catch (err) {
@@ -256,10 +268,11 @@ export const Ema15mDashboardView: React.FC = () => {
     setTestResult(null);
     try {
       const target = channel === 'TELEGRAM' ? settings.telegramChatId : settings.emailAddress;
+      const botToken = channel === 'TELEGRAM' ? settings.telegramBotToken : undefined;
       const res = await fetch('/api/ema15m/test-notification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, target })
+        body: JSON.stringify({ channel, target, botToken })
       });
       const data = await res.json();
       setTestResult({ channel, message: data.message, success: data.success });
@@ -1238,62 +1251,123 @@ export const Ema15mDashboardView: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
               {/* Telegram Section */}
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-200 flex items-center space-x-1.5">
-                    <span>Telegram Alerts</span>
-                  </span>
+                  <div className="flex items-center space-x-2">
+                    <Send className="w-4 h-4 text-cyan-400" />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">Telegram Alerts</span>
+                      <p className="text-[11px] text-slate-400">Receive 15m EMA crossover alerts directly on Telegram</p>
+                    </div>
+                  </div>
                   <input
                     type="checkbox"
                     checked={settings.telegramEnabled}
                     onChange={(e) => setSettings({ ...settings, telegramEnabled: e.target.checked })}
-                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500"
+                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
                   />
                 </div>
-                <input
-                  type="text"
-                  placeholder="Telegram Chat ID (e.g. 123456789 or @channel)"
-                  value={settings.telegramChatId || ''}
-                  onChange={(e) => setSettings({ ...settings, telegramChatId: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono"
-                />
+
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 block mb-1">
+                      Telegram Bot Token:
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showBotToken ? "text" : "password"}
+                        placeholder="e.g. 7123456789:AAH7bQx..."
+                        value={settings.telegramBotToken || ''}
+                        onChange={(e) => setSettings({ ...settings, telegramBotToken: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-3 pr-9 py-1.5 text-xs text-slate-200 font-mono focus:border-cyan-500 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowBotToken(!showBotToken)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        title={showBotToken ? "Hide Token" : "Show Token"}
+                      >
+                        {showBotToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Create a bot on Telegram via <span className="text-cyan-400 font-mono">@BotFather</span> and paste the HTTP API token here.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 block mb-1">
+                      Telegram Chat ID / Channel:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 123456789 or @your_channel"
+                      value={settings.telegramChatId || ''}
+                      onChange={(e) => setSettings({ ...settings, telegramChatId: e.target.value })}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono focus:border-cyan-500 focus:outline-none"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Send <span className="text-cyan-400 font-mono">/start</span> to your bot first. Find your numeric Chat ID via <span className="text-cyan-400 font-mono">@userinfobot</span>.
+                    </p>
+                  </div>
+                </div>
+
                 <button
+                  type="button"
                   onClick={() => handleTestNotification('TELEGRAM')}
                   disabled={isTestingNotif}
-                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold flex items-center space-x-1"
+                  className="w-full text-xs bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 font-semibold py-1.5 px-3 rounded-lg flex items-center justify-center space-x-1.5 transition disabled:opacity-50"
                 >
                   <Send className="w-3 h-3" />
-                  <span>Send Test Telegram Message</span>
+                  <span>{isTestingNotif ? 'Sending Test Message...' : 'Send Test Telegram Message'}</span>
                 </button>
               </div>
 
               {/* Email Section */}
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-200">Email Alerts (SMTP / Nodemailer)</span>
+                  <div className="flex items-center space-x-2">
+                    <Mail className="w-4 h-4 text-emerald-400" />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">Email Alerts (Hostinger SMTP)</span>
+                      <p className="text-[11px] text-slate-400">Receive HTML alerts with entry price, stop-loss & targets</p>
+                    </div>
+                  </div>
                   <input
                     type="checkbox"
                     checked={settings.emailEnabled}
                     onChange={(e) => setSettings({ ...settings, emailEnabled: e.target.checked })}
-                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500"
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                   />
                 </div>
-                <input
-                  type="email"
-                  placeholder="Recipient Email Address"
-                  value={settings.emailAddress || ''}
-                  onChange={(e) => setSettings({ ...settings, emailAddress: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200"
-                />
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-400 block mb-1">
+                    Recipient Email Address:
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="e.g. yourname@gmail.com"
+                    value={settings.emailAddress || ''}
+                    onChange={(e) => setSettings({ ...settings, emailAddress: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-emerald-500/80 mt-1 flex items-center space-x-1">
+                    <CheckCircle className="w-3 h-3" />
+                    <span>Hostinger SMTP relay is configured and operational on the server.</span>
+                  </p>
+                </div>
+
                 <button
+                  type="button"
                   onClick={() => handleTestNotification('EMAIL')}
                   disabled={isTestingNotif}
-                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold flex items-center space-x-1"
+                  className="w-full text-xs bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-800/60 text-emerald-300 font-semibold py-1.5 px-3 rounded-lg flex items-center justify-center space-x-1.5 transition disabled:opacity-50"
                 >
-                  <Send className="w-3 h-3" />
-                  <span>Send Test Email Alert</span>
+                  <Mail className="w-3 h-3" />
+                  <span>{isTestingNotif ? 'Sending Test Email...' : 'Send Test Email Alert'}</span>
                 </button>
               </div>
 
