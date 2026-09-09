@@ -13,6 +13,7 @@ import { BacktesterView } from './components/BacktesterView.js';
 import { AutonomousRunnerView } from './components/AutonomousRunnerView.js';
 import { PersonalAiPlatformView } from './components/PersonalAiPlatformView.js';
 import { Ema15mDashboardView } from './components/Ema15mDashboardView.js';
+import { QuantIntelligenceDashboard } from './components/QuantIntelligenceDashboard.js';
 import { AiNarrationPanel } from './components/AiNarrationPanel.js';
 import { DocumentationView } from './components/DocumentationView.js';
 import { AuthModal } from './components/AuthModal.js';
@@ -181,6 +182,10 @@ export default function App() {
 
         {activeTab === 'ema15m' && (
           <Ema15mDashboardView />
+        )}
+
+        {activeTab === 'quant' && (
+          <QuantIntelligenceDashboard />
         )}
 
         {activeTab === 'chain' && (

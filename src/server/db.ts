@@ -1317,6 +1317,99 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 007 - Add telegram_bot_token column.');
     }
+
+    // Migration 008: Quant Intelligence Module Tables (v2 Spec)
+    if (!appliedVersions.has(8)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS quant_option_chain_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          market_ts TEXT NOT NULL,
+          ingestion_ts TEXT NOT NULL,
+          underlying TEXT NOT NULL,
+          expiry TEXT NOT NULL,
+          strike REAL NOT NULL,
+          option_type TEXT NOT NULL,
+          ltp REAL,
+          bid REAL,
+          ask REAL,
+          bid_qty INTEGER,
+          ask_qty INTEGER,
+          volume INTEGER,
+          oi INTEGER,
+          oi_change INTEGER,
+          iv REAL,
+          delta REAL,
+          gamma REAL,
+          theta REAL,
+          vega REAL,
+          source TEXT NOT NULL,
+          data_quality TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_strategies (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          family TEXT NOT NULL,
+          status TEXT NOT NULL,
+          definition_json TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_backtests (
+          id TEXT PRIMARY KEY,
+          strategy_id TEXT NOT NULL,
+          strategy_version INTEGER NOT NULL,
+          period_start TEXT NOT NULL,
+          period_end TEXT NOT NULL,
+          sample_size INTEGER NOT NULL,
+          expectancy REAL,
+          profit_factor REAL,
+          sharpe REAL,
+          sortino REAL,
+          max_drawdown REAL,
+          cost_model_id TEXT NOT NULL,
+          passed_gates INTEGER NOT NULL DEFAULT 0,
+          result_json TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_audit_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          actor TEXT NOT NULL,
+          action TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_experiments (
+          id TEXT PRIMARY KEY,
+          hypothesis_name TEXT NOT NULL,
+          hypothesis_text TEXT NOT NULL,
+          parameters_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          result_json TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quant_snaps_query ON quant_option_chain_snapshots(underlying, expiry, market_ts);
+        CREATE INDEX IF NOT EXISTS idx_quant_strategies_status ON quant_strategies(status);
+        CREATE INDEX IF NOT EXISTS idx_quant_backtests_strat ON quant_backtests(strategy_id, strategy_version);
+        CREATE INDEX IF NOT EXISTS idx_quant_audit_entity ON quant_audit_logs(entity_type, entity_id);
+      `);
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (8, 'Quant Intelligence Module Tables');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 008 - Quant Intelligence Module Tables.');
+    }
   }
 
   /**
@@ -2581,6 +2674,233 @@ class DatabaseEngine {
     } catch (err) {
       console.error('[DB] Error computing EMA paper trading summary:', err);
       return defaultSummary;
+    }
+  }
+
+  // -------------------------------------------------------------
+  // QUANT INTELLIGENCE PERSISTENCE METHODS (Migration 008)
+  // -------------------------------------------------------------
+
+  public saveQuantOptionSnapshot(s: any): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO quant_option_chain_snapshots (
+          market_ts, ingestion_ts, underlying, expiry, strike, option_type,
+          ltp, bid, ask, bid_qty, ask_qty, volume, oi, oi_change,
+          iv, delta, gamma, theta, vega, source, data_quality
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
+        s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
+        s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant option snapshot:', err);
+    }
+  }
+
+  public saveQuantOptionSnapshotsBatch(snaps: any[]): void {
+    if (!this.db || !snaps || snaps.length === 0) return;
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO quant_option_chain_snapshots (
+          market_ts, ingestion_ts, underlying, expiry, strike, option_type,
+          ltp, bid, ask, bid_qty, ask_qty, volume, oi, oi_change,
+          iv, delta, gamma, theta, vega, source, data_quality
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const insertMany = this.db.transaction((items: any[]) => {
+        for (const s of items) {
+          stmt.run(
+            s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
+            s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
+            s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+          );
+        }
+      });
+      insertMany(snaps);
+    } catch (err) {
+      console.error('[DB] Error batch saving quant option snapshots:', err);
+    }
+  }
+
+  public getLatestQuantOptionSnapshots(underlying: string, expiry?: string): any[] {
+    if (!this.db) return [];
+    try {
+      let query = `
+        SELECT * FROM quant_option_chain_snapshots
+        WHERE underlying = ?
+      `;
+      const params: any[] = [underlying];
+      if (expiry) {
+        query += ` AND expiry = ?`;
+        params.push(expiry);
+      }
+      query += ` ORDER BY market_ts DESC, strike ASC LIMIT 200`;
+      return this.db.prepare(query).all(...params);
+    } catch (err) {
+      console.error('[DB] Error getting quant option snapshots:', err);
+      return [];
+    }
+  }
+
+  public saveQuantStrategy(strat: any): void {
+    if (!this.db) return;
+    try {
+      const existing = this.db.prepare(`SELECT id FROM quant_strategies WHERE id = ?`).get(strat.id);
+      if (existing) {
+        this.db.prepare(`
+          UPDATE quant_strategies SET
+            name = ?, version = ?, family = ?, status = ?, definition_json = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(strat.name, strat.version, strat.family, strat.status, JSON.stringify(strat), strat.id);
+      } else {
+        this.db.prepare(`
+          INSERT INTO quant_strategies (id, name, version, family, status, definition_json)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(strat.id, strat.name, strat.version, strat.family, strat.status, JSON.stringify(strat));
+      }
+    } catch (err) {
+      console.error('[DB] Error saving quant strategy:', err);
+    }
+  }
+
+  public getQuantStrategies(family?: string, status?: string): any[] {
+    if (!this.db) return [];
+    try {
+      let query = `SELECT * FROM quant_strategies WHERE 1=1`;
+      const params: any[] = [];
+      if (family && family !== 'ALL') {
+        query += ` AND family = ?`;
+        params.push(family);
+      }
+      if (status && status !== 'ALL') {
+        query += ` AND status = ?`;
+        params.push(status);
+      }
+      query += ` ORDER BY updated_at DESC`;
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => {
+        try {
+          return JSON.parse(r.definition_json);
+        } catch {
+          return { id: r.id, name: r.name, version: r.version, family: r.family, status: r.status };
+        }
+      });
+    } catch (err) {
+      console.error('[DB] Error getting quant strategies:', err);
+      return [];
+    }
+  }
+
+  public saveQuantBacktest(res: any): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO quant_backtests (
+          id, strategy_id, strategy_version, period_start, period_end,
+          sample_size, expectancy, profit_factor, sharpe, sortino,
+          max_drawdown, cost_model_id, passed_gates, result_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        res.id, res.strategyId, res.strategyVersion, res.periodStart, res.periodEnd,
+        res.sampleSize, res.expectancyR || res.expectancy || 0, res.profitFactor, res.sharpeRatio || res.sharpe || 0,
+        res.sortinoRatio || res.sortino || 0, res.maxDrawdownPct || res.maxDrawdown || 0,
+        res.costModelId || 'default_nse_options_v1', res.passedGates ? 1 : 0, JSON.stringify(res)
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant backtest:', err);
+    }
+  }
+
+  public getQuantBacktests(strategyId?: string): any[] {
+    if (!this.db) return [];
+    try {
+      let query = `SELECT * FROM quant_backtests`;
+      const params: any[] = [];
+      if (strategyId) {
+        query += ` WHERE strategy_id = ?`;
+        params.push(strategyId);
+      }
+      query += ` ORDER BY created_at DESC LIMIT 50`;
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => {
+        try {
+          return JSON.parse(r.result_json);
+        } catch {
+          return r;
+        }
+      });
+    } catch (err) {
+      console.error('[DB] Error getting quant backtests:', err);
+      return [];
+    }
+  }
+
+  public saveQuantAuditLog(log: any): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO quant_audit_logs (actor, action, entity_type, entity_id, before_json, after_json, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        log.actor || 'system',
+        log.action,
+        log.entityType,
+        log.entityId,
+        log.beforeState ? JSON.stringify(log.beforeState) : null,
+        log.afterState ? JSON.stringify(log.afterState) : null,
+        log.reason || ''
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant audit log:', err);
+    }
+  }
+
+  public getQuantAuditLogs(limit: number = 100): any[] {
+    if (!this.db) return [];
+    try {
+      return this.db.prepare(`SELECT * FROM quant_audit_logs ORDER BY created_at DESC LIMIT ?`).all(limit);
+    } catch (err) {
+      console.error('[DB] Error getting quant audit logs:', err);
+      return [];
+    }
+  }
+
+  public saveQuantExperiment(exp: any): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO quant_experiments (id, hypothesis_name, hypothesis_text, parameters_json, status, result_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        exp.id, exp.hypothesisName, exp.hypothesisText,
+        JSON.stringify(exp.parameters || {}),
+        exp.status || 'RUNNING',
+        exp.result ? JSON.stringify(exp.result) : null
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant experiment:', err);
+    }
+  }
+
+  public getQuantExperiments(limit: number = 50): any[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`SELECT * FROM quant_experiments ORDER BY created_at DESC LIMIT ?`).all(limit) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        hypothesisName: r.hypothesis_name,
+        hypothesisText: r.hypothesis_text,
+        parameters: JSON.parse(r.parameters_json || '{}'),
+        status: r.status,
+        result: r.result_json ? JSON.parse(r.result_json) : null,
+        createdAt: r.created_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting quant experiments:', err);
+      return [];
     }
   }
 }

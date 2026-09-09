@@ -64,7 +64,7 @@ const formatVolNumber = (num?: number): string => {
 
 export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
   symbol,
-  candles,
+  candles = [],
   signals = [],
   currentPrice,
   timeframe = '15m',
@@ -102,7 +102,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
       setVisibleCount(candles.length);
       setPanOffset(0);
     }
-  }, [candles.length, selectedRange, customStartDate, customEndDate]);
+  }, [candles?.length, selectedRange, customStartDate, customEndDate]);
 
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -147,7 +147,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
   // Convert raw candles to Heikin-Ashi if selected and ensure complete continuous indicator coverage
   const displayCandles = useMemo(() => {
-    if (candles.length === 0) return [];
+    if (!candles || candles.length === 0) return [];
 
     // Ensure all technical indicators (EMA 23, EMA 50, Bollinger, RSI, Signals) have complete coverage
     const enriched = candles.map(c => ({ ...c }));
@@ -445,8 +445,8 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
     // Classic Central Pivot Range (CPR) & Daily Pivot Points calculation
     let pivotLevels: { label: string; price: number; y: number; color: string }[] = [];
-    if (showPivots && (slicedCandles.length > 0 || candles.length > 0)) {
-      const activeCandle = slicedCandles[slicedCandles.length - 1] || candles[candles.length - 1];
+    if (showPivots && (slicedCandles.length > 0 || (candles && candles.length > 0))) {
+      const activeCandle = slicedCandles[slicedCandles.length - 1] || (candles && candles[candles.length - 1]);
       let P = activeCandle?.cprP;
       let BC = activeCandle?.cprBC;
       let TC = activeCandle?.cprTC;
@@ -457,7 +457,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
       // Fallback calculation if candle doesn't have precalculated CPR
       if (P === undefined) {
-        const sourceCandles = candles.length >= 5 ? candles : slicedCandles;
+        const sourceCandles = (candles && candles.length >= 5) ? candles : slicedCandles;
         const distinctDates = Array.from(new Set(sourceCandles.map(c => c.timestamp.split('T')[0]))).sort();
         let prevDayCandles: Ema15mCandle[] = [];
 

@@ -12,6 +12,8 @@ import {
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 
+export const COMMODITY_SYMBOLS = new Set(['GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER']);
+
 export class UpstoxProvider implements IMarketDataProvider {
   private accessToken: string = '';
   private apiKey: string = '';
@@ -31,8 +33,9 @@ export class UpstoxProvider implements IMarketDataProvider {
     'TCS': 'NSE_EQ|INE467B01029',
     'HDFCBANK': 'NSE_EQ|INE040A01034',
     'TATAMOTORS': 'NSE_EQ|INE155A01022',
-    'GOLD': 'MCX_COMM|GOLD',
-    'CRUDEOIL': 'MCX_COMM|CRUDEOIL'
+    'INFY': 'NSE_EQ|INE009A01021',
+    'SBIN': 'NSE_EQ|INE062A01020',
+    'ICICIBANK': 'NSE_EQ|INE090A01021'
   };
 
   public isUpstoxLiveConnected(): boolean {
@@ -138,62 +141,68 @@ export class UpstoxProvider implements IMarketDataProvider {
       return this.practiceFallback.getUnderlyingQuotes(symbols);
     }
 
-    try {
-      const upstoxKeys = symbols.map(s => this.symbolInstrumentKeyMap[s] || `NSE_EQ|${s}`);
-      const symbolParam = encodeURIComponent(upstoxKeys.join(','));
-      // Upstox v2 accepts instrument_key parameter for market quote quotes
-      const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${symbolParam}`;
+    // Separate symbols into equity/indices (supported by Upstox market-quote) and commodities
+    const equitySymbols = symbols.filter(s => !COMMODITY_SYMBOLS.has(s));
 
-      const res = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Accept': 'application/json'
-        }
-      });
+    if (equitySymbols.length > 0) {
+      try {
+        const upstoxKeys = equitySymbols.map(s => this.symbolInstrumentKeyMap[s] || `NSE_EQ|${s}`);
+        const symbolParam = encodeURIComponent(upstoxKeys.join(','));
+        // Upstox v2 accepts instrument_key parameter for market quote quotes
+        const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${symbolParam}`;
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} fetching Upstox quotes`);
-      }
+        const res = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+            'Accept': 'application/json'
+          }
+        });
 
-      const json: any = await res.json();
-      const quotesData = json?.data || {};
+        if (res.ok) {
+          const json: any = await res.json();
+          const quotesData = json?.data || {};
 
-      for (const sym of symbols) {
-        const upstoxKey = this.symbolInstrumentKeyMap[sym] || `NSE_EQ|${sym}`;
-        const keyWithColon = upstoxKey.replace('|', ':');
-        const altSensexKeys = sym === 'SENSEX' || sym === 'BSESENSEX'
-          ? ['BSE_INDEX|SENSEX', 'BSE_INDEX:SENSEX', 'BSE_INDEX|Sensex', 'BSE_INDEX:Sensex', 'BSE_INDEX|BSE SENSEX', 'BSE_INDEX:BSE SENSEX', 'SENSEX', 'Sensex']
-          : [];
+          for (const sym of equitySymbols) {
+            const upstoxKey = this.symbolInstrumentKeyMap[sym] || `NSE_EQ|${sym}`;
+            const keyWithColon = upstoxKey.replace('|', ':');
+            const altSensexKeys = sym === 'SENSEX' || sym === 'BSESENSEX'
+              ? ['BSE_INDEX|SENSEX', 'BSE_INDEX:SENSEX', 'BSE_INDEX|Sensex', 'BSE_INDEX:Sensex', 'BSE_INDEX|BSE SENSEX', 'BSE_INDEX:BSE SENSEX', 'SENSEX', 'Sensex']
+              : [];
 
-        let quote = quotesData[upstoxKey] || quotesData[keyWithColon] || quotesData[upstoxKey.split('|')[1]];
-        if (!quote && altSensexKeys.length > 0) {
-          for (const k of altSensexKeys) {
-            if (quotesData[k]) {
-              quote = quotesData[k];
-              break;
+            let quote = quotesData[upstoxKey] || quotesData[keyWithColon] || quotesData[upstoxKey.split('|')[1]];
+            if (!quote && altSensexKeys.length > 0) {
+              for (const k of altSensexKeys) {
+                if (quotesData[k]) {
+                  quote = quotesData[k];
+                  break;
+                }
+              }
+            }
+
+            if (quote && typeof quote.last_price === 'number' && quote.last_price > 0) {
+              resultMap.set(sym, {
+                symbol: sym,
+                spot: quote.last_price,
+                prevClose: quote.ohlc?.close || quote.last_price,
+                volume: quote.volume || 0,
+                available: true,
+                timestamp: new Date().toISOString()
+              });
             }
           }
+        } else {
+          console.warn(`[UPSTOX PROVIDER] Batch market quotes HTTP ${res.status}: falling back to calibrated feed`);
         }
-
-        if (quote && typeof quote.last_price === 'number' && quote.last_price > 0) {
-          resultMap.set(sym, {
-            symbol: sym,
-            spot: quote.last_price,
-            prevClose: quote.ohlc?.close || quote.last_price,
-            volume: quote.volume || 0,
-            available: true,
-            timestamp: new Date().toISOString()
-          });
-        }
+      } catch (err: any) {
+        console.warn('[UPSTOX PROVIDER] getUnderlyingQuotes warning:', err.message || err);
       }
-    } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getUnderlyingQuotes error:', err.message || err);
     }
 
-    // Fill missing symbols from practice fallback so UI is never blank
-    const fallbackQuotes = await this.practiceFallback.getUnderlyingQuotes(symbols);
-    for (const sym of symbols) {
-      if (!resultMap.has(sym) || !resultMap.get(sym)?.available || (resultMap.get(sym)?.spot || 0) <= 0) {
+    // Fill missing symbols (including commodities and any unreturned symbols) from calibrated fallback
+    const missingSymbols = symbols.filter(s => !resultMap.has(s) || !resultMap.get(s)?.available || (resultMap.get(s)?.spot || 0) <= 0);
+    if (missingSymbols.length > 0) {
+      const fallbackQuotes = await this.practiceFallback.getUnderlyingQuotes(missingSymbols);
+      for (const sym of missingSymbols) {
         const fb = fallbackQuotes.get(sym);
         if (fb) {
           resultMap.set(sym, fb);
@@ -211,7 +220,8 @@ export class UpstoxProvider implements IMarketDataProvider {
   ): Promise<Map<string, { ce: OptionContractQuote; pe: OptionContractQuote }>> {
     let resultMap = new Map<string, { ce: OptionContractQuote; pe: OptionContractQuote }>();
 
-    if (!this.isConnected || !this.accessToken) {
+    // If Upstox isn't authenticated or is a commodity, delegate to calibrated fallback
+    if (!this.isConnected || !this.accessToken || COMMODITY_SYMBOLS.has(symbol)) {
       return this.practiceFallback.getOptionChainQuotes(symbol, expiry, strikes);
     }
 

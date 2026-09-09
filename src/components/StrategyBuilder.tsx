@@ -47,7 +47,7 @@ export const StrategyBuilder: React.FC<StrategyBuilderProps> = ({
 
   // Helper to find closest strike row in snapshot strikes
   const findClosestRow = (targetK: number) => {
-    if (!snapshot.strikes.length) return null;
+    if (!snapshot?.strikes || !snapshot.strikes.length) return null;
     return snapshot.strikes.reduce((closest, curr) =>
       Math.abs(curr.strikePrice - targetK) < Math.abs(closest.strikePrice - targetK) ? curr : closest
     , snapshot.strikes[0]);

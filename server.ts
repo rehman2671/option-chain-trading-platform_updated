@@ -25,6 +25,9 @@ import { globalNotificationService } from './src/server/engine/notificationServi
 import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
 import { authRouter, attachUser, getUserFromRequest, requireAuth } from './src/server/auth.js';
+import { quantRouter } from './src/quant/api/quantRouter.js';
+import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron } from './src/server/engine/upstoxAuthService.js';
+import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -34,6 +37,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(attachUser);
 app.use('/api/auth', authRouter);
+app.use('/api/quant', quantRouter);
 
 // Authenticate and attach user (with guest/session fallback for paper trading)
 app.use(['/api/basket', '/api/autonomous'], requireAuth as any);
@@ -308,10 +312,32 @@ async function startServer() {
     res.json(globalMarketFeed.getActiveView());
   });
 
+  // Helper to determine the effective public base URL for OAuth callbacks
+  const getEffectiveBaseUrl = (req?: express.Request): string => {
+    if (req) {
+      const fProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const fHost = (req.headers['x-forwarded-host'] as string) || req.get('host');
+      if (fHost && !fHost.includes('localhost') && !fHost.includes('0.0.0.0')) {
+        return `${fProto}://${fHost}`;
+      }
+    }
+    if (process.env.UPSTOX_REDIRECT_URI) {
+      try {
+        const u = new URL(process.env.UPSTOX_REDIRECT_URI);
+        return `${u.protocol}//${u.host}`;
+      } catch {}
+    }
+    if (process.env.APP_URL && !process.env.APP_URL.includes('MY_APP_URL') && !process.env.APP_URL.includes('localhost')) {
+      return process.env.APP_URL.replace(/\/$/, '');
+    }
+    return 'https://option-chain-trading-platform.ai.studio';
+  };
+
   // Upstox Login Redirect Handler
   app.get('/api/upstox/login', (req, res) => {
     const apiKey = process.env.UPSTOX_API_KEY;
-    const redirectUri = process.env.UPSTOX_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/upstox/callback`;
+    const baseUrl = getEffectiveBaseUrl(req);
+    const redirectUri = process.env.UPSTOX_REDIRECT_URI || `${baseUrl}/api/upstox/callback`;
 
     if (!apiKey) {
       return res.status(400).send(`
@@ -334,7 +360,8 @@ async function startServer() {
     const code = req.query.code as string;
     const apiKey = process.env.UPSTOX_API_KEY;
     const apiSecret = process.env.UPSTOX_API_SECRET;
-    const redirectUri = process.env.UPSTOX_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/upstox/callback`;
+    const baseUrl = getEffectiveBaseUrl(req);
+    const redirectUri = process.env.UPSTOX_REDIRECT_URI || `${baseUrl}/api/upstox/callback`;
 
     if (!code) {
       return res.status(400).send(`
@@ -386,6 +413,7 @@ async function startServer() {
       // Dynamically activate token in runtime environment
       process.env.UPSTOX_ACCESS_TOKEN = accessToken;
       activeProvider.connect().catch((e: any) => console.warn('[UPSTOX] Runtime connect error:', e.message));
+      globalUpstoxStreamer.connect(accessToken).catch((e: any) => console.warn('[UPSTOX V3 STREAMER] Connect error:', e.message));
 
       res.send(`
         <!DOCTYPE html>
@@ -430,6 +458,46 @@ async function startServer() {
           </body>
         </html>
       `);
+    }
+  });
+
+  // Upstox Auth Status (Credentials check, Token health, Expiry)
+  app.get('/api/upstox/status', (req, res) => {
+    const status = getUpstoxAuthStatus();
+    res.json(status);
+  });
+
+  // Upstox V3 WebSocket Streamer Status (Zero-lag Protobuf stream metrics)
+  app.get('/api/upstox/streamer-status', (req, res) => {
+    res.json(globalUpstoxStreamer.getStatus());
+  });
+
+  // Upstox Automated TOTP Login Trigger (Executes headless TOTP refresh)
+  app.all('/api/upstox/auto-login', async (req, res) => {
+    try {
+      const serverBaseUrl = getEffectiveBaseUrl(req);
+      const result = await performUpstoxTOTPLogin(serverBaseUrl);
+      if (result.success) {
+        res.json({
+          status: 'success',
+          message: result.message,
+          expiresAt: result.expiresAt,
+          totpCode: result.totpCode
+        });
+      } else {
+        res.status(result.error === 'MISSING_API_CREDENTIALS' || result.error === 'MISSING_TOTP_CREDENTIALS' ? 400 : 422).json({
+          status: 'error',
+          message: result.message,
+          error: result.error,
+          totpCode: result.totpCode,
+          fallbackUrl: result.fallbackUrl
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({
+        status: 'error',
+        message: err.message || 'Failed to execute automated TOTP login'
+      });
     }
   });
 
@@ -1394,6 +1462,11 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Option Chain Trading Platform Server running on http://0.0.0.0:${PORT}`);
+    initializeUpstoxAutoRefreshCron(process.env.APP_URL || `http://localhost:${PORT}`);
+    if (process.env.UPSTOX_ACCESS_TOKEN) {
+      console.log('[UPSTOX] Starting Upstox V3 Protobuf WebSocket Streamer...');
+      globalUpstoxStreamer.connect(process.env.UPSTOX_ACCESS_TOKEN).catch(e => console.warn('[UPSTOX V3 STREAMER] Startup error:', e.message));
+    }
   });
 }
 

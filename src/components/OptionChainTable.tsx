@@ -21,7 +21,7 @@ export const OptionChainTable: React.FC<OptionChainTableProps> = ({
   const [showBuildup, setShowBuildup] = useState(true);
   const [strikeRangeFilter, setStrikeRangeFilter] = useState<number>(10); // Number of strikes around ATM
 
-  if (!snapshot || snapshot.strikes.length === 0) {
+  if (!snapshot || !snapshot.strikes || snapshot.strikes.length === 0) {
     return (
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center font-mono shadow-xl">
         <Sparkles className="w-10 h-10 text-cyan-400 mx-auto mb-3 animate-pulse" />
@@ -54,10 +54,11 @@ export const OptionChainTable: React.FC<OptionChainTableProps> = ({
   }
 
   // Filter strikes centered around ATM
-  const atmIndex = snapshot.strikes.findIndex(s => s.isAtm);
-  const startIdx = Math.max(0, atmIndex - strikeRangeFilter);
-  const endIdx = Math.min(snapshot.strikes.length - 1, atmIndex + strikeRangeFilter);
-  const visibleStrikes = snapshot.strikes.slice(startIdx, endIdx + 1);
+  const strikes = snapshot.strikes || [];
+  const atmIndex = strikes.findIndex(s => s.isAtm);
+  const startIdx = Math.max(0, (atmIndex >= 0 ? atmIndex : Math.floor(strikes.length / 2)) - strikeRangeFilter);
+  const endIdx = Math.min(Math.max(0, strikes.length - 1), (atmIndex >= 0 ? atmIndex : Math.floor(strikes.length / 2)) + strikeRangeFilter);
+  const visibleStrikes = strikes.slice(startIdx, endIdx + 1);
 
   const getBuildupBadgeClass = (buildup: string) => {
     switch (buildup) {

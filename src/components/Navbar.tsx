@@ -20,6 +20,7 @@ import {
   LogIn, 
   Compass, 
   Radio,
+  Brain,
   Pin,
   PinOff,
   PanelTopClose,
@@ -122,6 +123,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const tabs = [
     { id: 'platform', label: 'AI Platform (5 Pillars)', icon: Compass },
+    { id: 'quant', label: 'Quant Intelligence', icon: Brain },
     { id: 'ema15m', label: '15m EMA Alerts', icon: Radio },
     { id: 'chain', label: 'Option Chain', icon: BarChart3 },
     { id: 'strategy', label: 'Strategy & Payoff', icon: Layers },
@@ -205,6 +207,25 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
                 <span className="text-[10px] font-mono uppercase text-slate-300">SYSTEM: ACTIVE</span>
               </div>
+
+              {/* Upstox Live Broker Connection Indicator & 1-Click Login */}
+              {snapshot?.isBrokerConnected ? (
+                <div className="hidden sm:flex items-center space-x-1.5 bg-emerald-950/60 border border-emerald-500/50 px-2 py-1 rounded" title="Upstox API v2 & V3 Protobuf WebSocket Feed Active">
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+                  <span className="text-[10px] font-mono text-emerald-300 font-bold uppercase">UPSTOX: V3 STREAM</span>
+                </div>
+              ) : (
+                <a
+                  href="/api/upstox/login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center space-x-1.5 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-500/60 hover:border-amber-400 px-2.5 py-1 rounded transition-all group"
+                  title="Click to authorize Upstox session"
+                >
+                  <div className="w-2 h-2 rounded-full bg-amber-400 group-hover:animate-ping"></div>
+                  <span className="text-[10px] font-mono text-amber-300 font-bold uppercase tracking-tight">CONNECT UPSTOX</span>
+                </a>
+              )}
 
               {/* User Authentication Badge / Account Controls */}
               {user ? (

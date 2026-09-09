@@ -362,6 +362,42 @@ export class MarketFeedEngine {
     return { symbol: this.activeViewSymbol, expiry: this.activeViewExpiry };
   }
 
+  /**
+   * Ingest a sub-second tick from Upstox V3 Protobuf WebSocket Streamer
+   * Updates spot, calculates delta moves, persists tick to SQLite WAL, and triggers 15m EMA Engine
+   */
+  public updateLiveSpot(symbol: string, spot: number, prevClose?: number, volume?: number, vix?: number): void {
+    if (spot <= 0) return;
+    const cfg = UNDERLYING_CONFIGS[symbol];
+    const oldSpot = this.currentSpots.get(symbol) || (cfg ? cfg.baseSpotPrice : spot);
+    const pc = (prevClose && prevClose > 0) ? prevClose : (this.prevCloses.get(symbol) || oldSpot);
+    const change = spot - pc;
+    const pChange = pc > 0 ? (change / pc) * 100 : 0;
+
+    this.currentSpots.set(symbol, spot);
+    this.prevCloses.set(symbol, pc);
+    this.spotMovePercents.set(symbol, pChange);
+    this.spotLiveFlags.set(symbol, true);
+    if (vix && vix > 0) {
+      this.indiaVixMap.set(symbol, vix);
+    }
+
+    // Persist real-time tick in SQLite WAL database
+    dbEngine.recordTick(symbol, spot, vix || (cfg ? cfg.indiaVixBase : 15.0), volume || 0);
+
+    // Feed tick directly into 15m EMA Strategy Engine
+    if (symbol === 'NIFTY' || symbol === 'BANKNIFTY' || symbol === 'SENSEX') {
+      globalEma15mEngine.ingestTick(symbol, spot, volume || 0);
+    }
+
+    // Invalidate stale snapshot cache for fast client refresh
+    if (cfg && cfg.expiries) {
+      for (const exp of cfg.expiries.slice(0, 2)) {
+        this.lastSnapshotTime.delete(`${symbol}_${exp}`);
+      }
+    }
+  }
+
   private async pollLoop(): Promise<void> {
     const now = Date.now();
     try {

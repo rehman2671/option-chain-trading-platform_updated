@@ -201,10 +201,10 @@ export const BacktesterView: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const filteredTrades = result?.trades.filter(t => {
+  const filteredTrades = result?.trades ? result.trades.filter(t => {
     if (filterResult === 'ALL') return true;
     return t.result === filterResult;
-  }) || [];
+  }) : [];
 
   return (
     <div className="space-y-6 font-mono text-xs max-w-7xl mx-auto">
@@ -589,7 +589,7 @@ export const BacktesterView: React.FC = () => {
               <div>
                 <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
                   <Activity className="w-4 h-4 text-cyan-400" />
-                  <span>Replayed Trade Execution Log ({result.trades.length} Total Trades)</span>
+                  <span>Replayed Trade Execution Log ({result.trades?.length || 0} Total Trades)</span>
                 </h3>
                 <p className="text-[10px] text-slate-400">Tick-by-tick entries, exits, option premium decay and trigger causes</p>
               </div>
@@ -603,7 +603,7 @@ export const BacktesterView: React.FC = () => {
                       filterResult === 'ALL' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    All ({result.trades.length})
+                    All ({result.trades?.length || 0})
                   </button>
                   <button
                     onClick={() => setFilterResult('WIN')}
