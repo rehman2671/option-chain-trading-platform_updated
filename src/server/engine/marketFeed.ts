@@ -1,6 +1,6 @@
 /**
  * Delta Chain Market Feed & Option Chain Engine
- * Orchestrates Market Data Providers (Practice Mode vs Kite Live Mode)
+ * Orchestrates Market Data Providers (Practice Mode vs Upstox Live Mode)
  * Computes Black-Scholes Greeks, OI buildup, Max Pain, PCR, and persists snapshots to SQLite
  */
 
@@ -517,7 +517,7 @@ export class MarketFeedEngine {
       strikesList.push(K);
     }
 
-    // Fetch quotes from active provider (Practice Mode vs Kite)
+    // Fetch quotes from active provider (Practice Mode vs Upstox)
     let providerQuotes = new Map<string, any>();
     try {
       providerQuotes = await activeProvider.getOptionChainQuotes(symbol, expiry, strikesList);
@@ -866,10 +866,6 @@ export class MarketFeedEngine {
   }
 
   public getUpstoxProvider(): any {
-    return activeProvider;
-  }
-
-  public getKiteClient(): any {
     return activeProvider;
   }
 }

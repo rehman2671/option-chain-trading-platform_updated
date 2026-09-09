@@ -1,6 +1,6 @@
 /**
  * Historical Option Strategy Backtesting Engine
- * Queries recorded historical ticks & option chains from SQLite (populated by Zerodha market feed)
+ * Queries recorded historical ticks & option chains from SQLite (populated by market data feed)
  * and replays trades chronologically without look-ahead bias.
  */
 

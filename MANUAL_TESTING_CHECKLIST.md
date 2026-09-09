@@ -1,6 +1,6 @@
-# Manual Testing Checklist — Hybrid Practice & Kite Live Modes
+# Manual Testing Checklist — Hybrid Practice & Upstox Live Modes
 
-This document provides step-by-step verification instructions for testing **Delta Chain** in both **Practice Mode** (free Yahoo Spot + NSE Option Chain) and **Live Mode** (Zerodha Kite Connect REST/WebSocket).
+This document provides step-by-step verification instructions for testing **Delta Chain** in both **Practice Mode** (free Yahoo Spot + NSE Option Chain) and **Live Mode** (Upstox API v3 Protobuf WebSocket).
 
 ---
 
@@ -36,7 +36,7 @@ This document provides step-by-step verification instructions for testing **Delt
 - [ ] Restart server and attempt to submit a Basket Order from the **Basket Orders** tab.
 - [ ] Verify order execution succeeds as a paper order and logs:
   `[PRACTICE MODE] Paper order execution. No real orders sent to exchange.`
-- [ ] Confirm that NO attempt is made to call Zerodha `placeOrder` or broker APIs.
+- [ ] Confirm that NO attempt is made to call broker live trade APIs.
 - [ ] Check SQLite table `paper_positions` to confirm paper trade persistence:
   ```sql
   SELECT * FROM paper_positions ORDER BY opened_at DESC;
@@ -49,42 +49,42 @@ This document provides step-by-step verification instructions for testing **Delt
 
 ---
 
-## Section B — Live Mode Testing (`DATA_PROVIDER=kite`)
+## Section B — Live Mode Testing (`DATA_PROVIDER=upstox`)
 
-> **Goal:** Validate real-time WebSocket streaming, Zerodha Kite Connect session management, live market feed, real margin calculations, and sequenced basket order execution.
+> **Goal:** Validate real-time Protobuf WebSocket streaming, Upstox v3 session management, live market feed, real margin calculations, and sequenced basket order execution.
 
 ### B.1 Credentials Setup & Authentication
 - [ ] Set environment variables in `.env`:
   ```env
-  DATA_PROVIDER=kite
-  KITE_API_KEY=your_api_key
-  KITE_API_SECRET=your_api_secret
-  KITE_ACCESS_TOKEN=your_daily_access_token
+  DATA_PROVIDER=upstox
+  UPSTOX_API_KEY=your_api_key
+  UPSTOX_API_SECRET=your_api_secret
+  UPSTOX_REDIRECT_URI=http://localhost:3000/api/upstox/callback
   DRY_RUN=true # Start in Dry Run mode first
   ```
-- [ ] Navigate to `http://localhost:3000/api/kite/callback` or complete Zerodha OAuth login flow.
-- [ ] Verify access token generation page displays token cleanly and provides step-by-step guidance.
+- [ ] Navigate to `http://localhost:3000/api/upstox/login` or click **Connect Upstox** in the UI.
+- [ ] Verify token generation succeeds and session is persisted.
 
 ### B.2 System Health & WebSocket Connection
-- [ ] Query system health endpoint:
+- [ ] Query system streamer status endpoint:
   ```bash
-  curl http://localhost:3000/api/system/health
+  curl http://localhost:3000/api/upstox/streamer-status
   ```
-- [ ] Confirm `mode` is `"LIVE"`.
-- [ ] Confirm `connectionStatus.overallConnected` is `true`.
-- [ ] Confirm `websocket.enabled` is `true` and `websocket.connected` is `true`.
+- [ ] Confirm `connected` is `true`.
+- [ ] Confirm `protocol` is `"WEBSOCKET_V3_PROTOBUF"`.
+- [ ] Confirm `totalTicksReceived` increments with streaming market ticks.
 
 ### B.3 Real-Time Ticker Streaming
 - [ ] Open Option Chain tab.
 - [ ] Observe live price updates for NIFTY / BANKNIFTY / stock underlyings.
-- [ ] Confirm ticks arrive via `KiteTicker` WebSocket without needing full page reloads.
+- [ ] Confirm ticks arrive via Protobuf WebSocket without needing full page reloads.
 - [ ] Confirm tick records are inserted into SQLite `ticks` table.
 
 ### B.4 Real Pre-Trade Margin Gate Check
 - [ ] Navigate to **Basket Orders** tab.
 - [ ] Build a 4-leg Iron Condor or Straddle strategy.
 - [ ] Click **Check Margin Requirement**.
-- [ ] Confirm Zerodha `orderMargins` / `basketMargins` API is invoked and returns real SPAN + Exposure margin requirements and hedge benefit discounts.
+- [ ] Confirm SPAN + Exposure margin calculations return realistic requirements and hedge benefit discounts.
 - [ ] Confirm safety cushion calculation matches configured cushion percentage (default 12%).
 
 ### B.5 Sequenced Basket Execution (Dry Run vs Real Execution)
@@ -95,15 +95,13 @@ This document provides step-by-step verification instructions for testing **Delt
 - [ ] **Real Live Execution Test (`DRY_RUN=false`):**
   - *Caution:* Only perform during active market hours with deliberate small test orders.
   - Execute Basket Order.
-  - Confirm real Zerodha `order_id` is returned for each leg.
-  - Confirm order status polling (`COMPLETE` / `REJECTED`) reconciles state into SQLite `basket_orders`.
+  - Confirm order status polling reconciles state into SQLite `basket_orders`.
 
 ---
 
 ## Section C — Fail-Closed Safety Verification
 
-- [ ] Unset `KITE_ACCESS_TOKEN` while `DATA_PROVIDER=kite`.
-- [ ] Observe system behavior:
+- [ ] Check behavior when broker is disconnected:
   - App displays explicit disconnected banner: *"Broker disconnected — live data unavailable"*.
   - Option chain cells show explicit unavailable / disconnected state — NO fabricated or constant numbers.
   - Pre-trade margin gate blocks execution with recommendation: *"ORDER BLOCKED: Broker not connected"*.
@@ -148,4 +146,3 @@ This document provides step-by-step verification instructions for testing **Delt
 - [ ] Click **Reset Paper Account** button in Paper Trading terminal.
 - [ ] Confirm confirmation prompt appears.
 - [ ] Confirm virtual capital resets to ₹10,00,000, all open and closed positions are deleted from SQLite `paper_positions`, and portfolio summary reflects clean zero state.
-
