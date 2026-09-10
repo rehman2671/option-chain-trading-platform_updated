@@ -17,10 +17,11 @@ import {
   Ema15mBacktestTrade,
   EmaPaperTrade
 } from '../../types.js';
+import { EMA_15M_INSTRUMENTS } from '../../shared/marketConfig.js';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
-  private readonly INSTRUMENTS: Ema15mInstrument[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  private readonly INSTRUMENTS: readonly Ema15mInstrument[] = EMA_15M_INSTRUMENTS;
 
   // EMA Constants
   public readonly EMA_23_PERIOD = 23;
@@ -208,8 +209,8 @@ export class Ema15mEngine {
       return;
     }
 
-    // 1. Immediately update live mark-to-market P&L on all OPEN paper positions for this instrument
-    dbEngine.updateEmaPaperTradePrices(instrument, price);
+    // 1. Immediately update live mark-to-market P&L on all OPEN paper positions for this instrument via batching
+    this.updateOpenPaperTrades(instrument, price);
 
     const currentSlotTime = this.get15mSlotBoundary(timestamp);
     const active = this.activeCandles.get(instrument);
@@ -1207,6 +1208,33 @@ export class Ema15mEngine {
       candle: mockCandle,
       signal: latestSignal || undefined
     };
+  }
+
+  /**
+   * Batch update live mark-to-market P&L on all OPEN paper positions for this instrument
+   * using a single atomic SQLite transaction
+   */
+  public updateOpenPaperTrades(instrument: string, currentPrice: number): void {
+    const openTrades = dbEngine.getOpenEmaPaperTrades(instrument);
+    if (!openTrades || openTrades.length === 0) return;
+
+    const toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number }> = [];
+    const toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }> = [];
+
+    for (const trade of openTrades) {
+      const entryPrice = Number(trade.entryPrice);
+      const qty = Number(trade.quantity);
+      const isLong = trade.direction === 'LONG';
+      const unrealizedPnl = Number((isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty).toFixed(2));
+
+      toUpdate.push({
+        id: trade.id,
+        currentPrice,
+        unrealizedPnl
+      });
+    }
+
+    dbEngine.batchUpdateEmaPaperTrades({ toUpdate, toClose });
   }
 }
 

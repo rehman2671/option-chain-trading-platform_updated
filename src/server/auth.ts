@@ -8,7 +8,10 @@ import rateLimit from 'express-rate-limit';
 import { dbEngine } from './db.js';
 import { User } from '../types.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'option-chain-trading-jwt-secret-dev-2026';
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET env var is required and must be at least 32 chars');
+}
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
 const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
 

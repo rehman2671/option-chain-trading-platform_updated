@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary } from '../types.js';
+import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
 export interface MigrationReport {
   engine: string;
@@ -276,22 +277,33 @@ class DatabaseEngine {
     }, 120000);
   }
 
-  private pruneOldSnapshots(): void {
-    if (!this.db) return;
+  public pruneOldSnapshots(targetTickKeep: number = 40000, targetChainKeep: number = 80000): { prunedTicks: number; prunedChains: number } {
+    if (!this.db) return { prunedTicks: 0, prunedChains: 0 };
+    let prunedTicks = 0;
+    let prunedChains = 0;
     try {
-      // Keep most recent 50,000 ticks and 100,000 option chain rows
-      const tickCountRow = this.db.prepare(`SELECT COUNT(*) as c FROM ticks`).get() as any;
-      if (tickCountRow && tickCountRow.c > 60000) {
-        this.db.prepare(`DELETE FROM ticks WHERE id NOT IN (SELECT id FROM ticks ORDER BY id DESC LIMIT 40000)`).run();
+      const cutoffTick = this.db.prepare(
+        `SELECT id FROM ticks ORDER BY id DESC LIMIT 1 OFFSET ?`
+      ).get(targetTickKeep) as any;
+      if (cutoffTick && cutoffTick.id) {
+        const res = this.db.prepare(`DELETE FROM ticks WHERE id <= ?`).run(cutoffTick.id);
+        prunedTicks = res.changes;
       }
 
-      const chainCountRow = this.db.prepare(`SELECT COUNT(*) as c FROM option_chains`).get() as any;
-      if (chainCountRow && chainCountRow.c > 120000) {
-        this.db.prepare(`DELETE FROM option_chains WHERE id NOT IN (SELECT id FROM option_chains ORDER BY id DESC LIMIT 80000)`).run();
+      const cutoffChain = this.db.prepare(
+        `SELECT id FROM option_chains ORDER BY id DESC LIMIT 1 OFFSET ?`
+      ).get(targetChainKeep) as any;
+      if (cutoffChain && cutoffChain.id) {
+        const res = this.db.prepare(`DELETE FROM option_chains WHERE id <= ?`).run(cutoffChain.id);
+        prunedChains = res.changes;
       }
+
+      // Reclaim WAL pages passively without blocking active market feeds
+      this.db.pragma('wal_checkpoint(PASSIVE)');
     } catch (err) {
       this.handleRuntimeCorruption(err);
     }
+    return { prunedTicks, prunedChains };
   }
 
   private shutdownRegistered = false;
@@ -501,22 +513,24 @@ class DatabaseEngine {
   /**
    * Load all basket orders from SQLite
    */
-  public loadAllBasketOrders(userId?: string | null): BasketOrderRecord[] {
+  public loadAllBasketOrders(userId?: string | null, limit?: number, offset?: number): BasketOrderRecord[] {
     if (!this.db) return [];
     try {
+      const clampedLimit = limit !== undefined ? Math.min(Math.max(1, limit), 1000) : 100;
+      const safeOffset = offset !== undefined ? Math.max(0, offset) : 0;
       let rows: any[];
       if (userId) {
         rows = this.db.prepare(
-          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders WHERE user_id = ? ORDER BY created_at DESC`
-        ).all(userId) as any[];
+          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
+        ).all(userId, clampedLimit, safeOffset) as any[];
       } else if (userId === null) {
         rows = this.db.prepare(
-          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders WHERE user_id IS NULL ORDER BY created_at DESC`
-        ).all() as any[];
+          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders WHERE user_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`
+        ).all(clampedLimit, safeOffset) as any[];
       } else {
         rows = this.db.prepare(
-          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders ORDER BY created_at DESC`
-        ).all() as any[];
+          `SELECT id, strategy_id, strategy_name, symbol, status, margin_required, margin_available, fallback_action, reconciliation_status, legs_json, created_at FROM basket_orders ORDER BY created_at DESC LIMIT ? OFFSET ?`
+        ).all(clampedLimit, safeOffset) as any[];
       }
 
       return rows.map(row => ({
@@ -694,20 +708,126 @@ class DatabaseEngine {
   }
 
   /**
-   * Load paper positions from SQLite (filtered by user_id if supplied)
+   * Return only OPEN paper trading positions across all users for MTM valuation.
+   * Leverages idx_paper_positions_status to avoid full table scans.
    */
-  public loadAllPaperPositions(userId?: string | null): PaperPosition[] {
+  public getAllOpenPaperPositionsForMtm(userId?: string | null): PaperPosition[] {
     if (!this.db) return [];
     try {
       let rows: any[];
       if (userId) {
         rows = this.db.prepare(
-          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id FROM paper_positions WHERE user_id = ? OR user_id IS NULL ORDER BY opened_at DESC`
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, expiry, user_id 
+           FROM paper_positions 
+           WHERE status = 'OPEN' AND (user_id = ? OR user_id IS NULL)
+           ORDER BY opened_at DESC`
         ).all(userId) as any[];
       } else {
         rows = this.db.prepare(
-          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id FROM paper_positions ORDER BY opened_at DESC`
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, expiry, user_id 
+           FROM paper_positions 
+           WHERE status = 'OPEN'
+           ORDER BY opened_at DESC`
         ).all() as any[];
+      }
+
+      return rows.map(row => {
+        const entryPrice = row.entry_price as number;
+        const currentPrice = row.current_price as number;
+        const qty = row.quantity as number;
+        const pnl = row.pnl as number;
+        const pnlPercent = entryPrice > 0 ? Number((((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)) : 0;
+
+        return {
+          id: row.id as string,
+          strategyGroupId: (row.strategy_group_id as string) || (row.id as string),
+          legLabel: (row.leg_label as string) || undefined,
+          symbol: row.symbol as string,
+          strategyName: row.strategy_name as string,
+          strikePrice: row.strike_price as number,
+          type: row.option_type as any,
+          action: row.action as any,
+          quantity: qty,
+          lotSize: (row.lot_size as number) || 50,
+          entryPrice,
+          currentPrice,
+          pnl,
+          pnlPercent,
+          stopLoss: row.stop_loss ? Number(row.stop_loss) : undefined,
+          targetPrice: row.target_price ? Number(row.target_price) : undefined,
+          status: 'OPEN',
+          openedAt: row.opened_at as string,
+          expiry: row.expiry as string,
+          userId: row.user_id as string
+        };
+      });
+    } catch (err) {
+      console.error('Failed to load open paper positions for MTM:', err);
+      this.handleRuntimeCorruption(err);
+      return [];
+    }
+  }
+
+  /**
+   * Batch update paper positions MTM and auto-closures inside a single SQLite transaction
+   */
+  public batchUpdatePaperPositionsMtm(updates: {
+    toUpdate: Array<{ id: string; currentPrice: number; pnl: number }>;
+    toClose: Array<{ id: string; exitPrice: number; pnl: number; reason: string }>;
+  }): void {
+    if (!this.db) return;
+    if (updates.toUpdate.length === 0 && updates.toClose.length === 0) return;
+
+    try {
+      const updateStmt = this.db.prepare(
+        `UPDATE paper_positions SET current_price = ?, pnl = ? WHERE id = ? AND status = 'OPEN'`
+      );
+      const closeStmt = this.db.prepare(
+        `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN'`
+      );
+
+      const runBatch = this.db.transaction(() => {
+        const now = new Date().toISOString();
+        for (const item of updates.toClose) {
+          closeStmt.run(now, item.exitPrice, item.pnl, item.reason, item.id);
+        }
+        for (const item of updates.toUpdate) {
+          updateStmt.run(item.currentPrice, item.pnl, item.id);
+        }
+      });
+
+      runBatch();
+    } catch (err) {
+      console.error('Failed to batch update paper positions MTM:', err);
+      this.handleRuntimeCorruption(err);
+    }
+  }
+
+  /**
+   * Load paper positions from SQLite with optional limit and offset pagination clamping
+   * (default limit: 200, maxLimit: 1000). Backwards compatible when limit/offset omitted.
+   */
+  public loadAllPaperPositions(userId?: string | null, limit?: number, offset?: number): PaperPosition[] {
+    if (!this.db) return [];
+    try {
+      const clampedLimit = limit !== undefined ? Math.min(Math.max(1, limit), 1000) : 200;
+      const safeOffset = offset !== undefined ? Math.max(0, offset) : 0;
+      let rows: any[];
+      if (userId) {
+        rows = this.db.prepare(
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
+           FROM paper_positions 
+           WHERE user_id = ? OR user_id IS NULL 
+           ORDER BY opened_at DESC 
+           LIMIT ? OFFSET ?`
+        ).all(userId, clampedLimit, safeOffset) as any[];
+      } else {
+        rows = this.db.prepare(
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
+           FROM paper_positions 
+           ORDER BY opened_at DESC 
+           LIMIT ? OFFSET ?`
+        ).all(clampedLimit, safeOffset) as any[];
       }
 
       return rows.map(row => {
@@ -751,6 +871,65 @@ class DatabaseEngine {
   }
 
   /**
+   * Fast indexed single position lookup by ID
+   */
+  public getPaperPositionById(id: string, userId?: string | null): PaperPosition | null {
+    if (!this.db) return null;
+    try {
+      let row: any;
+      if (userId) {
+        row = this.db.prepare(
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
+           FROM paper_positions 
+           WHERE id = ? AND (user_id = ? OR user_id IS NULL)`
+        ).get(id, userId);
+      } else {
+        row = this.db.prepare(
+          `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
+           FROM paper_positions 
+           WHERE id = ?`
+        ).get(id);
+      }
+
+      if (!row) return null;
+      const entryPrice = row.entry_price as number;
+      const currentPrice = row.current_price as number;
+      const qty = row.quantity as number;
+      const pnl = row.pnl as number;
+      const pnlPercent = entryPrice > 0 ? Number((((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)) : 0;
+
+      return {
+        id: row.id as string,
+        strategyGroupId: (row.strategy_group_id as string) || (row.id as string),
+        legLabel: (row.leg_label as string) || undefined,
+        symbol: row.symbol as string,
+        strategyName: row.strategy_name as string,
+        strikePrice: row.strike_price as number,
+        type: row.option_type as any,
+        action: row.action as any,
+        quantity: qty,
+        lotSize: (row.lot_size as number) || 50,
+        entryPrice,
+        currentPrice,
+        pnl,
+        pnlPercent,
+        stopLoss: (row.stop_loss as number) || undefined,
+        targetPrice: (row.target_price as number) || undefined,
+        status: (row.status as 'OPEN' | 'CLOSED') || 'OPEN',
+        openedAt: row.opened_at as string,
+        closedAt: (row.closed_at as string) || undefined,
+        exitPrice: row.exit_price !== null && row.exit_price !== undefined ? (row.exit_price as number) : undefined,
+        exitReason: (row.close_reason as string) || undefined,
+        expiry: (row.expiry as string) || 'CURRENT',
+        userId: (row.user_id as string) || undefined
+      };
+    } catch (err) {
+      console.error('Failed to get paper position by id:', err);
+      return null;
+    }
+  }
+
+  /**
    * Insert detected OI anomalies into SQLite
    */
   public recordOIAnomalies(anomalies: OIAnomaly[]): void {
@@ -784,11 +963,12 @@ class DatabaseEngine {
   }
 
   /**
-   * Load historical ticks from SQLite for real backtesting
+   * Load historical ticks from SQLite for real backtesting (clamped to max 5000 ticks)
    */
-  public getHistoricalTicks(symbol: string, startDate?: string, endDate?: string): { spotPrice: number; vix: number; timestamp: string }[] {
+  public getHistoricalTicks(symbol: string, startDate?: string, endDate?: string, limit: number = 5000): { spotPrice: number; vix: number; timestamp: string }[] {
     if (!this.db) return [];
     try {
+      const safeLimit = Math.min(Math.max(1, limit || 5000), 5000);
       let query = `SELECT spot_price, india_vix, timestamp FROM ticks WHERE symbol = ?`;
       const params: any[] = [symbol];
       if (startDate) {
@@ -801,7 +981,8 @@ class DatabaseEngine {
         query += ` AND timestamp <= ?`;
         params.push(normEnd);
       }
-      query += ` ORDER BY timestamp ASC`;
+      query += ` ORDER BY timestamp ASC LIMIT ?`;
+      params.push(safeLimit);
       const rows = this.db.prepare(query).all(...params) as any[];
 
       return rows.map(row => ({
@@ -925,7 +1106,7 @@ class DatabaseEngine {
     const result: Record<string, { lastPersistedAt: string | null; totalChainRows: number; totalTicks: number; distinctDays: number }> = {};
     if (!this.db) return result;
 
-    const symbols = ['NIFTY', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK'];
+    const symbols = PRIMARY_COVERAGE_SYMBOLS;
     for (const sym of symbols) {
       try {
         const chainRow = this.db.prepare(
@@ -1437,7 +1618,11 @@ class DatabaseEngine {
       'CREATE INDEX IF NOT EXISTS idx_ema_candles_inst_ts ON ema_15m_candles(instrument, timestamp DESC);',
       'CREATE INDEX IF NOT EXISTS idx_ema_signals_inst_ts ON ema_15m_signals(instrument, candle_timestamp DESC);',
       'CREATE INDEX IF NOT EXISTS idx_ema_signals_type ON ema_15m_signals(signal_type, candle_timestamp DESC);',
-      'CREATE INDEX IF NOT EXISTS idx_ema_notif_logs_sig ON ema_notification_logs(signal_id, attempted_at DESC);'
+      'CREATE INDEX IF NOT EXISTS idx_ema_notif_logs_sig ON ema_notification_logs(signal_id, attempted_at DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_status_net ON ema_paper_trades(status, net_pnl);',
+      'CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_closed ON ema_paper_trades(status, exit_timestamp);',
+      'CREATE INDEX IF NOT EXISTS idx_ticks_timestamp ON ticks(timestamp);',
+      'CREATE INDEX IF NOT EXISTS idx_option_chains_updated_at ON option_chains(updated_at);'
     ];
 
     for (const sql of indexes) {
@@ -1914,30 +2099,32 @@ class DatabaseEngine {
     }
   }
 
-  public getAutonomousLogs(strategyId?: string, limit: number = 100, userId?: string | null): any[] {
+  public getAutonomousLogs(strategyId?: string, limit: number = 100, userId?: string | null, offset: number = 0): any[] {
     if (!this.db) return [];
     try {
+      const safeLimit = Math.min(Math.max(1, limit || 100), 500);
+      const safeOffset = Math.max(0, offset || 0);
       let rows: any[];
       if (strategyId && userId) {
         rows = this.db.prepare(
           `SELECT id, strategy_id, strategy_name, timestamp, event_type, details_json
-           FROM autonomous_strategy_log WHERE strategy_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT ?`
-        ).all(strategyId, userId, limit) as any[];
+           FROM autonomous_strategy_log WHERE strategy_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+        ).all(strategyId, userId, safeLimit, safeOffset) as any[];
       } else if (strategyId) {
         rows = this.db.prepare(
           `SELECT id, strategy_id, strategy_name, timestamp, event_type, details_json
-           FROM autonomous_strategy_log WHERE strategy_id = ? ORDER BY timestamp DESC LIMIT ?`
-        ).all(strategyId, limit) as any[];
+           FROM autonomous_strategy_log WHERE strategy_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+        ).all(strategyId, safeLimit, safeOffset) as any[];
       } else if (userId) {
         rows = this.db.prepare(
           `SELECT id, strategy_id, strategy_name, timestamp, event_type, details_json
-           FROM autonomous_strategy_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?`
-        ).all(userId, limit) as any[];
+           FROM autonomous_strategy_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+        ).all(userId, safeLimit, safeOffset) as any[];
       } else {
         rows = this.db.prepare(
           `SELECT id, strategy_id, strategy_name, timestamp, event_type, details_json
-           FROM autonomous_strategy_log ORDER BY timestamp DESC LIMIT ?`
-        ).all(limit) as any[];
+           FROM autonomous_strategy_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+        ).all(safeLimit, safeOffset) as any[];
       }
 
       return rows.map(row => ({
@@ -2211,9 +2398,11 @@ class DatabaseEngine {
     }
   }
 
-  public getEma15mSignals(instrument?: string, signalType?: string, limit: number = 100): Ema15mSignal[] {
+  public getEma15mSignals(instrument?: string, signalType?: string, limit: number = 100, offset: number = 0): Ema15mSignal[] {
     if (!this.db) return [];
     try {
+      const safeLimit = Math.min(Math.max(1, limit || 100), 500);
+      const safeOffset = Math.max(0, offset || 0);
       let query = 'SELECT * FROM ema_15m_signals WHERE 1=1';
       const params: any[] = [];
 
@@ -2226,8 +2415,8 @@ class DatabaseEngine {
         params.push(signalType);
       }
 
-      query += ' ORDER BY candle_timestamp DESC LIMIT ?';
-      params.push(limit);
+      query += ' ORDER BY candle_timestamp DESC LIMIT ? OFFSET ?';
+      params.push(safeLimit, safeOffset);
 
       const rows = this.db.prepare(query).all(...params) as any[];
       return rows.map(r => ({
@@ -2306,15 +2495,16 @@ class DatabaseEngine {
   public getEmaNotificationLogs(signalId?: string, limit: number = 50): EmaNotificationLog[] {
     if (!this.db) return [];
     try {
+      const safeLimit = Math.min(Math.max(1, limit || 50), 500);
       let rows: any[];
       if (signalId) {
         rows = this.db.prepare(`
           SELECT * FROM ema_notification_logs WHERE signal_id = ? ORDER BY attempted_at DESC LIMIT ?
-        `).all(signalId, limit) as any[];
+        `).all(signalId, safeLimit) as any[];
       } else {
         rows = this.db.prepare(`
           SELECT * FROM ema_notification_logs ORDER BY attempted_at DESC LIMIT ?
-        `).all(limit) as any[];
+        `).all(safeLimit) as any[];
       }
 
       return rows.map(r => ({
@@ -2340,8 +2530,8 @@ class DatabaseEngine {
       browserEnabled: true,
       soundEnabled: true,
       autoPaperTradingEnabled: true,
-      telegramChatId: '-1003922058891',
-      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '8984654249:AAH617z02aocw8LIFGi2wpboA-DD40NAcp8',
+      telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
       emailAddress: process.env.SMTP_USER || '',
       soundVolume: 0.8
     };
@@ -2361,8 +2551,8 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
-        telegramChatId: row.telegram_chat_id || '-1003922058891',
-        telegramBotToken: row.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '8984654249:AAH617z02aocw8LIFGi2wpboA-DD40NAcp8',
+        telegramChatId: row.telegram_chat_id || process.env.TELEGRAM_CHAT_ID || '',
+        telegramBotToken: row.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '',
         emailAddress: row.email_address || process.env.SMTP_USER || '',
         soundVolume: row.sound_volume !== null ? Number(row.sound_volume) : 0.8,
         updatedAt: row.updated_at
@@ -2460,9 +2650,11 @@ class DatabaseEngine {
     }
   }
 
-  public getEmaPaperTrades(instrument?: string, status?: string, limit: number = 100): EmaPaperTrade[] {
+  public getEmaPaperTrades(instrument?: string, status?: string, limit: number = 100, offset: number = 0): EmaPaperTrade[] {
     if (!this.db) return [];
     try {
+      const safeLimit = Math.min(Math.max(1, limit || 100), 500);
+      const safeOffset = Math.max(0, offset || 0);
       let query = 'SELECT * FROM ema_paper_trades WHERE 1=1';
       const params: any[] = [];
 
@@ -2475,8 +2667,8 @@ class DatabaseEngine {
         params.push(status);
       }
 
-      query += ' ORDER BY created_at DESC LIMIT ?';
-      params.push(limit);
+      query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+      params.push(safeLimit, safeOffset);
 
       const rows = this.db.prepare(query).all(...params) as any[];
       return rows.map(r => ({
@@ -2505,6 +2697,50 @@ class DatabaseEngine {
       }));
     } catch (err) {
       console.error('[DB] Error fetching EMA paper trades:', err);
+      return [];
+    }
+  }
+
+  public getOpenEmaPaperTrades(instrument?: string): EmaPaperTrade[] {
+    if (!this.db) return [];
+    try {
+      let rows: any[];
+      if (instrument && instrument !== 'ALL') {
+        rows = this.db.prepare(`
+          SELECT * FROM ema_paper_trades WHERE instrument = ? AND status = 'OPEN' ORDER BY created_at DESC
+        `).all(instrument) as any[];
+      } else {
+        rows = this.db.prepare(`
+          SELECT * FROM ema_paper_trades WHERE status = 'OPEN' ORDER BY created_at DESC
+        `).all() as any[];
+      }
+
+      return rows.map(r => ({
+        id: r.id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        direction: r.direction,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        strategy: r.strategy,
+        source: r.source,
+        status: r.status,
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        charges: Number(r.charges || 0),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error fetching open EMA paper trades:', err);
       return [];
     }
   }
@@ -2583,32 +2819,85 @@ class DatabaseEngine {
     }
   }
 
-  public updateEmaPaperTradePrices(instrument: string, currentPrice: number): void {
+  /**
+   * Batch update or close EMA paper trades inside a single SQLite transaction
+   */
+  public batchUpdateEmaPaperTrades(updates: {
+    toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number }>;
+    toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }>;
+  }): void {
     if (!this.db) return;
-    try {
-      const openTrades = this.db.prepare(`SELECT * FROM ema_paper_trades WHERE instrument = ? AND status = 'OPEN'`).all(instrument) as any[];
-      if (openTrades.length === 0) return;
+    if (updates.toUpdate.length === 0 && updates.toClose.length === 0) return;
 
-      const stmt = this.db.prepare(`
+    try {
+      const updateStmt = this.db.prepare(`
         UPDATE ema_paper_trades SET
           current_price = ?,
           unrealized_pnl = ?,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
+        WHERE id = ? AND status = 'OPEN'
       `);
 
-      for (const t of openTrades) {
+      const closeStmt = this.db.prepare(`
+        UPDATE ema_paper_trades SET
+          status = 'CLOSED',
+          current_price = ?,
+          exit_price = ?,
+          exit_timestamp = ?,
+          exit_reason = ?,
+          gross_pnl = ?,
+          brokerage = 40,
+          net_pnl = ?,
+          unrealized_pnl = 0,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'OPEN'
+      `);
+
+      const runBatch = this.db.transaction(() => {
+        const now = new Date().toISOString();
+        for (const item of updates.toClose) {
+          closeStmt.run(item.exitPrice, item.exitPrice, item.exitTimestamp || now, item.exitReason, item.grossPnl, item.netPnl, item.id);
+        }
+        for (const item of updates.toUpdate) {
+          updateStmt.run(item.currentPrice, item.unrealizedPnl, item.id);
+        }
+      });
+
+      runBatch();
+    } catch (err) {
+      console.error('[DB] Error batch updating EMA paper trades:', err);
+    }
+  }
+
+  public updateEmaPaperTradePrices(instrument: string, currentPrice: number): void {
+    if (!this.db) return;
+    try {
+      const openTrades = this.db.prepare(`
+        SELECT id, entry_price, quantity, direction 
+        FROM ema_paper_trades 
+        WHERE instrument = ? AND status = 'OPEN'
+      `).all(instrument) as any[];
+
+      if (openTrades.length === 0) return;
+
+      const toUpdate = openTrades.map(t => {
         const entryPrice = Number(t.entry_price);
         const qty = Number(t.quantity);
         const isLong = t.direction === 'LONG';
         const unrealizedPnl = Number((isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty).toFixed(2));
-        stmt.run(currentPrice, unrealizedPnl, t.id);
-      }
+        return { id: t.id, currentPrice, unrealizedPnl };
+      });
+
+      this.batchUpdateEmaPaperTrades({ toUpdate, toClose: [] });
     } catch (err) {
       console.error(`[DB] Error updating EMA paper trade prices for ${instrument}:`, err);
     }
   }
 
+  /**
+   * Fast SQL aggregate calculation for EMA Paper Trading Summary
+   * Computes counts, win/losses, realized & unrealized PnL in a single SQLite aggregate query
+   */
   public getEmaPaperTradingSummary(): EmaPaperTradingSummary {
     const defaultSummary: EmaPaperTradingSummary = {
       totalTrades: 0,
@@ -2627,52 +2916,52 @@ class DatabaseEngine {
 
     if (!this.db) return defaultSummary;
     try {
-      const allTrades = this.db.prepare(`SELECT * FROM ema_paper_trades`).all() as any[];
-      const openTrades = allTrades.filter(t => t.status === 'OPEN');
-      const closedTrades = allTrades.filter(t => t.status === 'CLOSED');
+      const agg = this.db.prepare(`
+        SELECT 
+          COUNT(*) as totalTrades,
+          SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) as openTradesCount,
+          SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closedTradesCount,
+          SUM(CASE WHEN status = 'CLOSED' AND net_pnl > 0 THEN 1 ELSE 0 END) as winningTrades,
+          SUM(CASE WHEN status = 'CLOSED' AND net_pnl < 0 THEN 1 ELSE 0 END) as losingTrades,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN gross_pnl ELSE 0 END), 0) as realizedGrossPnl,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN COALESCE(brokerage, 40) ELSE 0 END), 0) as realizedBrokerage,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END), 0) as realizedNetPnl,
+          COALESCE(SUM(CASE WHEN status = 'OPEN' THEN unrealized_pnl ELSE 0 END), 0) as unrealizedPnl
+        FROM ema_paper_trades
+      `).get() as any;
 
-      let realizedGrossPnl = 0;
-      let realizedBrokerage = 0;
-      let realizedNetPnl = 0;
-      let winningTrades = 0;
-      let losingTrades = 0;
+      if (!agg) return defaultSummary;
 
-      for (const ct of closedTrades) {
-        const net = Number(ct.net_pnl || 0);
-        realizedGrossPnl += Number(ct.gross_pnl || 0);
-        realizedBrokerage += Number(ct.brokerage || 40);
-        realizedNetPnl += net;
-        if (net > 0) winningTrades++;
-        else if (net < 0) losingTrades++;
-      }
-
-      let unrealizedPnl = 0;
-      for (const ot of openTrades) {
-        unrealizedPnl += Number(ot.unrealized_pnl || 0);
-      }
-
-      const totalTrades = allTrades.length;
-      const winRatePercent = closedTrades.length > 0 ? Number(((winningTrades / closedTrades.length) * 100).toFixed(1)) : 0;
+      const totalTrades = Number(agg.totalTrades || 0);
+      const openTradesCount = Number(agg.openTradesCount || 0);
+      const closedTradesCount = Number(agg.closedTradesCount || 0);
+      const winningTrades = Number(agg.winningTrades || 0);
+      const losingTrades = Number(agg.losingTrades || 0);
+      const realizedGrossPnl = Number(Number(agg.realizedGrossPnl || 0).toFixed(2));
+      const realizedBrokerage = Number(Number(agg.realizedBrokerage || 0).toFixed(2));
+      const realizedNetPnl = Number(Number(agg.realizedNetPnl || 0).toFixed(2));
+      const unrealizedPnl = Number(Number(agg.unrealizedPnl || 0).toFixed(2));
+      const winRatePercent = closedTradesCount > 0 ? Number(((winningTrades / closedTradesCount) * 100).toFixed(1)) : 0;
       const totalNetPnl = Number((realizedNetPnl + unrealizedPnl).toFixed(2));
 
       const settings = this.getEmaNotificationSettings('GLOBAL');
 
       return {
         totalTrades,
-        openTradesCount: openTrades.length,
-        closedTradesCount: closedTrades.length,
+        openTradesCount,
+        closedTradesCount,
         winningTrades,
         losingTrades,
         winRatePercent,
-        realizedGrossPnl: Number(realizedGrossPnl.toFixed(2)),
-        realizedBrokerage: Number(realizedBrokerage.toFixed(2)),
-        realizedNetPnl: Number(realizedNetPnl.toFixed(2)),
-        unrealizedPnl: Number(unrealizedPnl.toFixed(2)),
+        realizedGrossPnl,
+        realizedBrokerage,
+        realizedNetPnl,
+        unrealizedPnl,
         totalNetPnl,
         autoTradingEnabled: settings.autoPaperTradingEnabled !== false
       };
     } catch (err) {
-      console.error('[DB] Error computing EMA paper trading summary:', err);
+      console.error('[DB] Error computing EMA paper trading summary via SQL aggregation:', err);
       return defaultSummary;
     }
   }

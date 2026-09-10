@@ -28,6 +28,7 @@ import { authRouter, attachUser, getUserFromRequest, requireAuth } from './src/s
 import { quantRouter } from './src/quant/api/quantRouter.js';
 import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron } from './src/server/engine/upstoxAuthService.js';
 import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
+import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -45,8 +46,8 @@ app.use(['/api/basket', '/api/autonomous'], requireAuth as any);
 // Paper Trading Virtual Terminal Engine
 const PAPER_VIRTUAL_CAPITAL = 1000000; // 10 Lakhs Initial Virtual Capital
 
-async function getPaperPortfolioData(userId?: string | null) {
-  const allPositions = dbEngine.loadAllPaperPositions(userId);
+async function getPaperPortfolioData(userId?: string | null, limit?: number, offset?: number) {
+  const allPositions = dbEngine.loadAllPaperPositions(userId, limit, offset);
   const openPositions = allPositions.filter(p => p.status === 'OPEN');
   const closedPositions = allPositions.filter(p => p.status === 'CLOSED');
 
@@ -147,8 +148,12 @@ async function getPaperPortfolioData(userId?: string | null) {
   };
 }
 
-function updatePaperPositionsMTM() {
-  const openPositions = dbEngine.loadAllPaperPositions().filter(p => p.status === 'OPEN');
+function updatePaperPositionsMTM(targetUserId?: string | null) {
+  const openPositions = dbEngine.getAllOpenPaperPositionsForMtm(targetUserId);
+  if (!openPositions || openPositions.length === 0) return;
+
+  const toUpdate: Array<{ id: string; currentPrice: number; pnl: number }> = [];
+  const toClose: Array<{ id: string; exitPrice: number; pnl: number; reason: string }> = [];
 
   for (const pos of openPositions) {
     try {
@@ -206,11 +211,22 @@ function updatePaperPositionsMTM() {
     }
 
     if (autoCloseReason) {
-      dbEngine.closePaperPosition(pos.id, pos.currentPrice, pos.pnl, autoCloseReason, pos.userId);
+      toClose.push({
+        id: pos.id,
+        exitPrice: pos.currentPrice,
+        pnl: pos.pnl,
+        reason: autoCloseReason
+      });
     } else {
-      dbEngine.savePaperPosition(pos, pos.userId);
+      toUpdate.push({
+        id: pos.id,
+        currentPrice: pos.currentPrice,
+        pnl: pos.pnl
+      });
     }
   }
+
+  dbEngine.batchUpdatePaperPositionsMtm({ toUpdate, toClose });
 }
 
 // Background MTM interval every 5 seconds (5000ms)
@@ -255,7 +271,7 @@ async function startServer() {
 
       // Merge last capture time from memory with SQLite persistence stats per symbol
       const symbolHealth: Record<string, any> = {};
-      const allSymbols = ['NIFTY', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK'];
+      const allSymbols = PRIMARY_COVERAGE_SYMBOLS;
       for (const sym of allSymbols) {
         const dbStats = collectionCoverage[sym] || { lastPersistedAt: null, totalChainRows: 0, totalTicks: 0, distinctDays: 0 };
         symbolHealth[sym] = {
@@ -264,7 +280,7 @@ async function startServer() {
           totalChainRows: dbStats.totalChainRows,
           totalSpotTicks: dbStats.totalTicks,
           distinctDaysHistory: dbStats.distinctDays,
-          isActivelyViewed: activeView.symbol === sym
+          isActivelyViewed: globalMarketFeed.isSymbolActivelyViewed(sym)
         };
       }
 
@@ -302,14 +318,15 @@ async function startServer() {
       if (symbol) {
         globalMarketFeed.setActiveView(symbol, expiry);
       }
-      res.json({ success: true, activeView: globalMarketFeed.getActiveView() });
+      res.json({ success: true, activeView: globalMarketFeed.getActiveView(symbol) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   app.get('/api/system/active-view', (req, res) => {
-    res.json(globalMarketFeed.getActiveView());
+    const symbol = req.query.symbol as string | undefined;
+    res.json(globalMarketFeed.getActiveView(symbol));
   });
 
   // Helper to determine the effective public base URL for OAuth callbacks
@@ -722,7 +739,9 @@ async function startServer() {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
-      const baskets = globalBasketEngine.getAllBaskets(userId);
+      const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+      const offset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
+      const baskets = globalBasketEngine.getAllBaskets(userId, limit, offset);
       const recon = await globalBasketEngine.runReconciliationCheck();
       res.json({ baskets, reconciliation: recon });
     } catch (err: any) {
@@ -799,8 +818,10 @@ async function startServer() {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
+      const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+      const offset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
       updatePaperPositionsMTM();
-      const portfolio = await getPaperPortfolioData(userId);
+      const portfolio = await getPaperPortfolioData(userId, limit, offset);
       res.json(portfolio);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -906,9 +927,8 @@ async function startServer() {
       const exitPriceParam = req.body?.exitPrice;
       const closeReasonParam = req.body?.reason || 'Manual Square Off';
 
-      const allPos = dbEngine.loadAllPaperPositions(userId);
-      const pos = allPos.find(p => p.id === id && p.status === 'OPEN');
-      if (!pos) {
+      const pos = dbEngine.getPaperPositionById(id, userId);
+      if (!pos || pos.status !== 'OPEN') {
         return res.status(404).json({ error: 'Open paper position not found' });
       }
 
@@ -960,8 +980,7 @@ async function startServer() {
       const userId = user ? user.id : null;
       const id = req.params.id || req.body?.id;
       const { stopLoss, targetPrice } = req.body;
-      const allPos = dbEngine.loadAllPaperPositions(userId);
-      const pos = allPos.find(p => p.id === id);
+      const pos = dbEngine.getPaperPositionById(id, userId);
 
       if (!pos) {
         return res.status(404).json({ error: 'Paper position not found' });
@@ -1197,8 +1216,9 @@ async function startServer() {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
       const strategyId = req.query.strategyId as string | undefined;
-      const limit = Number(req.query.limit) || 100;
-      const logs = dbEngine.getAutonomousLogs(strategyId, limit, userId);
+      const limit = req.query.limit !== undefined ? Math.min(Math.max(1, Number(req.query.limit) || 100), 500) : 100;
+      const offset = req.query.offset !== undefined ? Math.max(0, Number(req.query.offset) || 0) : 0;
+      const logs = dbEngine.getAutonomousLogs(strategyId, limit, userId, offset);
       res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1263,8 +1283,9 @@ async function startServer() {
     try {
       const symbol = req.query.symbol as string | undefined;
       const signalType = req.query.signalType as string | undefined;
-      const limit = Number(req.query.limit) || 100;
-      const signals = dbEngine.getEma15mSignals(symbol, signalType, limit);
+      const limit = req.query.limit !== undefined ? Math.min(Math.max(1, Number(req.query.limit) || 100), 500) : 100;
+      const offset = req.query.offset !== undefined ? Math.max(0, Number(req.query.offset) || 0) : 0;
+      const signals = dbEngine.getEma15mSignals(symbol, signalType, limit, offset);
       res.json(signals);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1362,8 +1383,9 @@ async function startServer() {
     try {
       const instrument = req.query.instrument as string | undefined;
       const status = req.query.status as string | undefined;
-      const limit = Number(req.query.limit) || 100;
-      const trades = dbEngine.getEmaPaperTrades(instrument, status, limit);
+      const limit = req.query.limit !== undefined ? Math.min(Math.max(1, Number(req.query.limit) || 100), 500) : 100;
+      const offset = req.query.offset !== undefined ? Math.max(0, Number(req.query.offset) || 0) : 0;
+      const trades = dbEngine.getEmaPaperTrades(instrument, status, limit, offset);
       res.json(trades);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

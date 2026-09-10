@@ -5,6 +5,7 @@
  */
 
 import { dbEngine } from '../db.js';
+import { HISTORICAL_SYNC_SYMBOLS } from '../../shared/marketConfig.js';
 
 const UPSTOX_INSTRUMENT_MAP: Record<string, string> = {
   'NIFTY': 'NSE_INDEX|Nifty 50',
@@ -391,7 +392,7 @@ export async function startFullHistoricalSync(): Promise<SyncStatus> {
 
   // Run asynchronously in background
   (async () => {
-    const symbols = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK', 'TATAMOTORS'];
+    const symbols = HISTORICAL_SYNC_SYMBOLS;
     const intervals = ['day', '60minute', '30minute', '15minute', '5minute', '1minute'];
     const fromDateStr = '2024-01-01';
     const toDateStr = new Date().toISOString().split('T')[0];

@@ -10,6 +10,7 @@ import { calculateMaxPainStrike, calculatePCR, classifyOIBuildup, calculateIVRan
 import { dbEngine } from '../db.js';
 import { activeProvider, initActiveProvider } from './providers/index.js';
 import { globalEma15mEngine } from './ema15mEngine.js';
+import { CANONICAL_INSTRUMENTS } from '../../shared/marketConfig.js';
 
 interface UnderlyingConfig {
   symbol: string;
@@ -73,186 +74,38 @@ export function getUpcomingExpiriesForSymbol(symbol: string, fromDate: Date = ne
   return expiries.length > 0 ? expiries : ['2026-08-20', '2026-08-27', '2026-09-03', '2026-09-24'];
 }
 
-export const UNDERLYING_CONFIGS: Record<string, UnderlyingConfig> = {
-  NIFTY: {
-    symbol: 'NIFTY',
-    style: 'EUROPEAN',
-    baseSpotPrice: 24055.80,
-    stepSize: 50,
-    strikeCountAboveBelow: 15,
-    indiaVixBase: 11.2,
-    lotSize: 25,
-    get expiries() { return getUpcomingExpiriesForSymbol('NIFTY'); }
-  },
-  BANKNIFTY: {
-    symbol: 'BANKNIFTY',
-    style: 'EUROPEAN',
-    baseSpotPrice: 57409.60,
-    stepSize: 100,
-    strikeCountAboveBelow: 12,
-    indiaVixBase: 13.5,
-    lotSize: 15,
-    get expiries() { return getUpcomingExpiriesForSymbol('BANKNIFTY'); }
-  },
-  SENSEX: {
-    symbol: 'SENSEX',
-    style: 'EUROPEAN',
-    baseSpotPrice: 76944.28,
-    stepSize: 100,
-    strikeCountAboveBelow: 15,
-    indiaVixBase: 11.8,
-    lotSize: 10,
-    get expiries() { return getUpcomingExpiriesForSymbol('SENSEX'); }
-  },
-  FINNIFTY: {
-    symbol: 'FINNIFTY',
-    style: 'EUROPEAN',
-    baseSpotPrice: 26003.90,
-    stepSize: 50,
-    strikeCountAboveBelow: 15,
-    indiaVixBase: 12.0,
-    lotSize: 65,
-    get expiries() { return getUpcomingExpiriesForSymbol('FINNIFTY'); }
-  },
-  MIDCPNIFTY: {
-    symbol: 'MIDCPNIFTY',
-    style: 'EUROPEAN',
-    baseSpotPrice: 14813.35,
-    stepSize: 25,
-    strikeCountAboveBelow: 15,
-    indiaVixBase: 14.5,
-    lotSize: 75,
-    get expiries() { return getUpcomingExpiriesForSymbol('MIDCPNIFTY'); }
-  },
-  RELIANCE: {
-    symbol: 'RELIANCE',
-    style: 'AMERICAN',
-    baseSpotPrice: 1309.00,
-    stepSize: 20,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 16.5,
-    lotSize: 250,
-    get expiries() { return getUpcomingExpiriesForSymbol('RELIANCE'); }
-  },
-  TCS: {
-    symbol: 'TCS',
-    style: 'AMERICAN',
-    baseSpotPrice: 2369.00,
-    stepSize: 50,
-    strikeCountAboveBelow: 8,
-    indiaVixBase: 14.8,
-    lotSize: 175,
-    get expiries() { return getUpcomingExpiriesForSymbol('TCS'); }
-  },
-  HDFCBANK: {
-    symbol: 'HDFCBANK',
-    style: 'AMERICAN',
-    baseSpotPrice: 711.90,
-    stepSize: 10,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 14.0,
-    lotSize: 550,
-    get expiries() { return getUpcomingExpiriesForSymbol('HDFCBANK'); }
-  },
-  TATAMOTORS: {
-    symbol: 'TATAMOTORS',
-    style: 'AMERICAN',
-    baseSpotPrice: 310.00,
-    stepSize: 5,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 17.5,
-    lotSize: 575,
-    get expiries() { return getUpcomingExpiriesForSymbol('TATAMOTORS'); }
-  },
-  GOLD: {
-    symbol: 'GOLD',
-    style: 'EUROPEAN',
-    baseSpotPrice: 85240.00,
-    stepSize: 100,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 12.5,
-    lotSize: 1,
-    get expiries() { return ['2026-08-27', '2026-09-24', '2026-10-29']; }
-  },
-  CRUDEOIL: {
-    symbol: 'CRUDEOIL',
-    style: 'EUROPEAN',
-    baseSpotPrice: 7669.40,
-    stepSize: 20,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 24.0,
-    lotSize: 100,
-    get expiries() { return ['2026-08-27', '2026-09-17', '2026-10-15']; }
-  },
-  SILVER: {
-    symbol: 'SILVER',
-    style: 'EUROPEAN',
-    baseSpotPrice: 92450.00,
-    stepSize: 100,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 16.0,
-    lotSize: 1,
-    get expiries() { return ['2026-08-27', '2026-09-24', '2026-10-29']; }
-  },
-  NATURALGAS: {
-    symbol: 'NATURALGAS',
-    style: 'EUROPEAN',
-    baseSpotPrice: 250.50,
-    stepSize: 1,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 32.0,
-    lotSize: 1250,
-    get expiries() { return ['2026-08-27', '2026-09-17', '2026-10-15']; }
-  },
-  COPPER: {
-    symbol: 'COPPER',
-    style: 'EUROPEAN',
-    baseSpotPrice: 1275.30,
-    stepSize: 2,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 18.0,
-    lotSize: 2500,
-    get expiries() { return ['2026-08-27', '2026-09-17', '2026-10-15']; }
-  },
-  INFY: {
-    symbol: 'INFY',
-    style: 'AMERICAN',
-    baseSpotPrice: 1156.00,
-    stepSize: 20,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 15.0,
-    lotSize: 400,
-    get expiries() { return getUpcomingExpiriesForSymbol('INFY'); }
-  },
-  SBIN: {
-    symbol: 'SBIN',
-    style: 'AMERICAN',
-    baseSpotPrice: 1034.50,
-    stepSize: 10,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 15.8,
-    lotSize: 750,
-    get expiries() { return getUpcomingExpiriesForSymbol('SBIN'); }
-  },
-  ICICIBANK: {
-    symbol: 'ICICIBANK',
-    style: 'AMERICAN',
-    baseSpotPrice: 1438.00,
-    stepSize: 10,
-    strikeCountAboveBelow: 10,
-    indiaVixBase: 14.2,
-    lotSize: 700,
-    get expiries() { return getUpcomingExpiriesForSymbol('ICICIBANK'); }
-  }
-};
+export const UNDERLYING_CONFIGS: Record<string, UnderlyingConfig> = Object.entries(CANONICAL_INSTRUMENTS).reduce((acc, [sym, conf]) => {
+  acc[sym] = {
+    symbol: conf.symbol,
+    style: conf.style,
+    baseSpotPrice: conf.baseSpotPrice,
+    stepSize: conf.stepSize,
+    strikeCountAboveBelow: conf.strikeCountAboveBelow,
+    indiaVixBase: conf.indiaVixBase,
+    lotSize: conf.lotSize,
+    get expiries() {
+      if (conf.type === 'COMMODITY') {
+        return conf.symbol === 'CRUDEOIL' || conf.symbol === 'NATURALGAS' || conf.symbol === 'COPPER'
+          ? ['2026-08-27', '2026-09-17', '2026-10-15']
+          : ['2026-08-27', '2026-09-24', '2026-10-29'];
+      }
+      return getUpcomingExpiriesForSymbol(conf.symbol);
+    }
+  };
+  return acc;
+}, {} as Record<string, UnderlyingConfig>);
+
+/** Dynamic list of all configured underlying symbols */
+export const CONFIGURED_SYMBOLS: string[] = Object.keys(UNDERLYING_CONFIGS);
 
 export class MarketFeedEngine {
   private providerConnected: boolean = false;
   private providerStatusMessage: string = 'Initializing data provider...';
 
-  // Active view state (Task 1: reduce unnecessary polling load)
-  private activeViewSymbol: string = 'NIFTY';
-  private activeViewExpiry: string = getUpcomingExpiriesForSymbol('NIFTY')[0] || '2026-08-20';
+  // Active viewed symbols & expiries from connected users/sessions with TTL
+  private activeViews: Map<string, { symbol: string; expiry: string; lastRequestedAt: number }> = new Map([
+    ['NIFTY', { symbol: 'NIFTY', expiry: getUpcomingExpiriesForSymbol('NIFTY')[0] || '2026-08-20', lastRequestedAt: Date.now() }]
+  ]);
   private lastBackgroundPollTime: number = 0;
 
   // Phase I Task 1: Continuous Background Capture Loop for All Symbols
@@ -341,25 +194,72 @@ export class MarketFeedEngine {
   }
 
   /**
-   * Set active viewed symbol & expiry from frontend (Task 1)
+   * Set or refresh active viewed symbol & expiry from a user/client.
+   * Tracks active viewers with a TTL (10s) so multiple concurrent users viewing
+   * different symbols (e.g. NIFTY and BANKNIFTY) all get high-frequency 3s refresh.
    */
   public setActiveView(symbol: string, expiry?: string): void {
     if (UNDERLYING_CONFIGS[symbol]) {
-      this.activeViewSymbol = symbol;
       const validExpiries = UNDERLYING_CONFIGS[symbol].expiries;
-      if (expiry && validExpiries.includes(expiry)) {
-        this.activeViewExpiry = expiry;
-      } else if (!this.activeViewExpiry || !validExpiries.includes(this.activeViewExpiry)) {
-        this.activeViewExpiry = validExpiries[0];
-      }
+      let validExpiry = expiry && validExpiries.includes(expiry) ? expiry : validExpiries[0] || '2026-08-20';
+      this.activeViews.set(symbol, {
+        symbol,
+        expiry: validExpiry,
+        lastRequestedAt: Date.now()
+      });
       if (activeProvider.onActiveViewChanged) {
-        activeProvider.onActiveViewChanged(symbol, this.activeViewExpiry);
+        activeProvider.onActiveViewChanged(symbol, validExpiry);
       }
     }
   }
 
-  public getActiveView(): { symbol: string; expiry: string } {
-    return { symbol: this.activeViewSymbol, expiry: this.activeViewExpiry };
+  /**
+   * Return the primary active view for backward compatibility (or requested symbol view)
+   */
+  public getActiveView(symbol?: string): { symbol: string; expiry: string } {
+    if (symbol && this.activeViews.has(symbol)) {
+      const v = this.activeViews.get(symbol)!;
+      return { symbol: v.symbol, expiry: v.expiry };
+    }
+    // Return most recently requested active view
+    let latest: { symbol: string; expiry: string; lastRequestedAt: number } | null = null;
+    for (const v of this.activeViews.values()) {
+      if (!latest || v.lastRequestedAt > latest.lastRequestedAt) {
+        latest = v;
+      }
+    }
+    if (latest) {
+      return { symbol: latest.symbol, expiry: latest.expiry };
+    }
+    const defaultExp = getUpcomingExpiriesForSymbol('NIFTY')[0] || '2026-08-20';
+    return { symbol: 'NIFTY', expiry: defaultExp };
+  }
+
+  /**
+   * Check if a symbol is actively viewed by any client (requested within last 10s)
+   */
+  public isSymbolActivelyViewed(symbol: string): boolean {
+    const v = this.activeViews.get(symbol);
+    if (!v) return false;
+    return Date.now() - v.lastRequestedAt < 10000;
+  }
+
+  /**
+   * Get all active symbol+expiry views requested within the last 10s
+   */
+  public getActiveViews(): Array<{ symbol: string; expiry: string }> {
+    const now = Date.now();
+    const result: Array<{ symbol: string; expiry: string }> = [];
+    for (const [sym, v] of this.activeViews.entries()) {
+      if (now - v.lastRequestedAt < 10000) {
+        result.push({ symbol: v.symbol, expiry: v.expiry });
+      }
+    }
+    if (result.length === 0) {
+      const defaultExp = getUpcomingExpiriesForSymbol('NIFTY')[0] || '2026-08-20';
+      result.push({ symbol: 'NIFTY', expiry: defaultExp });
+    }
+    return result;
   }
 
   /**
@@ -401,15 +301,22 @@ export class MarketFeedEngine {
   private async pollLoop(): Promise<void> {
     const now = Date.now();
     try {
-      // 1. Always poll active viewed symbol at high frequency (3s)
-      await this.refreshUnderlyingSpots([this.activeViewSymbol]);
-      await this.buildAndCacheSnapshot(this.activeViewSymbol, this.activeViewExpiry);
+      // 1. Poll all actively viewed symbols (requested within 10s by ANY connected client) at 3s cadence
+      const activeList = this.getActiveViews();
+      const activeSymbols = activeList.map(a => a.symbol);
 
-      // 2. Poll other background symbols at low frequency (every 30s)
+      await this.refreshUnderlyingSpots(activeSymbols);
+      for (const view of activeList) {
+        await this.buildAndCacheSnapshot(view.symbol, view.expiry);
+      }
+
+      // 2. Poll other background symbols without active viewers at low frequency (every 30s)
       if (now - this.lastBackgroundPollTime > 30000) {
         this.lastBackgroundPollTime = now;
-        const otherSymbols = Object.keys(UNDERLYING_CONFIGS).filter(s => s !== this.activeViewSymbol);
-        await this.refreshUnderlyingSpots(otherSymbols);
+        const otherSymbols = Object.keys(UNDERLYING_CONFIGS).filter(s => !activeSymbols.includes(s));
+        if (otherSymbols.length > 0) {
+          await this.refreshUnderlyingSpots(otherSymbols);
+        }
       }
     } catch (err: any) {
       console.error('[MARKET FEED] Poll loop error:', err.message);

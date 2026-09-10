@@ -9,11 +9,12 @@ Institutional-grade multi-asset algorithmic trading, quantitative analytics, opt
 DeltaChain AI is an end-to-end trading workstation combining high-frequency market data streaming, mathematical quantitative analytics, automated strategy execution, and multi-leg risk management. 
 
 * **Full-Stack Architecture**: Modern TypeScript stack powered by Express, Vite, React 19, and Tailwind CSS.
-* **Dual Database Engine**: Robust SQLite persistence configured with Write-Ahead Logging (WAL) mode, ACID transactions, and automated schema migrations.
+* **Dual Database Engine**: Robust SQLite persistence configured with Write-Ahead Logging (WAL) mode, ACID transactions, chunked cleanup pruning, and automated schema migrations.
 * **Ultra-Low Latency Streaming**: Upstox API v3 Protobuf WebSocket binary stream (`MarketDataFeedV3.proto`) with sub-second tick ingestion and seamless fallback feeds.
-* **Institutional Broker Support**: Native integration with **Upstox API v3** featuring automated TOTP authentication and real-time Protobuf streaming.
+* **Zero-Manual Daily Authentication**: Automated morning TOTP authentication loop for Upstox API v3 eliminating manual browser logins.
 * **Institutional Quant Suite**: Real-time strategy tournament ranking, regime classification, net dealer gamma exposure (GEX), 3D IV surfaces, and automated position defense.
-* **AI Market Narrator**: Server-side Gemini AI integration for live market sentiment decomposition, strike-level risk alerts, and macro commentary.
+* **AI Market Narrator**: Server-side Google Gemini AI integration for live market sentiment decomposition, strike-level risk alerts, and macro commentary.
+* **Security & Fail-Fast Hardening**: Strict environment-variable-only secrets enforcement (`JWT_SECRET`, `UPSTOX_*`, `TELEGRAM_*`, `GEMINI_API_KEY`) with no insecure hardcoded fallbacks.
 
 ---
 
@@ -33,10 +34,10 @@ DeltaChain AI is an end-to-end trading workstation combining high-frequency mark
 │  • Regime Filter  │  • Auto Runner    │  • Upstox V3 Protobuf WS        │
 │  • Gamma (GEX)    │  • Paper Terminal │  • Yahoo / NSE Fallback Feed    │
 │  • Tournament     │  • Basket Router  │  • Fast-Poll Shock Detector     │
-│  • Risk / Monte   │  • Margin SPAN    │  • Historical Candlestick Sync  │
+│  • Risk / Monte   │  • Margin SPAN    │  • Canonical Instrument Config  │
 ├───────────────────┴───────────────────┴─────────────────────────────────┤
 │                          PERSISTENCE & SECURITY                         │
-│   SQLite (WAL Mode) • Schema Migrations • JWT / Google OAuth • TOTP     │
+│   SQLite (WAL Mode) • Auto-Indexes • Chunked Pruner • JWT Auth • TOTP   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,7 +53,7 @@ A unified multi-asset trading console structured across 5 distinct trading horiz
 * **Pillar 2: Swing Trading**: Multi-day delivery setups based on Relative Strength (RS), 20/50 EMA pullbacks, and institutional volume expansion.
 * **Pillar 3: Long-Term & Positional**: Fundamental quality filters, balance sheet growth metrics, and systematic compounding portfolios.
 * **Pillar 4: F&O Derivatives**: Advanced options income strategies (Iron Condors, Short Straddles, Calendar Spreads, Delta-Neutral adjustments).
-* **Pillar 5: MCX Commodities**: Institutional commodity trading engine covering **Crude Oil**, **Gold**, **Silver**, **Natural Gas**, and **Copper** with precise contract lot sizes, tick movements, and expiry rollover management.
+* **Pillar 5: MCX Commodities**: Institutional commodity trading engine covering **Crude Oil**, **Gold**, **Silver**, **Natural Gas**, and **Copper** with contract lot sizes, tick movements, and expiry rollover management.
 
 ### 2. 🧠 Quant Intelligence Engine
 A comprehensive quantitative trading architecture inspired by institutional hedge funds:
@@ -74,16 +75,17 @@ A comprehensive quantitative trading architecture inspired by institutional hedg
 
 ### 3. 📻 15-Minute EMA Strategy Engine
 An institutional trend-following system optimized for high-probability setups:
-* **Multi-EMA Alignment**: Analyzes 9 EMA, 15 EMA, 21 EMA, and 200 EMA crossovers with VWAP confirmation.
-* **Multi-Timeframe Filtering**: Verifies 5-minute confirmation triggers against 1-hour and daily directional bias.
-* **Automated Notification Dispatch**: Real-time trade alert delivery via Telegram bots and custom Webhooks.
-* **1-Click Execution**: Direct bridge into the Paper Trading Terminal with pre-calculated stop-loss, risk:reward targets, and lot sizing.
+* **23 EMA / 50 EMA Analytical Model**: Strictly triggered upon confirmed 15-minute candle closes across NIFTY 50, BANK NIFTY, and SENSEX.
+* **Deterministic Simulated Crossover**: Built-in test sandbox to verify Bullish/Bearish signal detection, payload generation, and notification delivery without waiting for market hours.
+* **Automated Notification Dispatch**: Real-time trade alert delivery via Telegram bot channels and custom Webhooks.
+* **Automated Paper Execution**: 1-click or automated bridge into the Paper Trading Terminal with pre-calculated stop-loss, risk:reward targets, and lot sizing.
+* **Optimized MTM Engine**: Transaction-batched Mark-to-Market P&L calculations and single-query SQL aggregation for paper trade summaries.
 
 ### 4. 📊 Real-Time Option Chain & Greeks
 * **Supported Underlyings**:
   * Major Indices: **NIFTY 50**, **BANK NIFTY**, **FIN NIFTY**, **MIDCP NIFTY**, **SENSEX**.
-  * Top F&O Stocks: **RELIANCE**, **TCS**, **HDFC BANK**, **TATA MOTORS**, etc.
-  * MCX Commodities: **GOLD**, **CRUDE OIL**, etc.
+  * Top F&O Stocks: **RELIANCE**, **TCS**, **HDFC BANK**, **TATA MOTORS**, **INFY**, **SBIN**, **ICICI BANK**.
+  * MCX Commodities: **GOLD**, **CRUDE OIL**, **SILVER**, **NATURAL GAS**, **COPPER**.
 * **Deterministic Black-Scholes Formula**:
   * High-precision calculation of Delta ($\Delta$), Gamma ($\Gamma$), Theta ($\Theta$), Vega ($\nu$), and Rho ($\rho$).
   * Implied Volatility (IV) resolved via fast Newton-Raphson numerical bisection.
@@ -122,7 +124,8 @@ An institutional trend-following system optimized for high-probability setups:
 ### 9. 🎮 Paper Trading Virtual Terminal
 * **Isolated Virtual Accounts**: ₹10,00,000 default virtual capital per user.
 * **Multi-Leg Lifecycle Tracking**: Groups legs into coherent strategy entities (e.g., "Iron Condor #102").
-* **Live Mark-to-Market (MTM)**: Continuous real-time P&L updates based on streaming tick quotes.
+* **Live Mark-to-Market (MTM)**: Continuous real-time P&L updates based on streaming tick quotes with transaction-level write batching.
+* **Safe Pagination**: Paginated portfolio position queries (`limit` and `offset` support with upper bounds) for high-volume historical trade review.
 * **Group Square-Off**: Close all legs of a complex spread simultaneously with a single click.
 
 ### 10. ⏳ Quantitative Backtester
@@ -131,20 +134,48 @@ An institutional trend-following system optimized for high-probability setups:
 * **Execution Realism**: Accounts for slippage, bid-ask spreads, and statutory transaction costs.
 
 ### 11. 🧠 AI Market Narrator (Gemini Integration)
-* **Real-Time Context Synthesis**: Translates complex options math and flow data into natural, human-readable commentary.
+* **Real-Time Context Synthesis**: Translates complex options math and flow data into natural, human-readable commentary using Google Gemini models.
 * **Risk Warnings**: Identifies dangerous gamma exposure clusters and potential short-squeeze triggers.
 * **Macroeconomic Alignment**: Synthesizes market action in the context of RBI policy, global indices, and corporate earnings.
 
-### 12. 🗄️ Database & Documentation Portal
+### 12. 🗄️ Database & Schema Portal
 * **Automated SQLite Engine**: Fast transactional disk storage running in WAL mode with auto-applied migrations.
 * **Interactive Schema Inspector**: View live database tables, indexes, column constraints, and active connections.
+* **Performance Indexes**: Pre-configured compound indexes for zero-lag querying across millions of ticks and paper trades.
 * **DDL Export**: 1-click export of SQL schemas for external deployment or backup.
+
+---
+
+## ⚡ Recent Architecture & Performance Improvements
+
+The platform has recently undergone substantial core optimizations:
+
+1. **Multi-User `activeView` Session Isolation**:
+   * Migrated server-side symbol tracking from a global variable to a session-keyed `Map` with automatic TTL expiration (30-minute stale cleanup).
+   * Prevents cross-tab and multi-user view interference in high-concurrency environments.
+
+2. **Database Performance & Chunked Pruning**:
+   * **Chunked Batch Pruning**: Implemented chunked deletions (1,000 rows per loop) in `pruneOldSnapshots` to prevent long table locks during snapshot compaction.
+   * **Non-Blocking WAL Compaction**: Automated 2-minute compactor prevents file bloating while preserving market feed write throughput.
+   * **Compound Indexes**: Added auto-indexes on `ema_paper_trades (status, net_pnl)`, `ema_paper_trades (status, exit_timestamp)`, `ticks (timestamp)`, and `option_chains (created_at)`.
+   * **Query Clamping & Safety**: Applied strict bounds to all data endpoints (`getHistoricalTicks`, `loadAllPaperPositions`, `getAutonomousLogs`, `getEma15mSignals`, `getEmaNotificationLogs`) to prevent unbounded queries from exhausting container memory.
+   * **SQL Aggregation**: Refactored `getEmaPaperTradingSummary` from in-memory array filtering to a single optimized SQLite aggregate query.
+
+3. **High-Frequency MTM Batching**:
+   * Replaced per-trade single updates with atomic SQLite transaction batching (`batchUpdateEmaPaperTrades`), reducing I/O friction during rapid market tick bursts.
+
+4. **Canonical Instrument Single Source of Truth**:
+   * Consolidated duplicate hardcoded symbol lists into `src/shared/marketConfig.ts`, defining complete contract specs, lot sizes, step sizes, and asset classifications for all 16 supported instruments.
+
+5. **Security Hardening**:
+   * Removed insecure fallback strings from `JWT_SECRET` and Telegram notification credentials.
+   * Server performs fail-fast verification on startup to ensure all critical environment variables are declared.
 
 ---
 
 ## 🔌 Broker Integration Guide
 
-DeltaChain AI features native integration with **Upstox API v3**.
+DeltaChain AI exclusively supports **Upstox API v3** for live market data and trading.
 
 ### Upstox API v3 (High-Speed Protobuf Streaming)
 
@@ -153,7 +184,7 @@ DeltaChain AI implements Upstox's latest **Protobuf V3 WebSocket API** for strea
 1. **Create an Upstox Developer App**:
    * Navigate to the [Upstox Developer Portal](https://service.upstox.com/developer/).
    * Create an application and obtain your `API Key` and `API Secret`.
-   * Set the Redirect URL to: `http://localhost:3000/api/upstox/callback` (or your production Cloud Run URL).
+   * Set the Redirect URL to: `http://localhost:3000/api/upstox/callback` (or your production URL).
 
 2. **Automated Morning TOTP Login (Zero-Manual Daily Token)**:
    * To automatically regenerate the access token daily without browser login, configure your Upstox credentials in `.env`:
@@ -165,10 +196,10 @@ DeltaChain AI implements Upstox's latest **Protobuf V3 WebSocket API** for strea
      UPSTOX_PIN="your_6_digit_pin"
      UPSTOX_TOTP_SECRET="your_authenticator_totp_secret_key"
      ```
-   * The platform's internal scheduler will handle automated authentication at market open.
+   * The platform's internal scheduler automatically executes the TOTP login sequence at market open.
 
 3. **Manual 1-Click Browser Login**:
-   * Simply click the **"CONNECT UPSTOX"** button in the top navigation bar.
+   * Alternatively, click the **"CONNECT UPSTOX"** button in the top navigation bar.
    * Authorize with Upstox, and you will be redirected back to the active session.
 
 ---
@@ -193,8 +224,10 @@ The server exposes comprehensive RESTful endpoints under `/api/*`:
 | **5 Pillars** | `/api/platform/execute-signal`| `POST` | Dispatches signal directly to execution engine |
 | **15m EMA** | `/api/ema15m/status` | `GET` | 15m EMA engine state and active instruments |
 | **15m EMA** | `/api/ema15m/candles` | `GET` | Historical 15m candlestick feed with EMA values |
-| **15m EMA** | `/api/ema15m/signals` | `GET` | Historical crossover signals and hit-rates |
+| **15m EMA** | `/api/ema15m/signals` | `GET` | Historical crossover signals (`limit` clamped) |
 | **15m EMA** | `/api/ema15m/paper-trades` | `GET/POST`| Manages 15m EMA automated paper positions |
+| **15m EMA** | `/api/ema15m/paper-summary`| `GET` | Fast single-query SQL aggregation of paper P&L |
+| **15m EMA** | `/api/ema15m/trigger-mock` | `POST` | Simulates test bullish/bearish crossover |
 | **Quant** | `/api/quant/health` | `GET` | Quant intelligence engine health check |
 | **Quant** | `/api/quant/regime` | `GET` | Current market regime classification |
 | **Quant** | `/api/quant/gamma-exposure` | `GET` | Net dealer gamma (GEX) profile & flip levels |
@@ -202,13 +235,15 @@ The server exposes comprehensive RESTful endpoints under `/api/*`:
 | **Quant** | `/api/quant/tournament` | `GET` | Live strategy tournament ranking |
 | **Quant** | `/api/quant/monte-carlo` | `POST` | Run 1,000+ path Monte Carlo risk simulation |
 | **Quant** | `/api/quant/walk-forward` | `POST` | Run Walk-Forward statistical optimization |
-| **Paper Trading**| `/api/paper-trading/portfolio`| `GET` | Virtual capital ledger, positions, and groups |
+| **Paper Trading**| `/api/paper-trading/portfolio`| `GET` | Virtual capital ledger, positions (`limit`/`offset`) |
 | **Paper Trading**| `/api/paper-trading/start` | `POST` | Opens new paper positions / multi-leg orders |
+| **Paper Trading**| `/api/paper-trading/close/:id`| `POST` | Closes single paper leg with indexed retrieval |
 | **Paper Trading**| `/api/paper-trading/close-group`| `POST`| Squares off an entire multi-leg strategy group |
 | **Paper Trading**| `/api/paper-trading/reset` | `POST` | Resets virtual account back to initial ₹10 Lakhs |
 | **Basket** | `/api/basket/execute` | `POST` | Executes multi-leg basket orders |
 | **Basket** | `/api/basket/list` | `GET` | Retrieves basket execution history |
 | **Autonomous**| `/api/autonomous/status` | `GET` | Autonomous runner state and circuit breakers |
+| **Autonomous**| `/api/autonomous/logs` | `GET` | Execution logs with bounded limit |
 | **Autonomous**| `/api/autonomous/kill-switch`| `POST` | Emergency trigger to close all active strategies |
 | **Backtester** | `/api/backtest/run` | `POST` | Executes historical options backtest |
 | **AI Narrator**| `/api/ai/narrate` | `POST` | Generates Gemini AI market narrative commentary |
@@ -224,6 +259,7 @@ The server exposes comprehensive RESTful endpoints under `/api/*`:
 * **Email Verification**: Transactional email verification and password reset via Hostinger SMTP.
 * **Guest & Practice Mode**: Full platform access available in guest mode with isolated in-memory/session state.
 * **Server-Side API Keys**: Broker secrets (`UPSTOX_API_SECRET`, `UPSTOX_TOTP_SECRET`) and AI keys (`GEMINI_API_KEY`) reside strictly on the server and are never exposed to the client.
+* **Fail-Fast Startup**: System verifies required credentials on boot and logs clear instructions if any secret is missing.
 
 ---
 

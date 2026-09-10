@@ -331,8 +331,8 @@ export class BasketExecutionEngine {
     return this.activeBaskets.get(id);
   }
 
-  public getAllBaskets(userId?: string | null): BasketOrderRecord[] {
-    return dbEngine.loadAllBasketOrders(userId);
+  public getAllBaskets(userId?: string | null, limit?: number, offset?: number): BasketOrderRecord[] {
+    return dbEngine.loadAllBasketOrders(userId, limit, offset);
   }
 
   /**
