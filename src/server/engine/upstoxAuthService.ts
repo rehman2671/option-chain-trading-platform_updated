@@ -311,6 +311,13 @@ export async function performUpstoxTOTPLogin(serverBaseUrl?: string): Promise<TO
 export function initializeUpstoxAutoRefreshCron(serverBaseUrl?: string): void {
   console.log('[UPSTOX AUTH] Initializing Upstox TOTP Auto-Refresher Service...');
 
+  // Hook auto-refresh handler into globalUpstoxStreamer so token expiry can attempt TOTP refresh
+  globalUpstoxStreamer.setTokenRefreshHandler(async () => {
+    console.log('[UPSTOX AUTH] Streamer requested token refresh via TOTP handler...');
+    const result = await performUpstoxTOTPLogin(serverBaseUrl);
+    return (result.success && result.accessToken) ? result.accessToken : null;
+  });
+
   // Check on startup if credentials exist but token is missing
   const hasCreds = process.env.UPSTOX_API_KEY && process.env.UPSTOX_TOTP_SECRET && process.env.UPSTOX_MOBILE_NO;
   if (hasCreds && !process.env.UPSTOX_ACCESS_TOKEN) {
@@ -319,7 +326,7 @@ export function initializeUpstoxAutoRefreshCron(serverBaseUrl?: string): void {
   }
 
   // Periodic morning check: every 15 minutes, check if it is between 08:30 AM and 09:00 AM IST (03:00 to 03:30 UTC)
-  setInterval(() => {
+  const morningTimer = setInterval(() => {
     const now = new Date();
     const utcHours = now.getUTCHours();
     const utcMinutes = now.getUTCMinutes();
@@ -334,4 +341,7 @@ export function initializeUpstoxAutoRefreshCron(serverBaseUrl?: string): void {
       }
     }
   }, 15 * 60 * 1000);
+  if (morningTimer.unref) {
+    morningTimer.unref();
+  }
 }

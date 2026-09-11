@@ -19,9 +19,12 @@ import {
   History,
   Trash2,
   Sliders,
-  AlertCircle
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 interface PaperTradingManagerProps {
   snapshot: OptionChainSnapshot | null;
@@ -61,6 +64,9 @@ export const PaperTradingManager: React.FC<PaperTradingManagerProps> = ({ snapsh
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'positions' | 'history'>('positions');
   const [toast, setToast] = useState<string | null>(null);
+  const [historyPage, setHistoryPage] = useState(0);
+  const historyPageSize = 20;
+  const [historySymbolFilter, setHistorySymbolFilter] = useState('ALL');
 
   // SL/TP Edit Modal State
   const [editingPos, setEditingPos] = useState<PaperPosition | null>(null);
@@ -85,11 +91,7 @@ export const PaperTradingManager: React.FC<PaperTradingManagerProps> = ({ snapsh
     }
   };
 
-  useEffect(() => {
-    fetchPortfolio();
-    const interval = setInterval(fetchPortfolio, 3000);
-    return () => clearInterval(interval);
-  }, []);
+  usePollingInterval(fetchPortfolio, 3000, []);
 
   const handleSquareOffLeg = async (id: string) => {
     setIsLoading(true);
@@ -398,62 +400,115 @@ export const PaperTradingManager: React.FC<PaperTradingManagerProps> = ({ snapsh
         )}
 
         {/* CLOSED TRADES HISTORY TAB */}
-        {activeTab === 'history' && (
-          <div>
-            {closedPositions.length === 0 ? (
-              <div className="p-12 text-center text-slate-500 italic">
-                No closed trades in history yet. Squared off positions will appear here.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-[11px]">
-                  <thead>
-                    <tr className="text-slate-400 border-b border-slate-800 uppercase text-[10px]">
-                      <th className="py-2">Symbol</th>
-                      <th className="py-2">Strike & Type</th>
-                      <th className="py-2">Action</th>
-                      <th className="py-2 text-right">Qty</th>
-                      <th className="py-2 text-right">Entry</th>
-                      <th className="py-2 text-right">Exit Price</th>
-                      <th className="py-2 text-right">Realized P&L</th>
-                      <th className="py-2">Exit Reason</th>
-                      <th className="py-2 text-right">Closed At</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60">
-                    {closedPositions.map((pos) => (
-                      <tr key={pos.id} className="hover:bg-slate-800/50">
-                        <td className="py-2.5 font-bold text-slate-100">{pos.symbol}</td>
-                        <td className="py-2.5 font-bold text-amber-300">{pos.strikePrice} {pos.type}</td>
-                        <td className="py-2.5">
-                          <span className={`px-2 py-0.5 rounded font-black ${
-                            pos.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
-                          }`}>
-                            {pos.action}
-                          </span>
-                        </td>
-                        <td className="py-2.5 text-right font-mono">{pos.quantity}</td>
-                        <td className="py-2.5 text-right font-bold text-slate-200">₹{pos.entryPrice}</td>
-                        <td className="py-2.5 text-right font-bold text-cyan-300">₹{pos.exitPrice}</td>
-                        <td className={`py-2.5 text-right font-black ${(pos.finalPnl ?? pos.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {(pos.finalPnl ?? pos.pnl ?? 0) >= 0 ? '+' : ''}₹{(pos.finalPnl ?? pos.pnl ?? 0).toLocaleString('en-IN')}
-                        </td>
-                        <td className="py-2.5 text-slate-300">
-                          <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px]">
-                            {pos.exitReason}
-                          </span>
-                        </td>
-                        <td className="py-2.5 text-right text-slate-500 text-[10px]">
-                          {new Date(pos.closedAt).toLocaleTimeString()}
-                        </td>
+        {activeTab === 'history' && (() => {
+          const filteredClosed = historySymbolFilter === 'ALL'
+            ? closedPositions
+            : closedPositions.filter(p => p.symbol === historySymbolFilter);
+          const totalPages = Math.ceil(filteredClosed.length / historyPageSize) || 1;
+          const pagedPositions = filteredClosed.slice(historyPage * historyPageSize, (historyPage + 1) * historyPageSize);
+          const uniqueSymbols = Array.from(new Set(closedPositions.map(p => p.symbol)));
+
+          return (
+            <div className="space-y-4">
+              {closedPositions.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-slate-400 text-[10px] font-bold uppercase">Filter Symbol:</span>
+                    <select
+                      value={historySymbolFilter}
+                      onChange={(e) => {
+                        setHistorySymbolFilter(e.target.value);
+                        setHistoryPage(0);
+                      }}
+                      className="bg-slate-900 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs outline-none"
+                    >
+                      <option value="ALL">All Symbols ({closedPositions.length})</option>
+                      {uniqueSymbols.map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <span className="text-slate-400 text-[10px]">
+                      Showing {pagedPositions.length} of {filteredClosed.length}
+                    </span>
+                    <button
+                      disabled={historyPage === 0}
+                      onClick={() => setHistoryPage(p => Math.max(0, p - 1))}
+                      className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded border border-slate-700 text-slate-300"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="text-[10px] text-slate-300 font-mono">
+                      {historyPage + 1} / {totalPages}
+                    </span>
+                    <button
+                      disabled={historyPage >= totalPages - 1}
+                      onClick={() => setHistoryPage(p => p + 1)}
+                      className="p-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded border border-slate-700 text-slate-300"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {filteredClosed.length === 0 ? (
+                <div className="p-12 text-center text-slate-500 italic">
+                  No closed trades in history yet. Squared off positions will appear here.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[11px]">
+                    <thead>
+                      <tr className="text-slate-400 border-b border-slate-800 uppercase text-[10px]">
+                        <th className="py-2">Symbol</th>
+                        <th className="py-2">Strike & Type</th>
+                        <th className="py-2">Action</th>
+                        <th className="py-2 text-right">Qty</th>
+                        <th className="py-2 text-right">Entry</th>
+                        <th className="py-2 text-right">Exit Price</th>
+                        <th className="py-2 text-right">Realized P&L</th>
+                        <th className="py-2">Exit Reason</th>
+                        <th className="py-2 text-right">Closed At</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {pagedPositions.map((pos) => (
+                        <tr key={pos.id} className="hover:bg-slate-800/50">
+                          <td className="py-2.5 font-bold text-slate-100">{pos.symbol}</td>
+                          <td className="py-2.5 font-bold text-amber-300">{pos.strikePrice} {pos.type}</td>
+                          <td className="py-2.5">
+                            <span className={`px-2 py-0.5 rounded font-black ${
+                              pos.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                            }`}>
+                              {pos.action}
+                            </span>
+                          </td>
+                          <td className="py-2.5 text-right font-mono">{pos.quantity}</td>
+                          <td className="py-2.5 text-right font-bold text-slate-200">₹{pos.entryPrice}</td>
+                          <td className="py-2.5 text-right font-bold text-cyan-300">₹{pos.exitPrice}</td>
+                          <td className={`py-2.5 text-right font-black ${(pos.finalPnl ?? pos.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {(pos.finalPnl ?? pos.pnl ?? 0) >= 0 ? '+' : ''}₹{(pos.finalPnl ?? pos.pnl ?? 0).toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-2.5 text-slate-300">
+                            <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px]">
+                              {pos.exitReason}
+                            </span>
+                          </td>
+                          <td className="py-2.5 text-right text-slate-500 text-[10px]">
+                            {new Date(pos.closedAt).toLocaleTimeString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* SL / TP MODAL */}

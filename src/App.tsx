@@ -21,6 +21,7 @@ import { useAuth } from './context/AuthContext.js';
 import { OptionChainSnapshot, OIAnomaly, EventReactiveState, StrategyLeg, BasketOrderRecord } from './types.js';
 import { Lock, LogIn, UserCheck } from 'lucide-react';
 import { apiFetch } from './lib/api.js';
+import { usePollingInterval } from './lib/usePollingInterval.js';
 
 export default function App() {
   const { user, loading, setAuthModalOpen } = useAuth();
@@ -120,17 +121,11 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    fetchSystemMargin();
-    const marginInterval = setInterval(fetchSystemMargin, 10000);
-    return () => clearInterval(marginInterval);
-  }, []);
+  usePollingInterval(fetchSystemMargin, 10000, []);
 
-  useEffect(() => {
+  usePollingInterval(() => {
     fetchMarketData();
-    const interval = setInterval(() => fetchMarketData(), 3000);
-    return () => clearInterval(interval);
-  }, [currentSymbol, selectedExpiry]);
+  }, 3000, [currentSymbol, selectedExpiry]);
 
   const handleSymbolChange = (newSymbol: string) => {
     if (newSymbol === currentSymbol) return;

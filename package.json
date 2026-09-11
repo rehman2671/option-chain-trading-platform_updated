@@ -9,7 +9,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/quant/tests/*.test.ts"
+    "test": "tsx --test src/quant/tests/*.test.ts src/server/tests/*.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

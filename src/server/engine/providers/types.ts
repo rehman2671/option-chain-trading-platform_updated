@@ -57,6 +57,7 @@ export interface IMarketDataProvider {
   getOrderMargins?(params: any): Promise<any>;
   getPositions?(): Promise<any>;
   getAvailableMargin(): Promise<{ available: number; source: 'LIVE' | 'PRACTICE' }>;
+  getLiveConnectionStatus?(): { isConnected: boolean; message: string; userId?: string; userName?: string };
   onActiveViewChanged?(symbol: string, expiry: string): void;
   destroy?(): void;
 }

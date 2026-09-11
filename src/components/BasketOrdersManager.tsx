@@ -3,20 +3,24 @@
  * Tracks application-level atomicity, sequenced leg fills, fallback recovery, and broker reconciliation.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { BasketOrderRecord } from '../types.js';
-import { Zap, ShieldCheck, AlertCircle, RefreshCw, CheckCircle2, Clock } from 'lucide-react';
+import { Zap, ShieldCheck, AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Filter } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 export const BasketOrdersManager: React.FC = () => {
   const [baskets, setBaskets] = useState<BasketOrderRecord[]>([]);
   const [reconciliationInfo, setReconciliationInfo] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
   const fetchBaskets = async () => {
     setIsLoading(true);
     try {
-      const res = await apiFetch('/api/basket/list');
+      const res = await apiFetch(`/api/basket/list?limit=${pageSize}&offset=${page * pageSize}`);
       const data = await res.json();
       setBaskets(data.baskets || []);
       setReconciliationInfo(data.reconciliation || null);
@@ -27,11 +31,11 @@ export const BasketOrdersManager: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    fetchBaskets();
-    const interval = setInterval(fetchBaskets, 4000);
-    return () => clearInterval(interval);
-  }, []);
+  usePollingInterval(fetchBaskets, 4000, [page, pageSize]);
+
+  const filteredBaskets = statusFilter === 'ALL'
+    ? baskets
+    : baskets.filter(b => b.status === statusFilter);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -82,23 +86,63 @@ export const BasketOrdersManager: React.FC = () => {
 
       {/* Main Basket Records Table */}
       <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-2xl space-y-4 p-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
-            <Zap className="w-4 h-4 text-emerald-400" />
-            <span>Basket & Adjustment Orders Executions ({baskets.length})</span>
-          </h3>
-          <span className="text-slate-400 text-[11px]">
-            Application-Level Atomicity Enabled
-          </span>
+        <div className="flex flex-wrap items-center justify-between border-b border-slate-800 pb-3 gap-3">
+          <div className="flex items-center space-x-3">
+            <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
+              <Zap className="w-4 h-4 text-emerald-400" />
+              <span>Basket & Adjustment Orders Executions ({filteredBaskets.length})</span>
+            </h3>
+            <span className="text-slate-400 text-[11px] hidden sm:inline">
+              Application-Level Atomicity Enabled
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
+              <Filter className="w-3 h-3 text-slate-400" />
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="bg-transparent text-slate-200 text-[11px] font-bold outline-none cursor-pointer"
+              >
+                <option value="ALL" className="bg-slate-900">All Statuses</option>
+                <option value="COMPLETED" className="bg-slate-900">Completed</option>
+                <option value="PARTIAL_FAILED" className="bg-slate-900">Partial Failed</option>
+                <option value="REVERTED" className="bg-slate-900">Auto Reverted</option>
+              </select>
+            </div>
+
+            <div className="flex items-center space-x-1">
+              <button
+                disabled={page === 0}
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded border border-slate-700 text-slate-300"
+                title="Previous Page"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="px-2 py-0.5 text-[10px] text-slate-400 font-mono">
+                Pg {page + 1}
+              </span>
+              <button
+                disabled={baskets.length < pageSize}
+                onClick={() => setPage(p => p + 1)}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed rounded border border-slate-700 text-slate-300"
+                title="Next Page"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {baskets.length === 0 ? (
+        {filteredBaskets.length === 0 ? (
           <div className="p-12 text-center text-slate-500 italic">
-            No basket orders executed in current session. Execute a basket from Strategy & Payoff tab.
+            No basket orders match the selected filter. Execute a basket from Strategy & Payoff tab.
           </div>
         ) : (
           <div className="space-y-4">
-            {baskets.map((b) => (
+            {filteredBaskets.map((b) => (
               <div key={b.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-2.5">
                   <div className="flex items-center space-x-3">

@@ -27,9 +27,11 @@ import {
   CheckCircle2,
   XCircle,
   Lock,
-  Layers
+  Layers,
+  Filter
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 export const AutonomousRunnerView: React.FC = () => {
   const [status, setStatus] = useState<AutonomousRunnerStatus | null>(null);
@@ -38,6 +40,8 @@ export const AutonomousRunnerView: React.FC = () => {
   const [selectedStrategy, setSelectedStrategy] = useState<AutonomousStrategy | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [logEventFilter, setLogEventFilter] = useState<string>('ALL');
+  const [logLimit, setLogLimit] = useState<number>(100);
 
   // New strategy form state
   const [name, setName] = useState('Nifty IV Breakout Bot');
@@ -71,14 +75,14 @@ export const AutonomousRunnerView: React.FC = () => {
   const fetchData = () => {
     safeFetchJson('/api/autonomous/status', setStatus);
     safeFetchJson('/api/autonomous/strategies', setStrategies);
-    safeFetchJson('/api/autonomous/logs', setLogs);
+    safeFetchJson(`/api/autonomous/logs?limit=${logLimit}`, setLogs);
   };
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 4000);
-    return () => clearInterval(interval);
-  }, []);
+  usePollingInterval(fetchData, 4000, [logLimit]);
+
+  const filteredLogs = logEventFilter === 'ALL'
+    ? logs
+    : logs.filter(l => l.eventType === logEventFilter);
 
   const handleToggleArm = (strat: AutonomousStrategy) => {
     const newArmedState = !strat.armed;
@@ -411,12 +415,48 @@ export const AutonomousRunnerView: React.FC = () => {
 
       {/* AUDIT LOG TRAIL TABLE */}
       <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-xl space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
-            <FileText className="w-4 h-4 text-emerald-400" />
-            <span>Autonomous Action & Audit Log Trail</span>
-          </h3>
-          <span className="text-[11px] text-slate-400">Recent {logs.length} logs</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
+              <FileText className="w-4 h-4 text-emerald-400" />
+              <span>Autonomous Action & Audit Log Trail ({filteredLogs.length})</span>
+            </h3>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
+              <Filter className="w-3 h-3 text-slate-400" />
+              <select
+                value={logEventFilter}
+                onChange={(e) => setLogEventFilter(e.target.value)}
+                className="bg-transparent text-slate-200 text-[11px] font-bold outline-none cursor-pointer"
+              >
+                <option value="ALL" className="bg-slate-900">All Events</option>
+                <option value="ENTRY_TRIGGERED" className="bg-slate-900">Entry Triggered</option>
+                <option value="EXIT_TRIGGERED" className="bg-slate-900">Exit Triggered</option>
+                <option value="BLOCKED_BY_MARGIN" className="bg-slate-900">Blocked by Margin</option>
+                <option value="BLOCKED_BY_LIMIT" className="bg-slate-900">Blocked by Limit</option>
+                <option value="KILL_SWITCH" className="bg-slate-900">Kill Switch</option>
+                <option value="ARMED" className="bg-slate-900">Armed</option>
+                <option value="DISARMED" className="bg-slate-900">Disarmed</option>
+                <option value="ERROR" className="bg-slate-900">Error</option>
+              </select>
+            </div>
+
+            <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
+              <span className="text-[10px] text-slate-500 font-bold">Limit:</span>
+              <select
+                value={logLimit}
+                onChange={(e) => setLogLimit(Number(e.target.value))}
+                className="bg-transparent text-slate-300 text-[11px] font-bold outline-none cursor-pointer"
+              >
+                <option value={50} className="bg-slate-900">50</option>
+                <option value={100} className="bg-slate-900">100</option>
+                <option value={200} className="bg-slate-900">200</option>
+                <option value={500} className="bg-slate-900">500</option>
+              </select>
+            </div>
+          </div>
         </div>
 
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
@@ -430,8 +470,8 @@ export const AutonomousRunnerView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 text-[11px]">
-              {logs.length > 0 ? (
-                logs.map(log => (
+              {filteredLogs.length > 0 ? (
+                filteredLogs.map(log => (
                   <tr key={log.id} className="hover:bg-slate-800/30">
                     <td className="py-2 px-3 font-mono text-slate-400 whitespace-nowrap">
                       {new Date(log.timestamp).toLocaleTimeString()}

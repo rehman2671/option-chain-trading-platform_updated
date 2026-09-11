@@ -12,6 +12,7 @@ import { globalEma15mEngine } from './ema15mEngine.js';
 
 export interface UpstoxStreamerStatus {
   connected: boolean;
+  tokenExpired?: boolean;
   protocol: string;
   totalTicksReceived: number;
   lastTickTime: string | null;
@@ -46,9 +47,31 @@ export class UpstoxStreamerV3 {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private lastError: string | null = null;
   private isConnecting: boolean = false;
+  private tokenExpired: boolean = false;
+  private lastUsedToken: string | null = null;
+  private isRefreshingToken: boolean = false;
+  private tokenRefreshHandler: (() => Promise<string | null>) | null = null;
 
   constructor() {
     this.initProtobufSchema();
+  }
+
+  public setTokenRefreshHandler(handler: () => Promise<string | null>): void {
+    this.tokenRefreshHandler = handler;
+  }
+
+  private isAuthError(errMessage: string, statusCode?: number): boolean {
+    if (statusCode === 401 || statusCode === 403) return true;
+    const msg = (errMessage || '').toLowerCase();
+    return (
+      msg.includes('invalid token') ||
+      msg.includes('token expired') ||
+      msg.includes('unauthorized') ||
+      msg.includes('udapi100050') ||
+      msg.includes('jwt expired') ||
+      msg.includes('invalid_token') ||
+      msg.includes('invalid access token')
+    );
   }
 
   private initProtobufSchema(): void {
@@ -74,6 +97,18 @@ export class UpstoxStreamerV3 {
       return false;
     }
 
+    // If an explicit token was provided or it's different from the expired token, reset expiry
+    if (token || (this.lastUsedToken && accessToken !== this.lastUsedToken)) {
+      this.tokenExpired = false;
+      this.reconnectAttempts = 0;
+      this.lastUsedToken = accessToken;
+    } else if (this.tokenExpired) {
+      // Current token is already known to be invalid/expired. Do not retry with the same expired token.
+      return false;
+    } else {
+      this.lastUsedToken = accessToken;
+    }
+
     if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) {
       return true;
     }
@@ -88,12 +123,18 @@ export class UpstoxStreamerV3 {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
-        }
+        },
+        signal: AbortSignal.timeout(10000)
       });
 
-      const authData: any = await authRes.json();
+      const authData: any = await authRes.json().catch(() => ({}));
       if (!authRes.ok || authData.status !== 'success' || !authData.data?.authorizedRedirectUri) {
-        throw new Error(authData.errors?.[0]?.message || authData.message || 'Failed to authorize WebSocket feed');
+        const errorMsg = authData.errors?.[0]?.message || authData.message || `HTTP ${authRes.status}: Failed to authorize WebSocket feed`;
+        const authErr = new Error(errorMsg);
+        if (this.isAuthError(errorMsg, authRes.status)) {
+          (authErr as any).isAuthError = true;
+        }
+        throw authErr;
       }
 
       const wsUrl = authData.data.authorizedRedirectUri;
@@ -113,6 +154,7 @@ export class UpstoxStreamerV3 {
       this.ws.on('open', () => {
         this.isConnected = true;
         this.isConnecting = false;
+        this.tokenExpired = false;
         this.reconnectAttempts = 0;
         console.log('[UPSTOX V3 STREAMER] Continuous WebSocket connection established! Zero-lag stream active.');
 
@@ -133,7 +175,9 @@ export class UpstoxStreamerV3 {
         console.warn(`[UPSTOX V3 STREAMER] Socket closed (code ${code}): ${reason.toString()}`);
         this.isConnected = false;
         this.isConnecting = false;
-        this.scheduleReconnect();
+        if (!this.tokenExpired) {
+          this.scheduleReconnect();
+        }
       });
 
       return true;
@@ -141,6 +185,38 @@ export class UpstoxStreamerV3 {
       this.isConnecting = false;
       this.isConnected = false;
       this.lastError = err.message;
+
+      const isAuthFail = err.isAuthError || this.isAuthError(err.message);
+      if (isAuthFail) {
+        this.tokenExpired = true;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+
+        console.warn(`[UPSTOX V3 STREAMER] Authentication notice: Upstox access token has expired or is invalid ("${err.message}"). Continuous streamer reconnect paused; calibrated market feed active.`);
+
+        // Attempt automatic refresh via TOTP handler if registered
+        if (this.tokenRefreshHandler && !this.isRefreshingToken) {
+          this.isRefreshingToken = true;
+          try {
+            console.log('[UPSTOX V3 STREAMER] Triggering automatic TOTP token refresh...');
+            const freshToken = await this.tokenRefreshHandler();
+            if (freshToken) {
+              console.log('[UPSTOX V3 STREAMER] Auto-refresh succeeded with fresh token. Reconnecting...');
+              this.isRefreshingToken = false;
+              return this.connect(freshToken);
+            }
+          } catch (refreshErr: any) {
+            console.warn('[UPSTOX V3 STREAMER] Automatic token refresh failed:', refreshErr.message);
+          } finally {
+            this.isRefreshingToken = false;
+          }
+        }
+
+        return false;
+      }
+
       console.warn('[UPSTOX V3 STREAMER] Connection error:', err.message);
       this.scheduleReconnect();
       return false;
@@ -260,6 +336,10 @@ export class UpstoxStreamerV3 {
    */
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+    if (this.tokenExpired) {
+      // Do not attempt to reconnect with an expired/invalid token
+      return;
+    }
 
     this.reconnectAttempts++;
     const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(this.reconnectAttempts, 6)));
@@ -267,7 +347,7 @@ export class UpstoxStreamerV3 {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (process.env.UPSTOX_ACCESS_TOKEN) {
+      if (process.env.UPSTOX_ACCESS_TOKEN && !this.tokenExpired) {
         this.connect().catch(() => {});
       }
     }, delay);
@@ -288,6 +368,7 @@ export class UpstoxStreamerV3 {
   public getStatus(): UpstoxStreamerStatus {
     return {
       connected: this.isConnected,
+      tokenExpired: this.tokenExpired,
       protocol: 'WEBSOCKET_V3_PROTOBUF',
       totalTicksReceived: this.totalTicksReceived,
       lastTickTime: this.lastTickTime,

@@ -30,6 +30,9 @@ export class AutonomousRunnerEngine {
   constructor() {
     // Start autonomous runner background loop (runs every 5 seconds)
     this.runnerInterval = setInterval(() => this.runEvaluationCycle(), 5000);
+    if (this.runnerInterval.unref) {
+      this.runnerInterval.unref();
+    }
     console.log('[AUTONOMOUS RUNNER] Engine initialized — loop active (5s cadence). Default disarmed.');
   }
 

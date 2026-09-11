@@ -820,7 +820,7 @@ async function startServer() {
       const userId = user ? user.id : null;
       const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
       const offset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
-      updatePaperPositionsMTM();
+      updatePaperPositionsMTM(userId);
       const portfolio = await getPaperPortfolioData(userId, limit, offset);
       res.json(portfolio);
     } catch (err: any) {

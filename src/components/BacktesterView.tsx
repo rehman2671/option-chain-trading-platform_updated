@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { BacktestConfig, BacktestResult } from '../types.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { 
   History, 
@@ -75,11 +76,7 @@ export const BacktesterView: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    fetchSyncStatus();
-    const interval = setInterval(fetchSyncStatus, 2000);
-    return () => clearInterval(interval);
-  }, []);
+  usePollingInterval(fetchSyncStatus, 3000, []);
 
   const handleTimeframePreset = (preset: '1D' | '1W' | '1M' | '2M' | '3M' | '6M' | '1Y' | 'CUSTOM') => {
     const today = new Date();

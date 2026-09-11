@@ -181,6 +181,9 @@ export class Ema15mEngine {
         console.error('[EMA 15M ENGINE] Error in evaluation loop:', err.message);
       }
     }, 3000);
+    if (this.intervalTimer.unref) {
+      this.intervalTimer.unref();
+    }
   }
 
   /**

@@ -43,6 +43,7 @@ import {
   EmaPaperTradingSummary
 } from '../types.js';
 import { ExpertTraderChart } from './ExpertTraderChart.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 export const Ema15mDashboardView: React.FC = () => {
   const { user } = useAuth();
@@ -337,11 +338,10 @@ export const Ema15mDashboardView: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchData();
     fetchSettings();
-    const interval = setInterval(fetchData, 4000);
-    return () => clearInterval(interval);
-  }, [selectedSymbol, candleLimit, timeframe, selectedRange, customStartDate, customEndDate]);
+  }, []);
+
+  usePollingInterval(fetchData, 4000, [selectedSymbol, candleLimit, timeframe, selectedRange, customStartDate, customEndDate]);
 
   // Filtered signals for the table
   const filteredSignals = useMemo(() => {

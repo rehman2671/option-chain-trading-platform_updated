@@ -89,14 +89,37 @@ class DatabaseEngine {
     return msg.includes('malformed') || msg.includes('corrupt') || msg.includes('disk i/o error') || code === 'SQLITE_CORRUPT';
   }
 
-  private handleRuntimeCorruption(err: any): void {
+  private handleRuntimeCorruption(err: any, contextOperation: string = 'query'): void {
     if (this.isCorruptionError(err) && !this.isRecovering) {
-      console.error('[DB ENGINE FATAL] Runtime SQLite corruption detected. Running emergency auto-recovery...', err);
-      this.salvageAndResetDatabase();
+      let pragmaState: any = {};
+      if (this.db) {
+        try {
+          pragmaState = {
+            synchronous: this.db.pragma('synchronous', { simple: true }),
+            busy_timeout: this.db.pragma('busy_timeout', { simple: true }),
+            journal_mode: this.db.pragma('journal_mode', { simple: true }),
+            wal_autocheckpoint: this.db.pragma('wal_autocheckpoint', { simple: true })
+          };
+        } catch {}
+      }
+
+      const diagnostic = {
+        timestamp: new Date().toISOString(),
+        processUptimeSec: Math.floor(process.uptime()),
+        pid: process.pid,
+        contextOperation,
+        errorCode: err?.code || 'UNKNOWN',
+        errorMessage: err?.message || String(err),
+        errorStack: err?.stack,
+        pragmasInEffect: pragmaState
+      };
+
+      console.error('[DB ENGINE FATAL] Runtime SQLite corruption detected with structured diagnostics:\n' + JSON.stringify(diagnostic, null, 2));
+      this.salvageAndResetDatabase(diagnostic);
     }
   }
 
-  private salvageAndResetDatabase(): void {
+  private salvageAndResetDatabase(diagnostic?: any): void {
     if (this.isRecovering) return;
     this.isRecovering = true;
 
@@ -156,17 +179,26 @@ class DatabaseEngine {
       this.db = null;
     }
 
-    // 2. Backup corrupt database and auxiliary WAL/SHM files
+    // 2. Backup corrupt database and auxiliary WAL/SHM files to safe .backups/ directory
     if (fs.existsSync(this.dbFilePath)) {
       const stats = fs.statSync(this.dbFilePath);
-      const backupPath = `${this.dbFilePath}.corrupt.${Date.now()}`;
+      const backupDir = path.join(process.cwd(), '.backups');
+      if (!fs.existsSync(backupDir)) {
+        try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
+      }
+      const timestamp = Date.now();
+      const backupFilename = `option_platform.sqlite.corrupt.${timestamp}`;
+      const backupPath = path.join(backupDir, backupFilename);
       try {
         fs.copyFileSync(this.dbFilePath, backupPath);
+        if (diagnostic) {
+          fs.writeFileSync(`${backupPath}.diag.json`, JSON.stringify(diagnostic, null, 2));
+        }
         this.migrationReport.corruptBackups.push({
-          path: path.basename(backupPath),
+          path: path.join('.backups', backupFilename),
           size: stats.size
         });
-        console.warn(`[DB RECOVERY] Corrupt database file copied to backup: ${backupPath} (${stats.size} bytes).`);
+        console.warn(`[DB RECOVERY] Corrupt database file secured to backup directory: ${backupPath} (${stats.size} bytes).`);
       } catch (copyErr) {
         console.error('[DB RECOVERY] Could not create backup copy of corrupt file:', copyErr);
       }
@@ -272,9 +304,19 @@ class DatabaseEngine {
         // Keep tick and option chain tables efficiently pruned to avoid gigabyte-scale unbounded growth
         this.pruneOldSnapshots();
       } catch (err) {
-        this.handleRuntimeCorruption(err);
+        this.handleRuntimeCorruption(err, 'wal_checkpoint_and_compaction');
       }
     }, 120000);
+    if (this.walCheckpointTimer.unref) {
+      this.walCheckpointTimer.unref();
+    }
+  }
+
+  public stopWalCompactor(): void {
+    if (this.walCheckpointTimer) {
+      clearInterval(this.walCheckpointTimer);
+      this.walCheckpointTimer = null;
+    }
   }
 
   public pruneOldSnapshots(targetTickKeep: number = 40000, targetChainKeep: number = 80000): { prunedTicks: number; prunedChains: number } {
@@ -301,7 +343,7 @@ class DatabaseEngine {
       // Reclaim WAL pages passively without blocking active market feeds
       this.db.pragma('wal_checkpoint(PASSIVE)');
     } catch (err) {
-      this.handleRuntimeCorruption(err);
+      this.handleRuntimeCorruption(err, 'pruneOldSnapshots');
     }
     return { prunedTicks, prunedChains };
   }
@@ -329,18 +371,44 @@ class DatabaseEngine {
   private auditLegacyBackups(): void {
     try {
       const cwd = process.cwd();
+      const backupDir = path.join(cwd, '.backups');
+      if (!fs.existsSync(backupDir)) {
+        try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
+      }
+
+      // Check root directory and relocate legacy corrupt files to .backups/
       const files = fs.readdirSync(cwd);
       for (const f of files) {
         if (f.includes('.corrupt.')) {
-          const filePath = path.join(cwd, f);
+          const srcPath = path.join(cwd, f);
+          const destPath = path.join(backupDir, f);
           try {
-            const stats = fs.statSync(filePath);
+            const stats = fs.statSync(srcPath);
+            fs.renameSync(srcPath, destPath);
             this.migrationReport.corruptBackups.push({
-              path: f,
+              path: path.join('.backups', f),
               size: stats.size
             });
-            console.warn(`[DB RECOVERY] Audited legacy corrupt backup file: ${f} (${stats.size} bytes).`);
-          } catch {}
+            console.warn(`[DB RECOVERY] Relocated legacy corrupt file to .backups: ${f} (${stats.size} bytes).`);
+          } catch (relocateErr) {
+            console.error(`[DB RECOVERY] Could not relocate corrupt file ${f}:`, relocateErr);
+          }
+        }
+      }
+
+      // Also audit existing files in .backups/
+      if (fs.existsSync(backupDir)) {
+        const backupFiles = fs.readdirSync(backupDir);
+        for (const bf of backupFiles) {
+          if (bf.includes('.corrupt.') && !this.migrationReport.corruptBackups.some(cb => cb.path.endsWith(bf))) {
+            try {
+              const stats = fs.statSync(path.join(backupDir, bf));
+              this.migrationReport.corruptBackups.push({
+                path: path.join('.backups', bf),
+                size: stats.size
+              });
+            } catch {}
+          }
         }
       }
     } catch (err) {

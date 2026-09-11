@@ -5,6 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus } from '../types.js';
 import { Database, Download, CheckCircle2, ShieldCheck, Cpu, Code2, Layers, BookOpen, Activity, RefreshCw } from 'lucide-react';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 export const DocumentationView: React.FC = () => {
   const [schemas, setSchemas] = useState<DatabaseSchemaInfo[]>([]);
@@ -29,10 +30,9 @@ export const DocumentationView: React.FC = () => {
     safeFetchJson('/api/system/health', setHealthData);
   };
 
-  useEffect(() => {
-    fetchHealth();
-    const interval = setInterval(fetchHealth, 10000);
+  usePollingInterval(fetchHealth, 10000, []);
 
+  useEffect(() => {
     safeFetchJson('/api/db/schema', setSchemas);
     safeFetchJson('/api/db/migrations', setMigrations);
 
@@ -40,8 +40,6 @@ export const DocumentationView: React.FC = () => {
       .then(res => res.ok ? res.text() : '')
       .then(data => { if (data) setDdlScript(data); })
       .catch(console.error);
-
-    return () => clearInterval(interval);
   }, []);
 
   const handleDownloadDDL = () => {

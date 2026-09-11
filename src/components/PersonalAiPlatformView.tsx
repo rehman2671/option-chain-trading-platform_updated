@@ -19,6 +19,7 @@ import {
   StrategyDescriptor
 } from '../types.js';
 import { apiFetch } from '../lib/api.js';
+import { usePollingInterval } from '../lib/usePollingInterval.js';
 import {
   Zap,
   TrendingUp,
@@ -105,11 +106,7 @@ export const PersonalAiPlatformView: React.FC<PersonalAiPlatformViewProps> = ({
     }
   };
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
-    return () => clearInterval(interval);
-  }, []);
+  usePollingInterval(fetchData, 15000, []);
 
   const handleExecuteSignal = async (signal: MarketSignal) => {
     setIsExecutingSignal(signal.id);

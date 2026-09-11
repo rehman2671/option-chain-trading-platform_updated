@@ -140,6 +140,9 @@ export class PracticeModeProvider implements IMarketDataProvider {
     this.pollIntervalTimer = setInterval(() => {
       this.fetchRealTimeQuotes().catch(() => {});
     }, 4000);
+    if (this.pollIntervalTimer.unref) {
+      this.pollIntervalTimer.unref();
+    }
 
     // Initial immediate fetch
     setTimeout(() => {

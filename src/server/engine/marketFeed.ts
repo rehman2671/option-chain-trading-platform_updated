@@ -181,11 +181,13 @@ export class MarketFeedEngine {
       }
 
       // Polling loop: High frequency (3s) for active viewed symbol
-      setInterval(() => this.pollLoop(), 3000);
+      const pollTimer = setInterval(() => this.pollLoop(), 3000);
+      if (pollTimer.unref) pollTimer.unref();
 
       // Phase I Task 1: Background capture loop (1 symbol every 15s -> full 5-symbol cycle in 75s)
       // Runs unconditionally from server startup for continuous historical persistence across all symbols
-      setInterval(() => this.backgroundCaptureLoop(), 15000);
+      const bgTimer = setInterval(() => this.backgroundCaptureLoop(), 15000);
+      if (bgTimer.unref) bgTimer.unref();
     } catch (err: any) {
       console.error('[MARKET FEED] Engine init error:', err.message);
       this.providerConnected = false;
@@ -637,10 +639,12 @@ export class MarketFeedEngine {
       ivPercentile,
       timestamp: new Date().toISOString(),
       strikes,
-      isBrokerConnected: true,
+      isBrokerConnected: mode === 'LIVE'
+        ? (activeProvider.getLiveConnectionStatus?.().isConnected ?? false)
+        : true,
       brokerStatusMessage: mode === 'PRACTICE'
         ? 'PRACTICE MODE — Calibrated Market Feed & Black-Scholes Engine'
-        : 'Connected to Upstox API v2 Live Feed',
+        : (activeProvider.getLiveConnectionStatus?.().message || 'Connected to Upstox API v2 Live Feed'),
       providerMode: mode,
       isPartialData,
       unavailableStrikeCount: unavailableCount,
@@ -703,8 +707,12 @@ export class MarketFeedEngine {
       ivPercentile: 50,
       timestamp: new Date().toISOString(),
       strikes: [],
-      isBrokerConnected: true,
-      brokerStatusMessage: 'Loading market feed...',
+      isBrokerConnected: mode === 'LIVE'
+        ? (activeProvider.getLiveConnectionStatus?.().isConnected ?? false)
+        : true,
+      brokerStatusMessage: mode === 'PRACTICE'
+        ? 'PRACTICE MODE — Calibrated Market Feed & Black-Scholes Engine'
+        : (activeProvider.getLiveConnectionStatus?.().message || 'Loading market feed...'),
       providerMode: mode
     };
   }
