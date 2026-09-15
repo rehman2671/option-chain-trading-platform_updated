@@ -14,10 +14,14 @@ import { globalMarketFeed } from './marketFeed.js';
 import { globalBasketEngine } from './basketEngine.js';
 import { activeProvider } from './providers/index.js';
 import { evaluateRuleGroup, EvaluationContext } from './ruleEvaluator.js';
+import { evaluateStrategyEntry, evaluateStrategyExit } from '../../quant/strategies/strategyDecisionEngine.js';
 import { AutonomousStrategy, AutonomousStrategyLog, AutonomousRunnerStatus, StrategyLeg } from '../../types.js';
+import { tradeReviewEngine } from '../../quant/learning/tradeReviewEngine.js';
+import { killSwitchEngine } from '../../quant/risk/killSwitch.js';
+import { drawdownController } from '../../quant/risk/drawdownController.js';
+import { exposureController } from '../../quant/risk/exposureController.js';
 
 export class AutonomousRunnerEngine {
-  private killSwitchByUser: Map<string, { reason: string; triggeredAt: string }> = new Map();
   private runnerInterval?: NodeJS.Timeout;
   private isProcessingLoop: boolean = false;
 
@@ -40,10 +44,10 @@ export class AutonomousRunnerEngine {
    * Triggers Per-User Kill Switch: Disarms user's strategies and halts further loop actions for user.
    */
   public triggerKillSwitch(userId: string, reason: string): { disarmedCount: number; message: string } {
-    this.killSwitchByUser.set(userId, { reason, triggeredAt: new Date().toISOString() });
+    killSwitchEngine.manualEmergencyKill('AUTONOMOUS_ENGINE', userId, reason);
 
     const disarmedCount = dbEngine.disarmAllAutonomousStrategies(reason, userId);
-    console.warn(`[AUTONOMOUS RUNNER] KILL SWITCH TRIGGERED FOR USER ${userId}: ${reason}. Disarmed ${disarmedCount} strategies.`);
+    console.warn(`[AUTONOMOUS RUNNER] UNIFIED KILL SWITCH TRIGGERED FOR USER ${userId}: ${reason}. Disarmed ${disarmedCount} strategies.`);
 
     return {
       disarmedCount,
@@ -55,7 +59,7 @@ export class AutonomousRunnerEngine {
    * Resets Kill Switch state for a user
    */
   public resetKillSwitch(userId: string): void {
-    this.killSwitchByUser.delete(userId);
+    killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Kill Switch manually reset by user.', userId);
     dbEngine.addAutonomousLog({
       id: `log-${Date.now()}`,
       strategyId: 'GLOBAL',
@@ -64,7 +68,7 @@ export class AutonomousRunnerEngine {
       eventType: 'DISARMED',
       details: { reason: 'Kill Switch manually reset by user. System ready for individual arming.' }
     }, userId);
-    console.log(`[AUTONOMOUS RUNNER] Kill switch reset for user ${userId}.`);
+    console.log(`[AUTONOMOUS RUNNER] Unified kill switch reset for user ${userId}.`);
   }
 
   /**
@@ -91,8 +95,12 @@ export class AutonomousRunnerEngine {
 
       // Process per user
       for (const [userId, userStrats] of userStrategyMap.entries()) {
-        // 1. Check user kill switch
-        if (this.killSwitchByUser.has(userId)) {
+        // 1. Check unified risk kill switch and drawdown controls
+        if (killSwitchEngine.isHalted(userId)) {
+          continue;
+        }
+
+        if (drawdownController.isHalted(userId)) {
           continue;
         }
 
@@ -166,9 +174,9 @@ export class AutonomousRunnerEngine {
             };
 
             if (strat.status === 'WATCHING') {
-              const evalResult = evaluateRuleGroup(strat.entryRules, context);
+              const evalResult = evaluateStrategyEntry(strat, context);
 
-              if (evalResult.triggered) {
+              if (evalResult.shouldEnter) {
                 if (inPositionCount >= this.MAX_CONCURRENT_POSITIONS) {
                   dbEngine.addAutonomousLog({
                     id: `log-${Date.now()}`,
@@ -280,9 +288,8 @@ export class AutonomousRunnerEngine {
             } else if (strat.status === 'IN_POSITION') {
               let actionTaken = false;
 
-              if (strat.exitRules && (strat.exitRules.all || strat.exitRules.any)) {
-                const exitEval = evaluateRuleGroup(strat.exitRules, context);
-                if (exitEval.triggered) {
+              const exitEval = evaluateStrategyExit(strat, context);
+              if (exitEval.shouldExit) {
                   const reverseLegs: StrategyLeg[] = strat.legs.map(leg => ({
                     ...leg,
                     action: leg.action === 'BUY' ? 'SELL' : 'BUY'
@@ -329,6 +336,17 @@ export class AutonomousRunnerEngine {
                   strat.lastEvaluatedAt = nowIso;
                   dbEngine.saveAutonomousStrategy(strat, userId);
 
+                  try {
+                    tradeReviewEngine.recordFromAutonomousStrategy(
+                      strat,
+                      exitEval.reasons || [],
+                      realizedPositionPnl,
+                      nowIso
+                    );
+                  } catch (revErr) {
+                    console.error('[AUTONOMOUS ENGINE] Error recording trade review on exit:', revErr);
+                  }
+
                   dbEngine.addAutonomousLog({
                     id: `log-${Date.now()}`,
                     strategyId: strat.id,
@@ -344,7 +362,6 @@ export class AutonomousRunnerEngine {
                   }, userId);
                   actionTaken = true;
                 }
-              }
 
               if (!actionTaken && strat.adjustmentRules && (strat.adjustmentRules.all || strat.adjustmentRules.any)) {
                 const adjEval = evaluateRuleGroup(strat.adjustmentRules, context);
@@ -413,8 +430,8 @@ export class AutonomousRunnerEngine {
     const isDryRun = providerMode === 'PRACTICE' ? true : (process.env.DRY_RUN !== 'false');
 
     const uId = userId || 'ANONYMOUS';
-    const userKs = this.killSwitchByUser.get(uId);
-    const isKillSwitchEngaged = !!userKs;
+    const isKillSwitchEngaged = killSwitchEngine.isHalted(uId);
+    const killSwitchReason = killSwitchEngine.getHaltReason(uId);
 
     const all = dbEngine.getAllAutonomousStrategies(userId);
     const armedCount = all.filter(s => s.armed).length;
@@ -445,7 +462,7 @@ export class AutonomousRunnerEngine {
     return {
       isRunnerActive: !isKillSwitchEngaged,
       isKillSwitchEngaged,
-      killSwitchReason: userKs?.reason,
+      killSwitchReason: killSwitchReason || undefined,
       armedCount,
       inPositionCount,
       totalStrategies: all.length,

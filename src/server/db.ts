@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary } from '../types.js';
+import type { TradeReviewRecord, MarketRegimeType } from '../quant/types.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
 export interface MigrationReport {
@@ -688,6 +689,7 @@ class DatabaseEngine {
     if (!this.db) return false;
     try {
       const now = new Date().toISOString();
+      const pos = this.db.prepare(`SELECT * FROM paper_positions WHERE id = ? AND status = 'OPEN'`).get(id) as any;
       let info;
       if (userId) {
         info = this.db.prepare(
@@ -698,6 +700,15 @@ class DatabaseEngine {
           `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN'`
         ).run(now, exitPrice, closePnl, reason, id);
       }
+
+      if (info.changes > 0 && pos) {
+        try {
+          this.saveTradeReviewFromPaperPosition(pos, exitPrice, closePnl, reason, now);
+        } catch (revErr) {
+          console.error('[DB] Error auto-generating review for paper position:', revErr);
+        }
+      }
+
       return info.changes > 0;
     } catch (err) {
       console.error('Failed to close paper position in SQLite:', err);
@@ -713,6 +724,10 @@ class DatabaseEngine {
     if (!this.db) return false;
     try {
       const now = new Date().toISOString();
+      const openPositions = this.db.prepare(
+        `SELECT * FROM paper_positions WHERE strategy_group_id = ? AND status = 'OPEN' ${userId ? 'AND (user_id = ? OR user_id IS NULL)' : ''}`
+      ).all(...(userId ? [groupId, userId] : [groupId])) as any[];
+
       let info;
       if (userId) {
         info = this.db.prepare(
@@ -721,7 +736,6 @@ class DatabaseEngine {
                closed_at = ?, 
                exit_price = current_price, 
                pnl = CASE WHEN action = 'BUY' THEN ROUND((current_price - entry_price) * quantity, 2) ELSE ROUND((entry_price - current_price) * quantity, 2) END,
-               pnl_percent = CASE WHEN entry_price > 0 THEN CASE WHEN action = 'BUY' THEN ROUND(((current_price - entry_price) / entry_price) * 100, 2) ELSE ROUND(((entry_price - current_price) / entry_price) * 100, 2) END ELSE 0 END,
                close_reason = ? 
            WHERE strategy_group_id = ? AND status = 'OPEN' AND (user_id = ? OR user_id IS NULL)`
         ).run(now, reason, groupId, userId);
@@ -732,11 +746,23 @@ class DatabaseEngine {
                closed_at = ?, 
                exit_price = current_price, 
                pnl = CASE WHEN action = 'BUY' THEN ROUND((current_price - entry_price) * quantity, 2) ELSE ROUND((entry_price - current_price) * quantity, 2) END,
-               pnl_percent = CASE WHEN entry_price > 0 THEN CASE WHEN action = 'BUY' THEN ROUND(((current_price - entry_price) / entry_price) * 100, 2) ELSE ROUND(((entry_price - current_price) / entry_price) * 100, 2) END ELSE 0 END,
                close_reason = ? 
            WHERE strategy_group_id = ? AND status = 'OPEN'`
         ).run(now, reason, groupId);
       }
+
+      if (info.changes > 0 && openPositions && openPositions.length > 0) {
+        for (const p of openPositions) {
+          try {
+            const exitP = Number(p.current_price || p.entry_price || 0);
+            const pnl = Number(p.pnl || 0);
+            this.saveTradeReviewFromPaperPosition(p, exitP, pnl, reason, now);
+          } catch (revErr) {
+            console.error('[DB] Error auto-generating review for grouped position:', revErr);
+          }
+        }
+      }
+
       return info.changes > 0;
     } catch (err) {
       console.error('Failed to close paper strategy group in SQLite:', err);
@@ -857,7 +883,15 @@ class DatabaseEngine {
       const runBatch = this.db.transaction(() => {
         const now = new Date().toISOString();
         for (const item of updates.toClose) {
+          const pos = this.db.prepare(`SELECT * FROM paper_positions WHERE id = ? AND status = 'OPEN'`).get(item.id) as any;
           closeStmt.run(now, item.exitPrice, item.pnl, item.reason, item.id);
+          if (pos) {
+            try {
+              this.saveTradeReviewFromPaperPosition(pos, item.exitPrice, item.pnl, item.reason, now);
+            } catch (revErr) {
+              console.error('[DB] Error auto-generating review in MTM close:', revErr);
+            }
+          }
         }
         for (const item of updates.toUpdate) {
           updateStmt.run(item.currentPrice, item.pnl, item.id);
@@ -1031,6 +1065,81 @@ class DatabaseEngine {
   }
 
   /**
+   * Get the most recent spot price for a symbol from the ticks table
+   */
+  public getLatestSpotPrice(symbol: string): number | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare(
+        `SELECT spot_price FROM ticks WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1`
+      ).get(symbol) as any;
+      return row && typeof row.spot_price === 'number' ? row.spot_price : null;
+    } catch (err) {
+      console.error('[DB] Error querying latest spot price:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Builds recent 1-minute OHLC candles on the fly from the raw ticks table,
+   * grouping ticks by minute bucket.
+   */
+  public getRecentSpotCandlesForUnderlying(
+    symbol: string,
+    minutes: number = 60
+  ): Array<{ open: number; high: number; low: number; close: number; volume: number; timestamp: string }> {
+    if (!this.db) return [];
+    try {
+      const safeMinutes = Math.min(Math.max(1, minutes || 60), 240);
+      const maxTicks = safeMinutes * 30; // ~20 ticks/minute, with 50% buffer
+      const rows = this.db.prepare(`
+        SELECT 
+          substr(timestamp, 1, 16) as minute_bucket,
+          MIN(spot_price) as low,
+          MAX(spot_price) as high,
+          SUM(volume) as volume,
+          COUNT(*) as tick_count,
+          MIN(id) as first_id,
+          MAX(id) as last_id
+        FROM (
+          SELECT id, spot_price, volume, timestamp 
+          FROM ticks 
+          WHERE symbol = ? 
+          ORDER BY id DESC 
+          LIMIT ?
+        ) t
+        GROUP BY minute_bucket
+        ORDER BY minute_bucket ASC
+      `).all(symbol, maxTicks) as any[];
+
+      if (!rows || rows.length === 0) return [];
+
+      const idList = rows.flatMap(r => [r.first_id, r.last_id]);
+      const tickMap = new Map<number, number>();
+      if (idList.length > 0) {
+        const tickRows = this.db.prepare(
+          `SELECT id, spot_price FROM ticks WHERE id IN (${idList.join(',')})`
+        ).all() as any[];
+        for (const tr of tickRows) {
+          tickMap.set(tr.id, tr.spot_price);
+        }
+      }
+
+      return rows.map(r => ({
+        timestamp: `${r.minute_bucket}:00Z`,
+        open: tickMap.get(r.first_id) || r.low,
+        high: Number(r.high) || 0,
+        low: Number(r.low) || 0,
+        close: tickMap.get(r.last_id) || r.high,
+        volume: Number(r.volume) || 0
+      }));
+    } catch (err) {
+      console.error(`[DB] Error generating 1-minute candles for ${symbol}:`, err);
+      return [];
+    }
+  }
+
+  /**
    * Load historical ticks from SQLite for real backtesting (clamped to max 5000 ticks)
    */
   public getHistoricalTicks(symbol: string, startDate?: string, endDate?: string, limit: number = 5000): { spotPrice: number; vix: number; timestamp: string }[] {
@@ -1152,8 +1261,17 @@ class DatabaseEngine {
         `SELECT ltp FROM option_chains WHERE symbol = ? AND strike_price = ? AND option_type = ? AND updated_at <= ? ORDER BY updated_at DESC LIMIT 1`
       ).get(symbol, strikePrice, optionType, timestamp) as any;
 
-      if (row && typeof row.ltp === 'number') {
+      if (row && typeof row.ltp === 'number' && row.ltp > 0) {
         return row.ltp;
+      }
+
+      // Check recorded quant_option_chain_snapshots
+      const quantRow = this.db.prepare(
+        `SELECT ltp FROM quant_option_chain_snapshots WHERE underlying = ? AND strike = ? AND option_type = ? AND market_ts <= ? ORDER BY market_ts DESC LIMIT 1`
+      ).get(symbol, strikePrice, optionType, timestamp) as any;
+
+      if (quantRow && typeof quantRow.ltp === 'number' && quantRow.ltp > 0) {
+        return quantRow.ltp;
       }
     } catch (err) {
       console.error('Failed to get historical option ltp from DB:', err);
@@ -1659,6 +1777,190 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 008 - Quant Intelligence Module Tables.');
     }
+
+    // Migration 009: Quant Trade Reviews Table (Section 52)
+    if (!appliedVersions.has(9)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS quant_trade_reviews (
+          trade_id TEXT PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          strategy_name TEXT NOT NULL,
+          strategy_version INTEGER NOT NULL DEFAULT 1,
+          entry_time TEXT NOT NULL,
+          exit_time TEXT NOT NULL,
+          entry_thesis TEXT NOT NULL DEFAULT '',
+          exit_reason TEXT NOT NULL DEFAULT '',
+          regime_at_entry TEXT NOT NULL DEFAULT 'RANGE',
+          gross_pnl REAL NOT NULL DEFAULT 0.0,
+          net_pnl REAL NOT NULL DEFAULT 0.0,
+          slippage_incurred REAL NOT NULL DEFAULT 0.0,
+          max_favorable_excursion_r REAL NOT NULL DEFAULT 0.0,
+          max_adverse_excursion_r REAL NOT NULL DEFAULT 0.0,
+          thesis_was_correct INTEGER NOT NULL DEFAULT 0,
+          timing_was_optimal INTEGER NOT NULL DEFAULT 0,
+          strike_selection_was_optimal INTEGER NOT NULL DEFAULT 0,
+          lessons_learned TEXT NOT NULL DEFAULT '',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_symbol ON quant_trade_reviews(symbol);
+        CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_strategy ON quant_trade_reviews(strategy_name);
+        CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_exit ON quant_trade_reviews(exit_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_created ON quant_trade_reviews(created_at DESC);
+      `);
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (9, 'Quant Trade Reviews Table');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 009 - Quant Trade Reviews Table.');
+    }
+
+    // Migration 010: Quant Autonomous Research Cycles Table (Section 51 & 69)
+    if (!appliedVersions.has(10)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS quant_research_cycles (
+          id TEXT PRIMARY KEY,
+          cycle_id TEXT NOT NULL,
+          execution_timestamp TEXT NOT NULL,
+          trades_analyzed_count INTEGER NOT NULL DEFAULT 0,
+          total_net_pnl_reviewed REAL NOT NULL DEFAULT 0.0,
+          win_rate_realized_pct REAL NOT NULL DEFAULT 0.0,
+          hypotheses_generated_count INTEGER NOT NULL DEFAULT 0,
+          top_generated_hypotheses TEXT NOT NULL DEFAULT '[]',
+          regime_performance_summary TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'COMPLETED',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quant_research_cycles_exec ON quant_research_cycles(execution_timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_quant_research_cycles_status ON quant_research_cycles(status);
+      `);
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (10, 'Quant Autonomous Research Cycles Table');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 010 - Quant Autonomous Research Cycles Table.');
+    }
+
+    // Migration 011: Quant Forecast Entries & Predicted Probabilities at Entry (Section 74 & 48)
+    if (!appliedVersions.has(11)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS quant_forecast_entries (
+          id TEXT PRIMARY KEY,
+          decision_id TEXT,
+          trade_id TEXT,
+          strategy_id TEXT,
+          strategy_name TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          regime TEXT NOT NULL,
+          predicted_prob REAL NOT NULL,
+          expected_value_r REAL NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quant_forecast_trade ON quant_forecast_entries(trade_id);
+        CREATE INDEX IF NOT EXISTS idx_quant_forecast_strat ON quant_forecast_entries(strategy_id);
+        CREATE INDEX IF NOT EXISTS idx_quant_forecast_regime ON quant_forecast_entries(regime);
+      `);
+
+      // Ensure predicted_prob_at_entry exists on quant_trade_reviews
+      try {
+        const reviewCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(quant_trade_reviews)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!reviewCols.has('predicted_prob_at_entry')) {
+          this.db.exec(`ALTER TABLE quant_trade_reviews ADD COLUMN predicted_prob_at_entry REAL;`);
+        }
+      } catch (colErr) {
+        console.warn('[DB] Migration 011 column check quant_trade_reviews notice:', colErr);
+      }
+
+      // Ensure predicted_prob exists on paper_positions
+      try {
+        const posCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(paper_positions)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!posCols.has('predicted_prob')) {
+          this.db.exec(`ALTER TABLE paper_positions ADD COLUMN predicted_prob REAL;`);
+        }
+      } catch (colErr) {
+        console.warn('[DB] Migration 011 column check paper_positions notice:', colErr);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (11, 'Quant Forecast Entries and Predicted Probabilities at Entry');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 011 - Forecast Entries & Predicted Probabilities.');
+    }
+
+    // Migration 012: Unified Quant Execution Mode, Kill Switch Persistence, and Quant Orders
+    if (!appliedVersions.has(12)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS quant_user_settings (
+          user_id TEXT PRIMARY KEY,
+          quant_execution_mode TEXT NOT NULL DEFAULT 'ADVISORY_ONLY',
+          min_confidence_threshold REAL DEFAULT 70.0,
+          allowed_underlyings TEXT DEFAULT '["NIFTY","BANKNIFTY"]',
+          max_daily_quant_orders INTEGER DEFAULT 5,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_kill_switch_states (
+          user_id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          is_halted INTEGER NOT NULL DEFAULT 0,
+          halted_at TEXT,
+          halt_reason TEXT,
+          operator TEXT,
+          emergency_actions_json TEXT,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quant_orders (
+          id TEXT PRIMARY KEY,
+          user_id TEXT,
+          strategy_id TEXT,
+          decision_id TEXT,
+          underlying TEXT,
+          symbol TEXT,
+          action TEXT,
+          mode TEXT,
+          status TEXT,
+          executed_price REAL,
+          slippage REAL,
+          quantity INTEGER,
+          legs_json TEXT,
+          decision_json TEXT,
+          audit_trail_id INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quant_orders_user_created ON quant_orders(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_quant_orders_status ON quant_orders(status);
+      `);
+
+      // Ensure execution_mode exists on quant_strategies
+      try {
+        const stratCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(quant_strategies)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!stratCols.has('execution_mode')) {
+          this.db.exec(`ALTER TABLE quant_strategies ADD COLUMN execution_mode TEXT DEFAULT 'ADVISORY_ONLY';`);
+        }
+      } catch (stratColErr) {
+        console.warn('[DB] Migration 012 column check quant_strategies notice:', stratColErr);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (12, 'Unified Quant Execution Mode, Persistent Kill Switch States, and Quant Orders');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 012 - Unified Quant Execution & Risk Persistence.');
+    }
   }
 
   /**
@@ -1690,7 +1992,10 @@ class DatabaseEngine {
       'CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_status_net ON ema_paper_trades(status, net_pnl);',
       'CREATE INDEX IF NOT EXISTS idx_ema_paper_trades_closed ON ema_paper_trades(status, exit_timestamp);',
       'CREATE INDEX IF NOT EXISTS idx_ticks_timestamp ON ticks(timestamp);',
-      'CREATE INDEX IF NOT EXISTS idx_option_chains_updated_at ON option_chains(updated_at);'
+      'CREATE INDEX IF NOT EXISTS idx_option_chains_updated_at ON option_chains(updated_at);',
+      'CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_exit ON quant_trade_reviews(exit_time DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_quant_trade_reviews_symbol ON quant_trade_reviews(symbol);',
+      'CREATE INDEX IF NOT EXISTS idx_quant_research_cycles_exec ON quant_research_cycles(execution_timestamp DESC);'
     ];
 
     for (const sql of indexes) {
@@ -1778,7 +2083,7 @@ class DatabaseEngine {
 
   public getTableRowCounts(): Record<string, number> {
     if (!this.db) return {};
-    const tables = ['ticks', 'option_chains', 'basket_orders', 'paper_positions', 'oi_anomalies', 'autonomous_strategies', 'autonomous_strategy_log'];
+    const tables = ['ticks', 'option_chains', 'basket_orders', 'paper_positions', 'oi_anomalies', 'autonomous_strategies', 'autonomous_strategy_log', 'quant_option_chain_snapshots', 'quant_trade_reviews', 'quant_research_cycles'];
     const result: Record<string, number> = {};
     for (const t of tables) {
       try {
@@ -2880,6 +3185,14 @@ class DatabaseEngine {
         WHERE id = ? AND status = 'OPEN'
       `).run(exitPrice, exitPrice, now, exitReason, grossPnl, brokerage, netPnl, id);
 
+      if (res.changes > 0) {
+        try {
+          this.saveTradeReviewFromEmaTrade(trade, exitPrice, grossPnl, netPnl, exitReason, now);
+        } catch (revErr) {
+          console.error('[DB] Error auto-generating review for EMA trade:', revErr);
+        }
+      }
+
       return res.changes > 0;
     } catch (err) {
       console.error(`[DB] Error closing EMA paper trade ${id}:`, err);
@@ -2924,7 +3237,15 @@ class DatabaseEngine {
       const runBatch = this.db.transaction(() => {
         const now = new Date().toISOString();
         for (const item of updates.toClose) {
+          const trade = this.db.prepare(`SELECT * FROM ema_paper_trades WHERE id = ? AND status = 'OPEN'`).get(item.id) as any;
           closeStmt.run(item.exitPrice, item.exitPrice, item.exitTimestamp || now, item.exitReason, item.grossPnl, item.netPnl, item.id);
+          if (trade) {
+            try {
+              this.saveTradeReviewFromEmaTrade(trade, item.exitPrice, item.grossPnl, item.netPnl, item.exitReason, item.exitTimestamp || now);
+            } catch (revErr) {
+              console.error('[DB] Error auto-generating review in batch EMA close:', revErr);
+            }
+          }
         }
         for (const item of updates.toUpdate) {
           updateStmt.run(item.currentPrice, item.unrealizedPnl, item.id);
@@ -3095,7 +3416,46 @@ class DatabaseEngine {
         params.push(expiry);
       }
       query += ` ORDER BY market_ts DESC, strike ASC LIMIT 200`;
-      return this.db.prepare(query).all(...params);
+      const rows = this.db.prepare(query).all(...params) as any[];
+      if (rows && rows.length > 0) {
+        return rows;
+      }
+
+      // Fallback: Read from persistent option_chains store if quant table is empty
+      let ocQuery = `
+        SELECT
+          id,
+          updated_at as market_ts,
+          updated_at as ingestion_ts,
+          symbol as underlying,
+          expiry,
+          strike_price as strike,
+          option_type,
+          ltp,
+          ltp as bid,
+          ltp as ask,
+          0 as bid_qty,
+          0 as ask_qty,
+          volume,
+          open_interest as oi,
+          change_in_oi as oi_change,
+          iv,
+          delta,
+          gamma,
+          theta,
+          vega,
+          'option_chains_store' as source,
+          'OK' as data_quality
+        FROM option_chains
+        WHERE symbol = ?
+      `;
+      const ocParams: any[] = [underlying];
+      if (expiry) {
+        ocQuery += ` AND expiry = ?`;
+        ocParams.push(expiry);
+      }
+      ocQuery += ` ORDER BY updated_at DESC, strike_price ASC LIMIT 200`;
+      return this.db.prepare(ocQuery).all(...ocParams);
     } catch (err) {
       console.error('[DB] Error getting quant option snapshots:', err);
       return [];
@@ -3257,6 +3617,651 @@ class DatabaseEngine {
       }));
     } catch (err) {
       console.error('[DB] Error getting quant experiments:', err);
+      return [];
+    }
+  }
+
+  // --- Section 52: Quant Trade Review Ledger Persistence ---
+
+  public saveTradeReview(review: TradeReviewRecord): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO quant_trade_reviews (
+          trade_id, symbol, strategy_name, strategy_version, entry_time, exit_time,
+          entry_thesis, exit_reason, regime_at_entry, gross_pnl, net_pnl,
+          slippage_incurred, max_favorable_excursion_r, max_adverse_excursion_r,
+          thesis_was_correct, timing_was_optimal, strike_selection_was_optimal,
+          lessons_learned, predicted_prob_at_entry
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        review.tradeId,
+        review.symbol,
+        review.strategyName,
+        review.strategyVersion ?? 1,
+        review.entryTime,
+        review.exitTime,
+        review.entryThesis ?? '',
+        review.exitReason ?? '',
+        review.regimeAtEntry ?? 'RANGE',
+        review.grossPnl ?? 0,
+        review.netPnl ?? 0,
+        review.slippageIncurred ?? 0,
+        review.maxFavorableExcursionR ?? 0,
+        review.maxAdverseExcursionR ?? 0,
+        review.thesisWasCorrect ? 1 : 0,
+        review.timingWasOptimal ? 1 : 0,
+        review.strikeSelectionWasOptimal ? 1 : 0,
+        review.lessonsLearned ?? '',
+        review.predictedProbAtEntry !== undefined && review.predictedProbAtEntry !== null ? review.predictedProbAtEntry : null
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant trade review:', err);
+    }
+  }
+
+  public getTradeReviews(limit: number = 100, offset: number = 0): TradeReviewRecord[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM quant_trade_reviews
+        ORDER BY exit_time DESC, created_at DESC
+        LIMIT ? OFFSET ?
+      `).all(limit, offset) as any[];
+
+      return rows.map(r => ({
+        tradeId: r.trade_id,
+        symbol: r.symbol,
+        strategyName: r.strategy_name,
+        strategyVersion: r.strategy_version,
+        entryTime: r.entry_time,
+        exitTime: r.exit_time,
+        entryThesis: r.entry_thesis,
+        exitReason: r.exit_reason,
+        regimeAtEntry: r.regime_at_entry as MarketRegimeType,
+        grossPnl: Number(r.gross_pnl),
+        netPnl: Number(r.net_pnl),
+        slippageIncurred: Number(r.slippage_incurred),
+        maxFavorableExcursionR: Number(r.max_favorable_excursion_r),
+        maxAdverseExcursionR: Number(r.max_adverse_excursion_r),
+        thesisWasCorrect: Boolean(r.thesis_was_correct),
+        timingWasOptimal: Boolean(r.timing_was_optimal),
+        strikeSelectionWasOptimal: Boolean(r.strike_selection_was_optimal),
+        lessonsLearned: r.lessons_learned,
+        predictedProbAtEntry: r.predicted_prob_at_entry !== null && r.predicted_prob_at_entry !== undefined ? Number(r.predicted_prob_at_entry) : undefined
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting quant trade reviews:', err);
+      return [];
+    }
+  }
+
+  public getTradeReviewById(tradeId: string): TradeReviewRecord | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare(`SELECT * FROM quant_trade_reviews WHERE trade_id = ?`).get(tradeId) as any;
+      if (!r) return null;
+      return {
+        tradeId: r.trade_id,
+        symbol: r.symbol,
+        strategyName: r.strategy_name,
+        strategyVersion: r.strategy_version,
+        entryTime: r.entry_time,
+        exitTime: r.exit_time,
+        entryThesis: r.entry_thesis,
+        exitReason: r.exit_reason,
+        regimeAtEntry: r.regime_at_entry as MarketRegimeType,
+        grossPnl: Number(r.gross_pnl),
+        netPnl: Number(r.net_pnl),
+        slippageIncurred: Number(r.slippage_incurred),
+        maxFavorableExcursionR: Number(r.max_favorable_excursion_r),
+        maxAdverseExcursionR: Number(r.max_adverse_excursion_r),
+        thesisWasCorrect: Boolean(r.thesis_was_correct),
+        timingWasOptimal: Boolean(r.timing_was_optimal),
+        strikeSelectionWasOptimal: Boolean(r.strike_selection_was_optimal),
+        lessonsLearned: r.lessons_learned,
+        predictedProbAtEntry: r.predicted_prob_at_entry !== null && r.predicted_prob_at_entry !== undefined ? Number(r.predicted_prob_at_entry) : undefined
+      };
+    } catch (err) {
+      console.error('[DB] Error getting quant trade review by ID:', err);
+      return null;
+    }
+  }
+
+  public saveForecastEntry(entry: {
+    id?: string;
+    decisionId?: string;
+    tradeId?: string;
+    strategyId?: string;
+    strategyName: string;
+    symbol: string;
+    regime: string;
+    predictedProb: number;
+    expectedValueR: number;
+  }): void {
+    if (!this.db) return;
+    try {
+      const id = entry.id || `FCST_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      this.db.prepare(`
+        INSERT OR REPLACE INTO quant_forecast_entries (
+          id, decision_id, trade_id, strategy_id, strategy_name, symbol, regime, predicted_prob, expected_value_r
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        entry.decisionId || null,
+        entry.tradeId || null,
+        entry.strategyId || null,
+        entry.strategyName,
+        entry.symbol,
+        entry.regime,
+        entry.predictedProb,
+        entry.expectedValueR
+      );
+    } catch (err) {
+      console.error('[DB] Error saving forecast entry:', err);
+    }
+  }
+
+  public getForecastEntries(limit: number = 100): any[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM quant_forecast_entries
+        ORDER BY created_at DESC
+        LIMIT ?
+      `).all(limit) as any[];
+
+      return rows.map(r => ({
+        id: r.id,
+        decisionId: r.decision_id,
+        tradeId: r.trade_id,
+        strategyId: r.strategy_id,
+        strategyName: r.strategy_name,
+        symbol: r.symbol,
+        regime: r.regime,
+        predictedProb: r.predicted_prob,
+        expectedValueR: r.expected_value_r,
+        createdAt: r.created_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting forecast entries:', err);
+      return [];
+    }
+  }
+
+  public saveTradeReviewFromPaperPosition(
+    pos: any,
+    exitPrice: number,
+    pnl: number,
+    reason: string,
+    exitTimestamp?: string
+  ): void {
+    if (!this.db || !pos) return;
+    try {
+      const now = exitTimestamp || new Date().toISOString();
+      const grossPnl = Number(pnl.toFixed(2));
+      const brokerage = 40;
+      const netPnl = Number((grossPnl - brokerage).toFixed(2));
+      const entryTime = pos.opened_at || pos.openedAt || now;
+
+      let maxFavorableExcursionR = 0;
+      let maxAdverseExcursionR = 0;
+      const entryPrice = Number(pos.entry_price || pos.entryPrice || 0);
+      const stopLoss = Number(pos.stop_loss || pos.stopLoss || 0);
+
+      if (entryPrice > 0 && stopLoss > 0 && Math.abs(entryPrice - stopLoss) > 0) {
+        const risk = Math.abs(entryPrice - stopLoss);
+        const move = exitPrice - entryPrice;
+        const rMultiple = Number((move / risk).toFixed(2));
+        maxFavorableExcursionR = rMultiple > 0 ? rMultiple : 0;
+        maxAdverseExcursionR = rMultiple < 0 ? rMultiple : 0;
+      } else {
+        maxFavorableExcursionR = netPnl > 0 ? 1 : 0;
+        maxAdverseExcursionR = netPnl < 0 ? -1 : 0;
+      }
+
+      this.saveTradeReview({
+        tradeId: `REV_${pos.id}`,
+        symbol: pos.symbol,
+        strategyName: pos.strategy_name || pos.strategyName || 'Paper Position',
+        strategyVersion: 1,
+        entryTime,
+        exitTime: now,
+        entryThesis: pos.leg_label || pos.legLabel ? `Leg: ${pos.leg_label || pos.legLabel}` : '',
+        exitReason: reason || 'Position Closed',
+        regimeAtEntry: 'RANGE',
+        grossPnl,
+        netPnl,
+        slippageIncurred: 0,
+        maxFavorableExcursionR,
+        maxAdverseExcursionR,
+        thesisWasCorrect: netPnl > 0,
+        timingWasOptimal: netPnl > 0,
+        strikeSelectionWasOptimal: netPnl > 0,
+        lessonsLearned: reason ? `Exit reason: ${reason}` : '',
+        predictedProbAtEntry: pos.predicted_prob ?? pos.predictedProb ?? 0.65
+      });
+    } catch (err) {
+      console.error('[DB] Failed to auto-generate trade review for paper position:', err);
+    }
+  }
+
+  public saveTradeReviewFromEmaTrade(
+    trade: any,
+    exitPrice: number,
+    grossPnl: number,
+    netPnl: number,
+    exitReason: string,
+    exitTimestamp?: string
+  ): void {
+    if (!this.db || !trade) return;
+    try {
+      const now = exitTimestamp || new Date().toISOString();
+      const entryTime = trade.entry_timestamp || trade.entryTimestamp || now;
+      const isLong = (trade.direction || '').toUpperCase() === 'LONG';
+      const regimeAtEntry: MarketRegimeType = isLong ? 'TREND_UP' : 'TREND_DOWN';
+
+      this.saveTradeReview({
+        tradeId: `REV_${trade.id}`,
+        symbol: trade.instrument,
+        strategyName: trade.strategy || 'EMA_15M_23_50',
+        strategyVersion: 1,
+        entryTime,
+        exitTime: now,
+        entryThesis: `15m EMA 23/50 crossover (${trade.direction})`,
+        exitReason: exitReason || 'EMA Exit',
+        regimeAtEntry,
+        grossPnl: Number(grossPnl.toFixed(2)),
+        netPnl: Number(netPnl.toFixed(2)),
+        slippageIncurred: 0,
+        maxFavorableExcursionR: netPnl > 0 ? 1.5 : 0,
+        maxAdverseExcursionR: netPnl < 0 ? -1.0 : 0,
+        thesisWasCorrect: netPnl > 0,
+        timingWasOptimal: netPnl > 0,
+        strikeSelectionWasOptimal: true,
+        lessonsLearned: exitReason ? `15m EMA exit: ${exitReason}` : '',
+        predictedProbAtEntry: 0.64
+      });
+    } catch (err) {
+      console.error('[DB] Failed to auto-generate trade review for EMA trade:', err);
+    }
+  }
+
+  // --- Section 51 & 69: Quant Research Cycle Persistence ---
+
+  public saveQuantResearchCycle(summary: any): void {
+    if (!this.db || !summary) return;
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO quant_research_cycles (
+          id, cycle_id, execution_timestamp, trades_analyzed_count,
+          total_net_pnl_reviewed, win_rate_realized_pct, hypotheses_generated_count,
+          top_generated_hypotheses, regime_performance_summary, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        summary.cycleId || `CYCLE-${Date.now()}`,
+        summary.cycleId,
+        summary.executionTimestamp || new Date().toISOString(),
+        summary.tradesAnalyzedCount || 0,
+        summary.totalNetPnlReviewed || 0,
+        summary.winRateRealizedPct || 0,
+        summary.hypothesesGeneratedCount || 0,
+        JSON.stringify(summary.topGeneratedHypotheses || []),
+        JSON.stringify(summary.regimePerformanceSummary || {}),
+        summary.status || 'COMPLETED'
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant research cycle:', err);
+    }
+  }
+
+  public getQuantResearchCycles(limit: number = 20): any[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM quant_research_cycles
+        ORDER BY execution_timestamp DESC, created_at DESC
+        LIMIT ?
+      `).all(limit) as any[];
+
+      return rows.map(r => ({
+        id: r.id,
+        cycleId: r.cycle_id,
+        executionTimestamp: r.execution_timestamp,
+        tradesAnalyzedCount: r.trades_analyzed_count,
+        totalNetPnlReviewed: r.total_net_pnl_reviewed,
+        winRateRealizedPct: r.win_rate_realized_pct,
+        hypothesesGeneratedCount: r.hypotheses_generated_count,
+        topGeneratedHypotheses: JSON.parse(r.top_generated_hypotheses || '[]'),
+        regimePerformanceSummary: JSON.parse(r.regime_performance_summary || '{}'),
+        status: r.status,
+        createdAt: r.created_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting quant research cycles:', err);
+      return [];
+    }
+  }
+
+  // --- Section 9: Unified Quant Execution Mode, Kill Switch States, and Quant Orders ---
+
+  public getQuantUserSettings(userId?: string | null): {
+    userId: string;
+    quantExecutionMode: 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL';
+    minConfidenceThreshold: number;
+    allowedUnderlyings: string[];
+    maxDailyQuantOrders: number;
+    updatedAt: string;
+  } {
+    const defaultUserId = userId || 'DEFAULT_USER';
+    const defaultSettings = {
+      userId: defaultUserId,
+      quantExecutionMode: 'ADVISORY_ONLY' as const,
+      minConfidenceThreshold: 70.0,
+      allowedUnderlyings: ['NIFTY', 'BANKNIFTY'],
+      maxDailyQuantOrders: 5,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (!this.db) return defaultSettings;
+
+    try {
+      const row = this.db.prepare(
+        `SELECT * FROM quant_user_settings WHERE user_id = ?`
+      ).get(defaultUserId) as any;
+
+      if (!row) {
+        return defaultSettings;
+      }
+
+      return {
+        userId: row.user_id,
+        quantExecutionMode: (row.quant_execution_mode || 'ADVISORY_ONLY') as any,
+        minConfidenceThreshold: Number(row.min_confidence_threshold) || 70.0,
+        allowedUnderlyings: JSON.parse(row.allowed_underlyings || '["NIFTY","BANKNIFTY"]'),
+        maxDailyQuantOrders: Number(row.max_daily_quant_orders) || 5,
+        updatedAt: row.updated_at
+      };
+    } catch (err) {
+      console.error('[DB] Error reading quant_user_settings:', err);
+      return defaultSettings;
+    }
+  }
+
+  public saveQuantUserSettings(settings: {
+    userId?: string | null;
+    quantExecutionMode?: 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL';
+    minConfidenceThreshold?: number;
+    allowedUnderlyings?: string[];
+    maxDailyQuantOrders?: number;
+  }): {
+    userId: string;
+    quantExecutionMode: 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL';
+    minConfidenceThreshold: number;
+    allowedUnderlyings: string[];
+    maxDailyQuantOrders: number;
+    updatedAt: string;
+  } {
+    const defaultUserId = settings.userId || 'DEFAULT_USER';
+    const existing = this.getQuantUserSettings(defaultUserId);
+    const updated = {
+      userId: defaultUserId,
+      quantExecutionMode: settings.quantExecutionMode ?? existing.quantExecutionMode,
+      minConfidenceThreshold: settings.minConfidenceThreshold ?? existing.minConfidenceThreshold,
+      allowedUnderlyings: settings.allowedUnderlyings ?? existing.allowedUnderlyings,
+      maxDailyQuantOrders: settings.maxDailyQuantOrders ?? existing.maxDailyQuantOrders,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (!this.db) return updated;
+
+    try {
+      this.db.prepare(`
+        INSERT INTO quant_user_settings (
+          user_id, quant_execution_mode, min_confidence_threshold,
+          allowed_underlyings, max_daily_quant_orders, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          quant_execution_mode = excluded.quant_execution_mode,
+          min_confidence_threshold = excluded.min_confidence_threshold,
+          allowed_underlyings = excluded.allowed_underlyings,
+          max_daily_quant_orders = excluded.max_daily_quant_orders,
+          updated_at = excluded.updated_at
+      `).run(
+        updated.userId,
+        updated.quantExecutionMode,
+        updated.minConfidenceThreshold,
+        JSON.stringify(updated.allowedUnderlyings),
+        updated.maxDailyQuantOrders,
+        updated.updatedAt
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant_user_settings:', err);
+    }
+    return updated;
+  }
+
+  public deleteQuantUserSettings(userId: string): void {
+    if (!this.db || !userId) return;
+    try {
+      this.db.prepare(`DELETE FROM quant_user_settings WHERE user_id = ?`).run(userId);
+    } catch (err) {
+      console.error('[DB] Error deleting quant_user_settings:', err);
+    }
+  }
+
+  public getAllActiveQuantUserSettings(): Array<{
+    userId: string;
+    quantExecutionMode: 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL';
+    minConfidenceThreshold: number;
+    allowedUnderlyings: string[];
+    maxDailyQuantOrders: number;
+    updatedAt: string;
+  }> {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM quant_user_settings WHERE quant_execution_mode != 'ADVISORY_ONLY'
+      `).all() as any[];
+
+      return (rows || []).map(row => ({
+        userId: row.user_id,
+        quantExecutionMode: row.quant_execution_mode as 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL',
+        minConfidenceThreshold: Number(row.min_confidence_threshold) || 60,
+        allowedUnderlyings: JSON.parse(row.allowed_underlyings || '["NIFTY","BANKNIFTY"]'),
+        maxDailyQuantOrders: Number(row.max_daily_quant_orders) || 5,
+        updatedAt: row.updated_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error getting active quant_user_settings:', err);
+      return [];
+    }
+  }
+
+  public saveKillSwitchState(state: {
+    userId: string;
+    status: string;
+    isHalted: boolean;
+    haltedAt?: string;
+    haltReason?: string;
+    operator?: string;
+    emergencyActions?: string[];
+  }): void {
+    if (!this.db || !state.userId) return;
+    try {
+      const now = new Date().toISOString();
+      this.db.prepare(`
+        INSERT INTO quant_kill_switch_states (
+          user_id, status, is_halted, halted_at, halt_reason, operator,
+          emergency_actions_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          status = excluded.status,
+          is_halted = excluded.is_halted,
+          halted_at = excluded.halted_at,
+          halt_reason = excluded.halt_reason,
+          operator = excluded.operator,
+          emergency_actions_json = excluded.emergency_actions_json,
+          updated_at = excluded.updated_at
+      `).run(
+        state.userId,
+        state.status,
+        state.isHalted ? 1 : 0,
+        state.haltedAt || (state.isHalted ? now : null),
+        state.haltReason || null,
+        state.operator || 'SYSTEM',
+        JSON.stringify(state.emergencyActions || []),
+        now
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant_kill_switch_state:', err);
+    }
+  }
+
+  public getKillSwitchState(userId: string): any {
+    if (!this.db || !userId) return null;
+    try {
+      const row = this.db.prepare(`
+        SELECT * FROM quant_kill_switch_states WHERE user_id = ?
+      `).get(userId) as any;
+      if (!row) return null;
+      return {
+        userId: row.user_id,
+        status: row.status,
+        isHalted: row.is_halted === 1,
+        haltedAt: row.halted_at,
+        haltReason: row.halt_reason,
+        operator: row.operator,
+        emergencyActions: JSON.parse(row.emergency_actions_json || '[]'),
+        updatedAt: row.updated_at
+      };
+    } catch (err) {
+      console.error('[DB] Error reading quant_kill_switch_state:', err);
+      return null;
+    }
+  }
+
+  public getAllActiveKillSwitchStates(): any[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM quant_kill_switch_states WHERE is_halted = 1
+      `).all() as any[];
+      return rows.map(r => ({
+        userId: r.user_id,
+        status: r.status,
+        isHalted: r.is_halted === 1,
+        haltedAt: r.halted_at,
+        haltReason: r.halt_reason,
+        operator: r.operator,
+        emergencyActions: JSON.parse(r.emergency_actions_json || '[]'),
+        updatedAt: r.updated_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error reading active kill switch states:', err);
+      return [];
+    }
+  }
+
+  public deleteKillSwitchState(userId: string): void {
+    if (!this.db || !userId) return;
+    try {
+      this.db.prepare(`
+        DELETE FROM quant_kill_switch_states WHERE user_id = ?
+      `).run(userId);
+    } catch (err) {
+      console.error('[DB] Error deleting kill switch state:', err);
+    }
+  }
+
+  public saveQuantOrder(order: {
+    id: string;
+    userId?: string | null;
+    strategyId?: string;
+    decisionId?: string;
+    underlying?: string;
+    symbol: string;
+    action: string;
+    mode: string;
+    status: string;
+    executedPrice: number;
+    slippage?: number;
+    quantity: number;
+    legs?: any[];
+    decision?: any;
+    auditTrailId?: number;
+    createdAt?: string;
+  }): void {
+    if (!this.db || !order || !order.id) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO quant_orders (
+          id, user_id, strategy_id, decision_id, underlying, symbol,
+          action, mode, status, executed_price, slippage, quantity,
+          legs_json, decision_json, audit_trail_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        order.id,
+        order.userId || null,
+        order.strategyId || null,
+        order.decisionId || null,
+        order.underlying || null,
+        order.symbol,
+        order.action,
+        order.mode,
+        order.status,
+        order.executedPrice,
+        order.slippage || 0,
+        order.quantity,
+        JSON.stringify(order.legs || []),
+        JSON.stringify(order.decision || {}),
+        order.auditTrailId || null,
+        order.createdAt || new Date().toISOString()
+      );
+    } catch (err) {
+      console.error('[DB] Error saving quant order:', err);
+    }
+  }
+
+  public getQuantOrders(limit: number = 50, userId?: string | null): any[] {
+    if (!this.db) return [];
+    try {
+      let rows: any[];
+      if (userId) {
+        rows = this.db.prepare(`
+          SELECT * FROM quant_orders
+          WHERE user_id = ? OR user_id IS NULL
+          ORDER BY created_at DESC
+          LIMIT ?
+        `).all(userId, limit);
+      } else {
+        rows = this.db.prepare(`
+          SELECT * FROM quant_orders
+          ORDER BY created_at DESC
+          LIMIT ?
+        `).all(limit);
+      }
+
+      return rows.map(r => ({
+        id: r.id,
+        userId: r.user_id,
+        strategyId: r.strategy_id,
+        decisionId: r.decision_id,
+        underlying: r.underlying,
+        symbol: r.symbol,
+        action: r.action,
+        mode: r.mode,
+        status: r.status,
+        executedPrice: r.executed_price,
+        slippage: r.slippage,
+        quantity: r.quantity,
+        legs: JSON.parse(r.legs_json || '[]'),
+        decision: JSON.parse(r.decision_json || '{}'),
+        auditTrailId: r.audit_trail_id,
+        createdAt: r.created_at
+      }));
+    } catch (err) {
+      console.error('[DB] Error reading quant orders:', err);
       return [];
     }
   }

@@ -8,6 +8,7 @@ import { calculateEuropeanOptionGreeks, calculateAmericanOptionGreeks } from '..
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid } from 'recharts';
 import { Plus, Trash2, Zap, ShieldCheck, AlertCircle, ArrowUpRight, ArrowDownRight, RefreshCw, Clock, PlayCircle } from 'lucide-react';
 import { apiFetch } from '../lib/api.js';
+import { getLotSize, getStepSize } from '../shared/marketConfig.js';
 
 interface StrategyBuilderProps {
   snapshot: OptionChainSnapshot | null;
@@ -35,15 +36,10 @@ export const StrategyBuilder: React.FC<StrategyBuilderProps> = ({
   }
 
   const spot = snapshot.spotPrice;
-  const lotSize = snapshot.symbol === 'NIFTY' ? 25 : (snapshot.symbol === 'BANKNIFTY' ? 15 : snapshot.symbol === 'TCS' ? 175 : snapshot.symbol === 'HDFCBANK' ? 550 : 250);
+  const lotSize = getLotSize(snapshot.symbol as any);
 
   // Symbol-aware strike interval (step size)
-  const stepSize = snapshot.stepSize || (
-    snapshot.symbol === 'BANKNIFTY' ? 100 :
-    snapshot.symbol === 'RELIANCE' ? 20 :
-    snapshot.symbol === 'HDFCBANK' ? 10 :
-    snapshot.symbol === 'TCS' ? 50 : 50
-  );
+  const stepSize = snapshot.stepSize || getStepSize(snapshot.symbol as any);
 
   // Helper to find closest strike row in snapshot strikes
   const findClosestRow = (targetK: number) => {

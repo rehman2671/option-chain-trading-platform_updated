@@ -6,6 +6,7 @@
  */
 
 import { QuantUnderlying, QuantFeatureSnapshot, MarketRegimeState } from '../types.js';
+import { getStepSize } from '../../shared/marketConfig.js';
 
 export interface StrikeCandidate {
   strike: number;
@@ -48,15 +49,7 @@ export class StrikeSelectionEngine {
    * Get strike interval step size based on underlying
    */
   public getStrikeStep(underlying: QuantUnderlying): number {
-    switch (underlying) {
-      case 'BANKNIFTY':
-        return 100;
-      case 'SENSEX':
-        return 100;
-      case 'NIFTY':
-      default:
-        return 50;
-    }
+    return getStepSize(underlying);
   }
 
   /**

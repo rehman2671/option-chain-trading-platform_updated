@@ -66,7 +66,20 @@ export async function runOptionBacktest(config: BacktestConfig): Promise<Backtes
 
     const stepSize = STEP_SIZE_MAP[config.symbol] || 50;
     const atmStrike = Math.round(entryUnderlying / stepSize) * stepSize;
-    const expiry = '2026-08-27';
+    
+    // Dynamically resolve expiry from recorded snapshots or default
+    const rawDb = dbEngine.getRawDatabase();
+    let expiry = '2026-08-27';
+    if (rawDb) {
+      try {
+        const row = rawDb.prepare(
+          `SELECT expiry FROM quant_option_chain_snapshots WHERE underlying = ? ORDER BY ABS(julianday(expiry) - julianday(?)) ASC LIMIT 1`
+        ).get(config.symbol, dateStr) as any;
+        if (row && row.expiry) expiry = row.expiry;
+      } catch {
+        // use default fallback
+      }
+    }
 
     // Check if real historical option chain LTP is recorded for entry & exit
     const entryCeLtp = dbEngine.getHistoricalOptionLtp(config.symbol, expiry, atmStrike, 'CE', prevTick.timestamp);

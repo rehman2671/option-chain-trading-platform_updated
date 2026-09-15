@@ -233,6 +233,12 @@ The server exposes comprehensive RESTful endpoints under `/api/*`:
 | **Quant** | `/api/quant/gamma-exposure` | `GET` | Net dealer gamma (GEX) profile & flip levels |
 | **Quant** | `/api/quant/iv-surface` | `GET` | 3D IV surface, skew, and smile metrics |
 | **Quant** | `/api/quant/tournament` | `GET` | Live strategy tournament ranking |
+| **Quant** | `/api/quant/settings` | `GET/POST` | Quant execution mode, thresholds, and risk confirmation |
+| **Quant** | `/api/quant/decision-cycle/trigger` | `POST` | On-demand quant decision evaluation & order routing |
+| **Quant** | `/api/quant/kill-switch` | `GET/POST` | Master unified risk kill switch status & tripwire |
+| **Quant** | `/api/quant/kill-switch/reset` | `POST` | Supervisor key authenticated kill switch reset / unhalt |
+| **Quant** | `/api/quant/exposure-limits` | `GET` | Portfolio Greek bounds, leverage, and margin capacity |
+| **Quant** | `/api/quant/stress-test` | `GET` | Multi-scenario macroeconomic stress testing report |
 | **Quant** | `/api/quant/monte-carlo` | `POST` | Run 1,000+ path Monte Carlo risk simulation |
 | **Quant** | `/api/quant/walk-forward` | `POST` | Run Walk-Forward statistical optimization |
 | **Paper Trading**| `/api/paper-trading/portfolio`| `GET` | Virtual capital ledger, positions (`limit`/`offset`) |

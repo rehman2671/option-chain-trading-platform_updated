@@ -9,6 +9,7 @@ import { calculateOrderAndBasketMargin } from './marginEngine.js';
 import { dbEngine } from '../db.js';
 import { globalMarketFeed } from './marketFeed.js';
 import { activeProvider } from './providers/index.js';
+import { killSwitchEngine } from '../../quant/risk/killSwitch.js';
 
 /**
  * Resolves standard NSE/NFO exchange tradingsymbol for Upstox and broker gateways.
@@ -106,6 +107,30 @@ export class BasketExecutionEngine {
 
     const basketId = `bsk-${Date.now()}`;
     const createdAt = new Date().toISOString();
+
+    // 0. Hard Risk Control: Unified Kill Switch check
+    if (killSwitchEngine.isHalted(userId)) {
+      const haltReason = killSwitchEngine.getHaltReason(userId) || 'Emergency halt active';
+      console.warn(`[BASKET ENGINE] Blocked basket order ${basketId} for user ${userId}: Kill Switch is ACTIVE (${haltReason})`);
+      const blockedRecord: BasketOrderRecord = {
+        id: basketId,
+        strategyId,
+        strategyName,
+        symbol,
+        status: 'FAILED',
+        legs: [],
+        marginRequired: 0,
+        marginAvailable: availableUserMargin,
+        createdAt,
+        completedAt: new Date().toISOString(),
+        reconciliationStatus: 'IN_SYNC',
+        reconciliationNotes: `Order blocked by Unified Risk Control: Kill Switch is active (${haltReason})`
+      };
+      this.activeBaskets.set(basketId, blockedRecord);
+      dbEngine.saveBasketOrder(blockedRecord, userId);
+      return blockedRecord;
+    }
+
     const brokerProvider = globalMarketFeed.getBrokerClient();
     const providerMode = activeProvider.getProviderMode();
     // In Practice Mode, real order execution is structurally impossible regardless of DRY_RUN env var

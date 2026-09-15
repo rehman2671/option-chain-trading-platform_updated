@@ -5,12 +5,78 @@
  */
 
 import { QuantUnderlying, QuantOptionSnapshot, DataQualityReport } from '../types.js';
+import { OptionStrikeRow, OptionContract } from '../../types.js';
 import { dbEngine } from '../../server/db.js';
+import { CANONICAL_INSTRUMENTS } from '../../shared/marketConfig.js';
+
+/**
+ * Maps a single MarketFeed option contract (CE or PE) into the QuantOptionSnapshot structure
+ */
+export function mapMarketFeedContractToQuantSnapshot(
+  underlying: QuantUnderlying,
+  expiry: string,
+  strikePrice: number,
+  contract: OptionContract,
+  isLive: boolean,
+  marketTs?: string
+): QuantOptionSnapshot {
+  const ts = marketTs || new Date().toISOString();
+  // dataQuality: 'OK' when complete, else 'DATA_INSUFFICIENT' based on available/ltpAvailable flags
+  const isComplete = contract.available !== false && contract.ltpAvailable !== false && (contract.ltp || 0) > 0;
+
+  return {
+    marketTs: ts,
+    ingestionTs: ts,
+    underlying,
+    expiry,
+    strike: strikePrice,
+    optionType: contract.type,
+    ltp: Number(contract.ltp || 0),
+    bid: Number(contract.bidPrice || 0),
+    ask: Number(contract.askPrice || 0),
+    bidQty: 0,
+    askQty: 0,
+    volume: Number(contract.volume || 0),
+    oi: Number(contract.openInterest || 0),
+    oiChange: Number(contract.changeInOI || 0),
+    iv: Number(contract.iv || 0),
+    delta: Number(contract.delta || 0),
+    gamma: Number(contract.gamma || 0),
+    theta: Number(contract.theta || 0),
+    vega: Number(contract.vega || 0),
+    source: isLive ? 'upstox_live' : 'market_feed',
+    dataQuality: isComplete ? 'OK' : 'DATA_INSUFFICIENT'
+  };
+}
+
+/**
+ * Maps all strike rows from a MarketFeed snapshot into QuantOptionSnapshot[]
+ */
+export function mapMarketFeedStrikesToQuantSnapshots(
+  underlying: QuantUnderlying,
+  expiry: string,
+  strikes: OptionStrikeRow[],
+  isLive: boolean,
+  marketTs?: string
+): QuantOptionSnapshot[] {
+  const ts = marketTs || new Date().toISOString();
+  const snapshots: QuantOptionSnapshot[] = [];
+  for (const s of strikes) {
+    if (s.ce && s.ce.available !== false) {
+      snapshots.push(mapMarketFeedContractToQuantSnapshot(underlying, expiry, s.strikePrice, s.ce, isLive, ts));
+    }
+    if (s.pe && s.pe.available !== false) {
+      snapshots.push(mapMarketFeedContractToQuantSnapshot(underlying, expiry, s.strikePrice, s.pe, isLive, ts));
+    }
+  }
+  return snapshots;
+}
 
 export class MarketDataAdapter {
   private static instance: MarketDataAdapter;
   private lastSnapshotTime: Map<string, number> = new Map();
   private cache: Map<string, QuantOptionSnapshot[]> = new Map();
+  private spotPrices: Map<string, number> = new Map();
 
   private constructor() {}
 
@@ -19,6 +85,38 @@ export class MarketDataAdapter {
       MarketDataAdapter.instance = new MarketDataAdapter();
     }
     return MarketDataAdapter.instance;
+  }
+
+  /**
+   * Updates in-memory spot price from live tick or feed
+   */
+  public updateSpotPrice(underlying: QuantUnderlying, spotPrice: number): void {
+    if (typeof spotPrice === 'number' && spotPrice > 0) {
+      this.spotPrices.set(underlying, spotPrice);
+    }
+  }
+
+  /**
+   * Retrieves current real spot price (from live memory, SQLite ticks, or canonical config)
+   */
+  public getSpotPrice(underlying: QuantUnderlying): number {
+    const cached = this.spotPrices.get(underlying);
+    if (cached && cached > 0) return cached;
+
+    // Check dbEngine ticks table for most recent tick
+    const dbSpot = dbEngine.getLatestSpotPrice(underlying);
+    if (dbSpot && dbSpot > 0) {
+      this.spotPrices.set(underlying, dbSpot);
+      return dbSpot;
+    }
+
+    // Canonical instruments fallback
+    const canonical = CANONICAL_INSTRUMENTS[underlying];
+    if (canonical && canonical.baseSpotPrice > 0) {
+      return canonical.baseSpotPrice;
+    }
+
+    return underlying === 'BANKNIFTY' ? 57409.60 : underlying === 'SENSEX' ? 76944.28 : 24055.80;
   }
 
   /**
@@ -104,10 +202,13 @@ export class MarketDataAdapter {
   /**
    * Ingests and caches live option chain snapshots
    */
-  public ingestSnapshots(underlying: QuantUnderlying, snapshots: QuantOptionSnapshot[]): void {
+  public ingestSnapshots(underlying: QuantUnderlying, snapshots: QuantOptionSnapshot[], spotPrice?: number): void {
     const key = underlying;
     this.cache.set(key, snapshots);
     this.lastSnapshotTime.set(key, Date.now());
+    if (typeof spotPrice === 'number' && spotPrice > 0) {
+      this.spotPrices.set(key, spotPrice);
+    }
 
     // Batch persist to SQLite (asynchronous background flush)
     try {
@@ -129,9 +230,9 @@ export class MarketDataAdapter {
       return cached;
     }
 
-    // Fallback query from SQLite
+    // Fallback query from SQLite (quant_option_chain_snapshots or option_chains store)
     const fromDb = dbEngine.getLatestQuantOptionSnapshots(underlying, expiry);
-    return fromDb.map((row: any) => ({
+    const mapped = fromDb.map((row: any) => ({
       id: row.id,
       marketTs: row.market_ts,
       ingestionTs: row.ingestion_ts,
@@ -155,6 +256,12 @@ export class MarketDataAdapter {
       source: row.source,
       dataQuality: row.data_quality as 'OK' | 'DATA_INSUFFICIENT' | 'STALE'
     }));
+
+    if (mapped.length > 0 && !expiry) {
+      this.cache.set(underlying, mapped);
+    }
+
+    return mapped;
   }
 }
 

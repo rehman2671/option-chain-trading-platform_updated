@@ -1,4 +1,5 @@
-import { QuantUnderlying, QuantOptionSnapshot, IvSurfaceProfile } from '../types';
+import { QuantUnderlying, QuantOptionSnapshot, IvSurfaceProfile } from '../types.js';
+import { getInstrumentConfig, isEquitySymbol } from '../../shared/marketConfig.js';
 
 export class IvSurfaceEngine {
   public computeSurface(
@@ -9,10 +10,22 @@ export class IvSurfaceEngine {
     const validSnapshots = snapshots.filter(s => s.underlying === underlying && s.iv > 0);
 
     // Default baseline values if snapshot collection is sparse
-    const defaultAtmIv = underlying === 'BANKNIFTY' ? 14.8 : underlying === 'SENSEX' ? 12.9 : 13.2;
+    const defaultAtmIv = getInstrumentConfig(underlying).indiaVixBase || 13.2;
 
     if (validSnapshots.length === 0) {
       const exp1D = Math.round(spotPrice * (defaultAtmIv / 100) * Math.sqrt(1 / 252));
+      const termStructure = isEquitySymbol(underlying)
+        ? [
+            { expiry: 'Current Monthly (0-15 DTE)', daysToExpiry: 12, atmIv: defaultAtmIv, status: 'CONTANGO' as const },
+            { expiry: 'Next Monthly (30-45 DTE)', daysToExpiry: 40, atmIv: defaultAtmIv + 0.8, status: 'CONTANGO' as const },
+            { expiry: 'Far Monthly (60-75 DTE)', daysToExpiry: 68, atmIv: defaultAtmIv + 1.5, status: 'CONTANGO' as const }
+          ]
+        : [
+            { expiry: 'Current Weekly (0-3 DTE)', daysToExpiry: 3, atmIv: defaultAtmIv, status: 'CONTANGO' as const },
+            { expiry: 'Next Weekly (7-10 DTE)', daysToExpiry: 10, atmIv: defaultAtmIv + 0.6, status: 'CONTANGO' as const },
+            { expiry: 'Monthly Expiry (20-30 DTE)', daysToExpiry: 24, atmIv: defaultAtmIv + 1.2, status: 'CONTANGO' as const }
+          ];
+
       return {
         underlying,
         asOf: new Date().toISOString(),
@@ -24,11 +37,7 @@ export class IvSurfaceEngine {
         callSkew: 0.8,
         putSkew: 1.6,
         flySpread: 0.8 + 1.6,
-        termStructure: [
-          { expiry: 'Current Weekly (0-3 DTE)', daysToExpiry: 3, atmIv: defaultAtmIv, status: 'CONTANGO' },
-          { expiry: 'Next Weekly (7-10 DTE)', daysToExpiry: 10, atmIv: defaultAtmIv + 0.6, status: 'CONTANGO' },
-          { expiry: 'Monthly Expiry (20-30 DTE)', daysToExpiry: 24, atmIv: defaultAtmIv + 1.2, status: 'CONTANGO' }
-        ],
+        termStructure,
         ivRank: 34,
         ivPercentile: 38,
         regime: 'IV_EXPANDING',

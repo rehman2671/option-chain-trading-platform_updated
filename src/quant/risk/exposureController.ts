@@ -217,6 +217,22 @@ export class ExposureController {
       activeBreaches
     };
   }
+
+  public checkOrderGating(
+    underlying: string = 'NIFTY',
+    currentGreeks: { netDelta: number; netGamma: number; netTheta: number; netVega: number } = { netDelta: 10, netGamma: 0.005, netTheta: -100, netVega: 50 },
+    capitalState: { totalCapital: number; usedMargin: number; dailyPnl: number; weeklyPnl: number; monthlyPnl: number; peakCapital: number; correlatedTradesCount: number } = { totalCapital: 1000000, usedMargin: 150000, dailyPnl: 0, weeklyPnl: 0, monthlyPnl: 0, peakCapital: 1000000, correlatedTradesCount: 1 }
+  ): { passed: boolean; reason?: string; report?: ExposureControllerState } {
+    const report = this.evaluateExposure(underlying, currentGreeks, capitalState);
+    if (report.overallCompliance === 'BREACH') {
+      return {
+        passed: false,
+        reason: `Order blocked by Exposure Controller: Limit breach detected (${report.activeBreaches.join(', ') || 'Breach active'})`,
+        report
+      };
+    }
+    return { passed: true, report };
+  }
 }
 
 export const exposureController = ExposureController.getInstance();

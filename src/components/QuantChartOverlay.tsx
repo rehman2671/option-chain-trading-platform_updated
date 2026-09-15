@@ -4,6 +4,7 @@ import { ExpertTraderChart } from './ExpertTraderChart';
 import { MarketRegimeState, QuantUnderlying, HistoricalAnalogueResult, PositionRecoveryAnalysis } from '../quant/types';
 import { QuantSignalOverlay } from '../quant/signals/signalGenerator.js';
 import { Ema15mCandle, Ema15mInstrument } from '../types.js';
+import { ALL_CONFIGURED_SYMBOLS } from '../shared/marketConfig.js';
 
 interface QuantChartOverlayProps {
   selectedSymbol: string;
@@ -16,8 +17,11 @@ export const QuantChartOverlay: React.FC<QuantChartOverlayProps> = ({
   onSymbolChange,
   className = ''
 }) => {
-  const underlying: QuantUnderlying =
-    selectedSymbol.includes('BANK') ? 'BANKNIFTY' : selectedSymbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY';
+  const cleanSymbol = (selectedSymbol || '').toUpperCase().trim();
+  const matched = (ALL_CONFIGURED_SYMBOLS as readonly string[]).find(
+    s => s === cleanSymbol || cleanSymbol.startsWith(s)
+  );
+  const underlying: QuantUnderlying = (matched as QuantUnderlying) || 'NIFTY';
 
   const [regime, setRegime] = useState<MarketRegimeState | null>(null);
   const [analogues, setAnalogues] = useState<HistoricalAnalogueResult | null>(null);

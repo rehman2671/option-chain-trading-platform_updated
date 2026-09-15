@@ -1,4 +1,5 @@
-import { QuantUnderlying, MarketStructureProfile } from '../types';
+import { QuantUnderlying, MarketStructureProfile } from '../types.js';
+import { getStepSize } from '../../shared/marketConfig.js';
 
 export class MarketStructureEngine {
   public analyzeStructure(
@@ -7,7 +8,7 @@ export class MarketStructureEngine {
     candles: Array<{ high: number; low: number; close: number; volume: number }> = []
   ): MarketStructureProfile {
     // If candles are sparse, compute mathematically sound defaults centered on spotPrice
-    const step = underlying === 'BANKNIFTY' ? 100 : underlying === 'SENSEX' ? 100 : 50;
+    const step = getStepSize(underlying);
     const baseHigh = candles.length > 0 ? Math.max(...candles.map(c => c.high)) : spotPrice + step * 2;
     const baseLow = candles.length > 0 ? Math.min(...candles.map(c => c.low)) : spotPrice - step * 2;
 

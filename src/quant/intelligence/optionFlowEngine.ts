@@ -1,4 +1,5 @@
-import { QuantUnderlying, QuantOptionSnapshot, OptionFlowMetrics } from '../types';
+import { QuantUnderlying, QuantOptionSnapshot, OptionFlowMetrics } from '../types.js';
+import { getStepSize } from '../../shared/marketConfig.js';
 
 export class OptionFlowEngine {
   public analyzeFlow(
@@ -6,7 +7,7 @@ export class OptionFlowEngine {
     spotPrice: number,
     snapshots: QuantOptionSnapshot[]
   ): OptionFlowMetrics {
-    const step = underlying === 'BANKNIFTY' ? 100 : underlying === 'SENSEX' ? 100 : 50;
+    const step = getStepSize(underlying);
     const validSnapshots = snapshots.filter(s => s.underlying === underlying);
 
     let totalCallOi = 0;

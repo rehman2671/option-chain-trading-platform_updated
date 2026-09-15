@@ -6,6 +6,7 @@
  */
 
 import { QuantUnderlying, ExpiryProfile, QuantFeatureSnapshot, MarketRegimeState } from '../types.js';
+import { CANONICAL_INSTRUMENTS, isEquitySymbol, isCommoditySymbol } from '../../shared/marketConfig.js';
 
 export interface ExpiryEvaluationCandidate {
   expiryDate: string;
@@ -57,11 +58,103 @@ export class ExpirySelectionEngine {
   ): ExpiryOptimizationResult {
     const today = new Date();
     const currentDay = today.getDay(); // 0 = Sun, 4 = Thu
+    const isEquity = isEquitySymbol(underlying);
+    const isCommodity = isCommoditySymbol(underlying);
+    const cfg = CANONICAL_INSTRUMENTS[underlying];
 
-    // Calculate simulated nearest Thursday weekly and monthly expiries
-    const daysUntilThursday = (4 - currentDay + 7) % 7;
+    if (isEquity || isCommodity) {
+      // Equities and MCX commodities trade on monthly cycles
+      const year = today.getFullYear();
+      const month = today.getMonth();
+
+      // Current month last Thursday
+      const m1Last = new Date(year, month + 1, 0);
+      let m1Thu = m1Last.getDate() - ((m1Last.getDay() - 4 + 7) % 7);
+      let d1 = new Date(year, month, m1Thu);
+      let dte1 = Math.max(1, Math.ceil((d1.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+
+      if (d1 < today) {
+        const mNext = new Date(year, month + 2, 0);
+        m1Thu = mNext.getDate() - ((mNext.getDay() - 4 + 7) % 7);
+        d1 = new Date(year, month + 1, m1Thu);
+        dte1 = Math.max(1, Math.ceil((d1.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+      }
+
+      const d2 = new Date(d1);
+      d2.setMonth(d2.getMonth() + 1);
+      const dte2 = dte1 + 28;
+
+      const d3 = new Date(d1);
+      d3.setMonth(d3.getMonth() + 2);
+      const dte3 = dte1 + 56;
+
+      const candidates: ExpiryEvaluationCandidate[] = [
+        {
+          expiryDate: this.formatDate(d1),
+          dte: dte1,
+          profile: 'MONTHLY',
+          atmIv: features.atmIv,
+          expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt(dte1 / 365)),
+          dailyThetaBleedPct: 3.5,
+          gammaSensitivityScore: 45,
+          bidAskSpreadEstimatePct: 0.25,
+          liquidityScore: 92,
+          historicalEdgeScore: 82,
+          recommendedSuitability: 'PREFERRED',
+          rationale: 'Current monthly expiry captures primary liquidity with stable theta/gamma balance'
+        },
+        {
+          expiryDate: this.formatDate(d2),
+          dte: dte2,
+          profile: 'NEXT_WEEKLY',
+          atmIv: features.atmIv * 1.03,
+          expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt(dte2 / 365)),
+          dailyThetaBleedPct: 1.8,
+          gammaSensitivityScore: 25,
+          bidAskSpreadEstimatePct: 0.45,
+          liquidityScore: 75,
+          historicalEdgeScore: 78,
+          recommendedSuitability: 'ACCEPTABLE',
+          rationale: 'Next monthly expiry minimizes theta bleed for swing structures'
+        },
+        {
+          expiryDate: this.formatDate(d3),
+          dte: dte3,
+          profile: 'MONTHLY',
+          atmIv: features.atmIv * 1.06,
+          expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt(dte3 / 365)),
+          dailyThetaBleedPct: 0.9,
+          gammaSensitivityScore: 15,
+          bidAskSpreadEstimatePct: 0.70,
+          liquidityScore: 60,
+          historicalEdgeScore: 70,
+          recommendedSuitability: 'ACCEPTABLE',
+          rationale: 'Far monthly contract for long-horizon strategic positions'
+        }
+      ];
+
+      const selected = candidates[0];
+      return {
+        underlying,
+        selectedExpiryDate: selected.expiryDate,
+        selectedDte: selected.dte,
+        selectedProfile: selected.profile,
+        selectionRationale: selected.rationale,
+        candidates,
+        tradeSuitabilityByDte: {
+          scalping: 'Current Monthly (Near Expiry)',
+          dayTrading: 'Current Monthly (Peak Liquidity)',
+          positionalSwings: 'Next Monthly (Controlled Theta)',
+          volatilityHarvesting: 'Current Monthly (Covered Call / Spreads)'
+        }
+      };
+    }
+
+    // Calculate simulated nearest weekly and monthly expiries
+    const targetDay = cfg?.weeklyExpiryDay ?? 4;
+    const daysUntilExpiry = (targetDay - currentDay + 7) % 7;
     const weeklyDate = new Date(today);
-    weeklyDate.setDate(today.getDate() + (daysUntilThursday === 0 ? 0 : daysUntilThursday));
+    weeklyDate.setDate(today.getDate() + (daysUntilExpiry === 0 ? 0 : daysUntilExpiry));
 
     const nextWeeklyDate = new Date(weeklyDate);
     nextWeeklyDate.setDate(weeklyDate.getDate() + 7);
@@ -69,16 +162,16 @@ export class ExpirySelectionEngine {
     const monthlyDate = new Date(weeklyDate);
     monthlyDate.setDate(weeklyDate.getDate() + 21);
 
-    const is0Dte = daysUntilThursday === 0;
+    const is0Dte = daysUntilExpiry === 0;
 
     const candidates: ExpiryEvaluationCandidate[] = [
       // 1. Current Weekly (or 0DTE if today is Thursday)
       {
         expiryDate: this.formatDate(weeklyDate),
-        dte: is0Dte ? 0 : daysUntilThursday,
+        dte: is0Dte ? 0 : daysUntilExpiry,
         profile: is0Dte ? '0DTE' : 'CURRENT_WEEKLY',
         atmIv: features.atmIv,
-        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt(Math.max(0.5, daysUntilThursday) / 365)),
+        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt(Math.max(0.5, daysUntilExpiry) / 365)),
         dailyThetaBleedPct: is0Dte ? 75.0 : 18.5,
         gammaSensitivityScore: is0Dte ? 95 : 65,
         bidAskSpreadEstimatePct: 0.15,
@@ -92,10 +185,10 @@ export class ExpirySelectionEngine {
       // 2. Next Weekly
       {
         expiryDate: this.formatDate(nextWeeklyDate),
-        dte: daysUntilThursday + 7,
+        dte: daysUntilExpiry + 7,
         profile: 'NEXT_WEEKLY',
         atmIv: features.atmIv * 1.02,
-        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt((daysUntilThursday + 7) / 365)),
+        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt((daysUntilExpiry + 7) / 365)),
         dailyThetaBleedPct: 8.5,
         gammaSensitivityScore: 40,
         bidAskSpreadEstimatePct: 0.35,
@@ -107,10 +200,10 @@ export class ExpirySelectionEngine {
       // 3. Monthly Expiry
       {
         expiryDate: this.formatDate(monthlyDate),
-        dte: daysUntilThursday + 21,
+        dte: daysUntilExpiry + 21,
         profile: 'MONTHLY',
         atmIv: features.atmIv * 1.05,
-        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt((daysUntilThursday + 21) / 365)),
+        expectedMovePoints: Math.round(spotPrice * (features.atmIv / 100) * Math.sqrt((daysUntilExpiry + 21) / 365)),
         dailyThetaBleedPct: 3.2,
         gammaSensitivityScore: 20,
         bidAskSpreadEstimatePct: 0.65,

@@ -11,6 +11,7 @@ import { dbEngine } from '../db.js';
 import { activeProvider, initActiveProvider } from './providers/index.js';
 import { globalEma15mEngine } from './ema15mEngine.js';
 import { CANONICAL_INSTRUMENTS } from '../../shared/marketConfig.js';
+import { marketDataAdapter, mapMarketFeedStrikesToQuantSnapshots } from '../../quant/adapters/marketDataAdapter.js';
 
 interface UnderlyingConfig {
   symbol: string;
@@ -287,9 +288,10 @@ export class MarketFeedEngine {
     // Persist real-time tick in SQLite WAL database
     dbEngine.recordTick(symbol, spot, vix || (cfg ? cfg.indiaVixBase : 15.0), volume || 0);
 
-    // Feed tick directly into 15m EMA Strategy Engine
+    // Feed tick directly into 15m EMA Strategy Engine and Quant Data Adapter
     if (symbol === 'NIFTY' || symbol === 'BANKNIFTY' || symbol === 'SENSEX') {
       globalEma15mEngine.ingestTick(symbol, spot, volume || 0);
+      marketDataAdapter.updateSpotPrice(symbol as any, spot);
     }
 
     // Invalidate stale snapshot cache for fast client refresh
@@ -612,6 +614,21 @@ export class MarketFeedEngine {
 
     const anomalies = detectUnusualOIAnomalies(symbol, strikes);
     dbEngine.recordOIAnomalies(anomalies);
+
+    // Ingest snapshot into QuantDataAdapter for institutional quant engines
+    if (CANONICAL_INSTRUMENTS[symbol]) {
+      const nowTs = new Date().toISOString();
+      const quantSnapshots = mapMarketFeedStrikesToQuantSnapshots(
+        symbol as any,
+        expiry,
+        strikes,
+        isSpotLive,
+        nowTs
+      );
+      if (quantSnapshots.length > 0) {
+        marketDataAdapter.ingestSnapshots(symbol as any, quantSnapshots, spotPrice);
+      }
+    }
 
     const mode = activeProvider.getProviderMode();
 

@@ -1,11 +1,30 @@
 /**
  * Strategy Tournament Engine
  * Ranks candidate strategies in real-time according to current Market Regime,
- * statistical expectancy, liquidity, risk-reward, and out-of-sample robustness.
+ * empirical statistical expectancy from trade reviews, liquidity, risk-reward, and out-of-sample robustness.
  */
 
-import { StrategyTournamentEntry, MarketRegimeState, QuantFeatureSnapshot } from '../types.js';
+import { StrategyTournamentEntry, MarketRegimeState, QuantFeatureSnapshot, TradeReviewRecord } from '../types.js';
 import { CANONICAL_STRATEGIES } from '../strategies/strategyLibrary.js';
+import { tradeReviewEngine } from '../learning/tradeReviewEngine.js';
+
+export const MIN_STRATEGY_SAMPLE_COUNT = 3;
+
+function matchesStrategy(tradeStrategyName: string, canonicalStrat: { id: string; name: string }): boolean {
+  if (!tradeStrategyName) return false;
+  const t = tradeStrategyName.toLowerCase();
+  const cName = canonicalStrat.name.toLowerCase();
+  const cId = canonicalStrat.id.toLowerCase();
+
+  if (t === cName || t === cId) return true;
+  if (cId.includes('bull-call') && (t.includes('bull call') || t.includes('bull-call') || t.includes('bull_call'))) return true;
+  if (cId.includes('bear-put') && (t.includes('bear put') || t.includes('bear-put') || t.includes('bear_put'))) return true;
+  if (cId.includes('iron-condor') && (t.includes('iron condor') || t.includes('iron-condor') || t.includes('iron_condor'))) return true;
+  if (cId.includes('long-straddle') && (t.includes('straddle') || t.includes('long straddle'))) return true;
+  if (cId.includes('gamma') && (t.includes('gamma') || t.includes('adaptive'))) return true;
+  if (cId.includes('short-strangle') && (t.includes('strangle') || t.includes('short strangle'))) return true;
+  return false;
+}
 
 export class TournamentEngine {
   private static instance: TournamentEngine;
@@ -19,8 +38,13 @@ export class TournamentEngine {
     return TournamentEngine.instance;
   }
 
-  public runTournament(regime: MarketRegimeState, features: QuantFeatureSnapshot): StrategyTournamentEntry[] {
+  public runTournament(
+    regime: MarketRegimeState,
+    features: QuantFeatureSnapshot,
+    reviewsOverride?: TradeReviewRecord[]
+  ): StrategyTournamentEntry[] {
     const entries: StrategyTournamentEntry[] = [];
+    const reviews = reviewsOverride || tradeReviewEngine.getReviews();
 
     for (const strat of CANONICAL_STRATEGIES) {
       let regimeFitScore = 40;
@@ -30,58 +54,50 @@ export class TournamentEngine {
         regimeFitScore = 75;
       }
 
-      // Historical Edge & Robustness computation
-      let historicalProbPct = 52;
-      let expectedValue = '+0.10R';
-      let historicalEdgeScore = 65;
-      let robustnessScore = 80;
-      let liquidityScore = 90; // Top index options have top tier liquidity
-      let riskRewardScore = 75;
+      const liquidityScore = features.spotPrice > 0 ? 90 : 80;
 
-      if (strat.id.includes('bull-call-spread')) {
-        if (regime.primaryRegime === 'TREND_UP' || regime.primaryRegime === 'BREAKOUT') {
-          historicalProbPct = 68;
-          expectedValue = '+0.38R';
-          historicalEdgeScore = 92;
-          riskRewardScore = 88;
-        } else {
-          historicalProbPct = 42;
-          expectedValue = '-0.15R';
-          historicalEdgeScore = 40;
-        }
-      } else if (strat.id.includes('bear-put-spread')) {
-        if (regime.primaryRegime === 'TREND_DOWN' || regime.primaryRegime === 'BREAKDOWN') {
-          historicalProbPct = 66;
-          expectedValue = '+0.34R';
-          historicalEdgeScore = 90;
-          riskRewardScore = 86;
-        } else {
-          historicalProbPct = 40;
-          expectedValue = '-0.18R';
-          historicalEdgeScore = 38;
-        }
-      } else if (strat.id.includes('iron-condor')) {
-        if (regime.primaryRegime === 'RANGE' || regime.volatilityRegime === 'LOW_COMPRESSION') {
-          historicalProbPct = 74;
-          expectedValue = '+0.28R';
-          historicalEdgeScore = 88;
-          riskRewardScore = 78;
-        } else {
-          historicalProbPct = 48;
-          expectedValue = '-0.12R';
-          historicalEdgeScore = 50;
-        }
-      } else if (strat.id.includes('long-straddle')) {
-        if (regime.primaryRegime === 'BREAKOUT' || regime.volatilityRegime === 'HIGH_EXPANDING') {
-          historicalProbPct = 58;
-          expectedValue = '+0.42R';
-          historicalEdgeScore = 82;
-          riskRewardScore = 92;
-        } else {
-          historicalProbPct = 36;
-          expectedValue = '-0.25R';
-          historicalEdgeScore = 35;
-        }
+      // Query actual empirical performance for this strategy
+      const stratReviews = reviews.filter(r => matchesStrategy(r.strategyName, strat));
+      const regimeReviews = stratReviews.filter(r => r.regimeAtEntry === regime.primaryRegime);
+      const relevantReviews = regimeReviews.length >= MIN_STRATEGY_SAMPLE_COUNT ? regimeReviews : stratReviews;
+      const sampleCount = relevantReviews.length;
+
+      let historicalProbPct: number;
+      let expectedValue: string;
+      let historicalEdgeScore: number;
+      let robustnessScore: number;
+      let riskRewardScore: number;
+      let isEmpiricallyValidated: boolean;
+      let sampleSizeWarning: string | undefined;
+
+      if (sampleCount < MIN_STRATEGY_SAMPLE_COUNT) {
+        // Cold-start fallback: neutral baseline prior
+        historicalProbPct = 50;
+        expectedValue = '+0.00R';
+        historicalEdgeScore = 50;
+        robustnessScore = 50;
+        riskRewardScore = 50;
+        isEmpiricallyValidated = false;
+        sampleSizeWarning = sampleCount === 0
+          ? 'No historical trades on record (neutral baseline score applied)'
+          : `Insufficient sample size (n=${sampleCount} / ${MIN_STRATEGY_SAMPLE_COUNT} required)`;
+      } else {
+        // Real computation from actual closed trades
+        const wins = relevantReviews.filter(r => r.netPnl > 0 || r.thesisWasCorrect).length;
+        historicalProbPct = Math.round((wins / sampleCount) * 100);
+
+        const avgR = relevantReviews.reduce((sum, r) => {
+          const rVal = r.netPnl > 0
+            ? (r.maxFavorableExcursionR !== undefined ? r.maxFavorableExcursionR : 1.0)
+            : (r.maxAdverseExcursionR !== undefined ? r.maxAdverseExcursionR : -1.0);
+          return sum + rVal;
+        }, 0) / sampleCount;
+
+        expectedValue = `${avgR >= 0 ? '+' : ''}${avgR.toFixed(2)}R`;
+        historicalEdgeScore = Math.min(99, Math.max(10, Math.round(historicalProbPct * 0.7 + (avgR + 1.0) * 15)));
+        robustnessScore = Math.min(98, Math.max(40, Math.round(50 + Math.min(30, sampleCount * 2) + (historicalProbPct >= 60 ? 15 : 0))));
+        riskRewardScore = Math.min(98, Math.max(30, Math.round(50 + avgR * 25)));
+        isEmpiricallyValidated = true;
       }
 
       // Tournament weighted score
@@ -110,7 +126,10 @@ export class TournamentEngine {
         expectedValue,
         historicalProbPct,
         recommendation,
-        structureDesc: strat.description
+        structureDesc: strat.description,
+        sampleSize: sampleCount,
+        isEmpiricallyValidated,
+        sampleSizeWarning
       });
     }
 

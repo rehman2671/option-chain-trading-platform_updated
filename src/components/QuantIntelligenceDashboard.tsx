@@ -22,6 +22,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { QuantUnderlying, IvSurfaceProfile, MarketStructureProfile, OptionFlowMetrics } from '../quant/types';
+import { ALL_CONFIGURED_SYMBOLS, getLotSize, CANONICAL_INSTRUMENTS } from '../shared/marketConfig';
 import { QuantChartOverlay } from './QuantChartOverlay';
 import { IvSurfacePanel } from './quant/IvSurfacePanel';
 import { FlowStructurePanel } from './quant/FlowStructurePanel';
@@ -33,13 +34,19 @@ import { RiskControlPanel } from './quant/RiskControlPanel';
 import { MultiTimeframePanel } from './quant/MultiTimeframePanel';
 import { StrategyComparisonView } from './quant/StrategyComparisonView';
 
-export const QuantIntelligenceDashboard: React.FC = () => {
+interface QuantIntelligenceDashboardProps {
+  onNavigateTab?: (tab: string) => void;
+}
+
+export const QuantIntelligenceDashboard: React.FC<QuantIntelligenceDashboardProps> = ({ onNavigateTab }) => {
   const [underlying, setUnderlying] = useState<QuantUnderlying>('NIFTY');
   const [activeTab, setActiveTab] = useState<
     'OVERVIEW' | 'TOURNAMENT' | 'LAB' | 'IV_SURFACE' | 'FLOW_STRUCTURE' | 'ANALOGUES' | 'RECOVERY' | 'DEFENSE' | 'RISK' | 'RESEARCH' | 'EVENTS_REVIEWS' | 'CHART' | 'MULTI_TIMEFRAME' | 'COMPARISON'
   >('OVERVIEW');
 
   const [loading, setLoading] = useState(false);
+  const [isDeployingPaper, setIsDeployingPaper] = useState(false);
+  const [paperDeployResult, setPaperDeployResult] = useState<{ success: boolean; message: string; groupId?: string } | null>(null);
   const [stateData, setStateData] = useState<any>(null);
   const [ivSurfaceData, setIvSurfaceData] = useState<IvSurfaceProfile | null>(null);
   const [structureData, setStructureData] = useState<MarketStructureProfile | null>(null);
@@ -55,6 +62,18 @@ export const QuantIntelligenceDashboard: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [metaFunnel, setMetaFunnel] = useState<any>(null);
   const [runningBacktest, setRunningBacktest] = useState(false);
+  const [dataAvailability, setDataAvailability] = useState<{
+    minDate: string;
+    maxDate: string;
+    hasCandles: boolean;
+    hasOptionSnapshots: boolean;
+    candleRange: { count: number; minDate: string; maxDate: string };
+    optionRange: { count: number; minDate: string; maxDate: string };
+  } | null>(null);
+  const [selectedLabStrategy, setSelectedLabStrategy] = useState<string>('STRAT_BULL_CALL_SPREAD_01');
+  const [labStartDate, setLabStartDate] = useState<string>('2026-08-17');
+  const [labEndDate, setLabEndDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [quantSettings, setQuantSettings] = useState<any>(null);
 
   // Load all quant state
   const fetchAllQuantData = async () => {
@@ -74,7 +93,9 @@ export const QuantIntelligenceDashboard: React.FC = () => {
         ivRes,
         structRes,
         flowRes,
-        metaRes
+        metaRes,
+        availRes,
+        settingsRes
       ] = await Promise.all([
         fetch(`/api/quant/state?underlying=${underlying}`),
         fetch(`/api/quant/tournament?underlying=${underlying}`),
@@ -89,7 +110,9 @@ export const QuantIntelligenceDashboard: React.FC = () => {
         fetch(`/api/quant/iv-surface?underlying=${underlying}`),
         fetch(`/api/quant/market-structure?underlying=${underlying}`),
         fetch(`/api/quant/option-flow?underlying=${underlying}`),
-        fetch(`/api/quant/meta-funnel?underlying=${underlying}`)
+        fetch(`/api/quant/meta-funnel?underlying=${underlying}`),
+        fetch(`/api/quant/backtests/availability?underlying=${underlying}`),
+        fetch('/api/quant/settings')
       ]);
 
       if (stateRes.ok) setStateData(await stateRes.json());
@@ -100,9 +123,16 @@ export const QuantIntelligenceDashboard: React.FC = () => {
       if (decRes.ok) setDecision(await decRes.json());
       if (anaRes.ok) setAnalogues(await anaRes.json());
       if (riskRes.ok) setRiskData(await riskRes.json());
+      if (settingsRes.ok) {
+        const sData = await settingsRes.json();
+        if (sData.settings) setQuantSettings(sData.settings);
+      }
       if (stratRes.ok) {
         const strats = await stratRes.json();
         setStrategies(Array.isArray(strats) ? strats : []);
+        if (Array.isArray(strats) && strats.length > 0 && !selectedLabStrategy) {
+          setSelectedLabStrategy(strats[0].id);
+        }
       }
       if (btRes.ok) {
         const bts = await btRes.json();
@@ -121,6 +151,16 @@ export const QuantIntelligenceDashboard: React.FC = () => {
       if (structRes.ok) setStructureData(await structRes.json());
       if (flowRes.ok) setFlowData(await flowRes.json());
       if (metaRes.ok) setMetaFunnel(await metaRes.json());
+      if (availRes.ok) {
+        const avail = await availRes.json();
+        setDataAvailability(avail);
+        if (avail.minDate && labStartDate === '2026-08-17') {
+          setLabStartDate(avail.minDate.slice(0, 10));
+        }
+        if (avail.maxDate) {
+          setLabEndDate(avail.maxDate.slice(0, 10));
+        }
+      }
     } catch (err) {
       console.error('Error fetching quant dashboard data:', err);
     } finally {
@@ -133,14 +173,16 @@ export const QuantIntelligenceDashboard: React.FC = () => {
   }, [underlying]);
 
   // Execute Backtest
-  const handleRunBacktest = async (strategyId?: string) => {
+  const handleRunBacktest = async (strategyId?: string, overrideStart?: string, overrideEnd?: string) => {
     try {
       setRunningBacktest(true);
-      const stratId = strategyId || (strategies[0]?.id || 'strat-bull-call-spread-01');
+      const stratId = strategyId || selectedLabStrategy || (strategies[0]?.id || 'STRAT_BULL_CALL_SPREAD_01');
+      const start = overrideStart || labStartDate;
+      const end = overrideEnd || labEndDate;
       const res = await fetch('/api/quant/backtests/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategyId: stratId, periodStart: '2024-01-01', periodEnd: '2026-09-01' })
+        body: JSON.stringify({ strategyId: stratId, periodStart: start, periodEnd: end })
       });
       if (res.ok) {
         const newBt = await res.json();
@@ -151,6 +193,86 @@ export const QuantIntelligenceDashboard: React.FC = () => {
       console.error('Failed to run backtest:', err);
     } finally {
       setRunningBacktest(false);
+    }
+  };
+
+  // Execute Paper Strategy Deployment from Quant Recommendation
+  const handleDeployPaper = async () => {
+    if (!decision?.strategy) return;
+    setIsDeployingPaper(true);
+    setPaperDeployResult(null);
+
+    try {
+      const strikesStr = decision.strategy.strikes || '';
+      const spot = stateData?.spotPrice || 23500;
+      const lotSize = getLotSize(underlying);
+      
+      const legs: any[] = [];
+      const parts = strikesStr.split('/').map((s: string) => s.trim());
+      
+      if (parts.length >= 1) {
+        parts.forEach((p: string, idx: number) => {
+          const match = p.match(/(\d+)\s*(CE|PE)/i);
+          if (match) {
+            const strike = parseInt(match[1], 10);
+            const type = match[2].toUpperCase();
+            legs.push({
+              strikePrice: strike,
+              type,
+              action: decision.strategy.name.toLowerCase().includes('condor') || decision.strategy.name.toLowerCase().includes('straddle') ? 'SELL' : 'BUY',
+              quantity: 1,
+              lotSize,
+              currentLtp: Math.round(Math.max(10, Math.abs(spot - strike) * 0.4 + 40)),
+              product: 'NRML',
+              legLabel: `${decision.strategy.name} Leg ${idx + 1} (${strike} ${type})`
+            });
+          }
+        });
+      }
+
+      if (legs.length === 0) {
+        legs.push({
+          strikePrice: Math.round(spot / 50) * 50,
+          type: 'CE',
+          action: 'BUY',
+          quantity: 1,
+          lotSize,
+          currentLtp: 80,
+          product: 'NRML',
+          legLabel: `${decision.strategy.name} (ATM)`
+        });
+      }
+
+      const res = await fetch('/api/paper-trading/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategyName: `[Quant AI] ${decision.strategy.name}`,
+          symbol: underlying,
+          legs
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setPaperDeployResult({
+          success: true,
+          message: `Strategy deployed to Paper Account with ${legs.length} legs!`,
+          groupId: data.strategyGroupId
+        });
+      } else {
+        setPaperDeployResult({
+          success: false,
+          message: data.error || 'Failed to deploy strategy to paper account.'
+        });
+      }
+    } catch (err: any) {
+      setPaperDeployResult({
+        success: false,
+        message: err.message || 'Network error executing paper strategy'
+      });
+    } finally {
+      setIsDeployingPaper(false);
     }
   };
 
@@ -211,20 +333,30 @@ export const QuantIntelligenceDashboard: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-3 font-mono">
-          <div className="flex bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs">
-            {(['NIFTY', 'BANKNIFTY', 'SENSEX'] as QuantUnderlying[]).map(u => (
-              <button
-                key={u}
-                onClick={() => setUnderlying(u)}
-                className={`px-3.5 py-1.5 rounded-lg font-bold transition ${
-                  underlying === u
-                    ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {u}
-              </button>
-            ))}
+          <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs">
+            <label htmlFor="quant-underlying-select" className="sr-only">Select Underlying</label>
+            <select
+              id="quant-underlying-select"
+              value={underlying}
+              onChange={(e) => setUnderlying(e.target.value as QuantUnderlying)}
+              className="bg-slate-950 border border-slate-700/80 rounded-lg px-3 py-1.5 font-bold text-cyan-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+            >
+              <optgroup label="Index Derivatives">
+                {ALL_CONFIGURED_SYMBOLS.filter(s => CANONICAL_INSTRUMENTS[s]?.type === 'INDEX').map(u => (
+                  <option key={u} value={u}>{u} ({CANONICAL_INSTRUMENTS[u].exchange})</option>
+                ))}
+              </optgroup>
+              <optgroup label="Equity Derivatives">
+                {ALL_CONFIGURED_SYMBOLS.filter(s => CANONICAL_INSTRUMENTS[s]?.type === 'EQUITY').map(u => (
+                  <option key={u} value={u}>{u} ({CANONICAL_INSTRUMENTS[u].exchange})</option>
+                ))}
+              </optgroup>
+              <optgroup label="Commodity Derivatives">
+                {ALL_CONFIGURED_SYMBOLS.filter(s => CANONICAL_INSTRUMENTS[s]?.type === 'COMMODITY').map(u => (
+                  <option key={u} value={u}>{u} ({CANONICAL_INSTRUMENTS[u].exchange})</option>
+                ))}
+              </optgroup>
+            </select>
           </div>
 
           <button
@@ -238,66 +370,103 @@ export const QuantIntelligenceDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* 1.5 Insufficient Data Banner (Graceful degraded state handling) */}
+      {stateData?.quality?.status === 'DATA_INSUFFICIENT' && (
+        <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-3 flex items-start space-x-3 text-xs font-mono">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-bold text-amber-300">
+              Limited Historical Data for {underlying} ({stateData?.quality?.score || 0}/100 Quality)
+            </div>
+            <div className="text-amber-200/80 text-[11px]">
+              {stateData?.quality?.warnings?.[0] || 'Historical candles or live tick depth are accumulating in SQLite. Quant engines are operating in cautious safety mode.'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 2. Real-Time Macro Metric Strip */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 font-mono text-xs">
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
           <div className="text-slate-400 text-[11px]">Underlying Spot</div>
           <div className="text-lg font-bold text-white mt-1">
-            ₹{stateData?.spotPrice?.toLocaleString() || '24,017.70'}
+            {stateData?.spotPrice ? `₹${stateData.spotPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
           </div>
           <div className="text-[10px] text-cyan-400 mt-0.5">
-            VWAP: ₹{(stateData?.spotPrice * 0.998).toFixed(1)} ({stateData?.features?.distVwapPct || '+0.2'}%)
+            VWAP: ₹{stateData?.spotPrice ? (stateData.spotPrice * 0.998).toFixed(1) : '—'} ({stateData?.features?.distVwapPct || '+0.0'}%)
           </div>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
           <div className="text-slate-400 text-[11px]">Market Regime</div>
           <div className="text-base font-bold text-emerald-400 mt-1 truncate">
-            {stateData?.regime?.primaryRegime || 'TREND_UP'}
+            {stateData?.regime?.primaryRegime || 'CALCULATING'}
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Conf: {((stateData?.regime?.confidence || 0.8) * 100).toFixed(0)}% | Vol: {stateData?.regime?.volatilityRegime || 'NORMAL'}
+            Conf: {((stateData?.regime?.confidence || 0.5) * 100).toFixed(0)}% | Vol: {stateData?.regime?.volatilityRegime || 'NORMAL'}
           </div>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
           <div className="text-slate-400 text-[11px]">Dealer Gamma (Est.)</div>
           <div className="text-base font-bold text-purple-400 mt-1">
-            +₹42.5 Cr
+            {stateData?.features?.estimatedNetGamma !== undefined && stateData?.features?.estimatedNetGamma !== null
+              ? `${stateData.features.estimatedNetGamma >= 0 ? '+' : ''}${stateData.features.estimatedNetGamma.toFixed(2)} γ`
+              : 'Calculating'}
           </div>
           <div className="text-[10px] text-purple-300 mt-0.5">
-            Flip: ₹{stateData?.regime?.keyLevels?.gammaFlip || '24,050'}
+            Flip: ₹{stateData?.regime?.keyLevels?.gammaFlip ? stateData.regime.keyLevels.gammaFlip.toLocaleString() : (stateData?.features?.gammaFlipStrike ? stateData.features.gammaFlipStrike.toLocaleString() : 'Calculating')}
           </div>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
           <div className="text-slate-400 text-[11px]">PCR & Volatility</div>
           <div className="text-base font-bold text-amber-400 mt-1">
-            PCR {stateData?.features?.pcrOi || '1.18'}
+            PCR {stateData?.features?.pcrOi || '—'}
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            ATM IV: {stateData?.features?.atmIv || '14.2'}% (Rank {stateData?.features?.ivRank || '42'})
+            ATM IV: {stateData?.features?.atmIv ? `${stateData.features.atmIv}%` : '—'} (Rank {stateData?.features?.ivRank ?? '—'})
           </div>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
           <div className="text-slate-400 text-[11px]">Analogue 30m Edge</div>
           <div className="text-base font-bold text-emerald-400 mt-1">
-            68% Upside
+            {analogues?.outcomes?.horizon30m?.upProb !== undefined
+              ? (analogues.outcomes.horizon30m.upProb >= analogues.outcomes.horizon30m.downProb
+                  ? `${Math.round(analogues.outcomes.horizon30m.upProb * 100)}% Upside`
+                  : `${Math.round(analogues.outcomes.horizon30m.downProb * 100)}% Downside`)
+              : (analogues ? 'Balanced' : 'Analyzing...')}
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            {analogues?.sampleCount || 1845} Matches (+0.25% Exp)
+            {analogues?.sampleCount || 0} Matches ({analogues?.outcomes?.horizon30m?.expectedReturnPct !== undefined ? `${analogues.outcomes.horizon30m.expectedReturnPct >= 0 ? '+' : ''}${analogues.outcomes.horizon30m.expectedReturnPct}%` : '+0.0%'} Exp)
           </div>
         </div>
 
-        <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow">
+        <div className={`border rounded-xl p-3 shadow ${
+          stateData?.quality?.status === 'DATA_INSUFFICIENT'
+            ? 'bg-amber-950/30 border-amber-500/40'
+            : stateData?.quality?.status === 'STALE'
+            ? 'bg-rose-950/30 border-rose-500/40'
+            : 'bg-slate-900/90 border-slate-800'
+        }`}>
           <div className="text-slate-400 text-[11px]">Data Quality</div>
-          <div className="text-base font-bold text-emerald-400 mt-1 flex items-center space-x-1.5">
-            <CheckCircle className="w-4 h-4 text-emerald-400" />
-            <span>{stateData?.quality?.score || 100}/100</span>
+          <div className={`text-base font-bold mt-1 flex items-center space-x-1.5 ${
+            stateData?.quality?.status === 'DATA_INSUFFICIENT'
+              ? 'text-amber-400'
+              : stateData?.quality?.status === 'STALE'
+              ? 'text-rose-400'
+              : 'text-emerald-400'
+          }`}>
+            {stateData?.quality?.status === 'OK' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-amber-400" />
+            )}
+            <span>{stateData?.quality?.score ?? 100}/100</span>
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Status: {stateData?.quality?.status || 'OK'} (0.1s Latency)
+            Status: {stateData?.quality?.status || 'OK'} ({((stateData?.quality?.latencyMs || 100) / 1000).toFixed(1)}s Latency)
           </div>
         </div>
       </div>
@@ -351,15 +520,37 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                   <Zap className="w-5 h-5 text-cyan-400" />
                   <h2 className="text-base font-bold text-white uppercase">Automated Quant Decision</h2>
                 </div>
-                <span
-                  className={`px-3 py-1 rounded-full text-xs font-bold ${
-                    decision?.action === 'ENTER'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                  }`}
-                >
-                  ACTION: {decision?.action || 'ENTER'}
-                </span>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setActiveTab('RISK')}
+                    className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-slate-950 hover:bg-slate-800 border border-slate-800 transition flex items-center space-x-1.5"
+                    title="Click to configure execution mode in Risk & Execution Controls"
+                  >
+                    <span className="text-[10px] text-slate-500">MODE:</span>
+                    <span
+                      className={
+                        quantSettings?.quantExecutionMode === 'LIVE_REAL'
+                          ? 'text-rose-400 font-bold'
+                          : quantSettings?.quantExecutionMode === 'LIVE_PAPER'
+                          ? 'text-purple-400 font-bold'
+                          : quantSettings?.quantExecutionMode === 'SHADOW'
+                          ? 'text-cyan-400 font-bold'
+                          : 'text-emerald-400 font-bold'
+                      }
+                    >
+                      {quantSettings?.quantExecutionMode || 'ADVISORY_ONLY'}
+                    </span>
+                  </button>
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      decision?.action === 'ENTER'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    }`}
+                  >
+                    ACTION: {decision?.action || 'ENTER'}
+                  </span>
+                </div>
               </div>
 
               {decision?.strategy && (
@@ -401,6 +592,40 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                       <div className="text-purple-400 font-bold">{(decision.metrics.confidenceScore * 100).toFixed(0)}%</div>
                     </div>
                   </div>
+
+                  {/* Deploy to Paper Trading Action */}
+                  <div className="pt-3 border-t border-slate-900 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[11px] text-slate-400">
+                      Automated execution ready via Virtual Paper Trading engine
+                    </div>
+                    <button
+                      onClick={handleDeployPaper}
+                      disabled={isDeployingPaper}
+                      className="inline-flex items-center space-x-1.5 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs transition shadow-lg disabled:opacity-50"
+                    >
+                      <Play className={`w-3.5 h-3.5 ${isDeployingPaper ? 'animate-spin' : ''}`} />
+                      <span>{isDeployingPaper ? 'Deploying to Paper...' : 'Deploy to Paper Trading'}</span>
+                    </button>
+                  </div>
+
+                  {paperDeployResult && (
+                    <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                      paperDeployResult.success ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300' : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                    }`}>
+                      <div className="flex items-center space-x-2">
+                        {paperDeployResult.success ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <AlertTriangle className="w-4 h-4 text-rose-400" />}
+                        <span>{paperDeployResult.message}</span>
+                      </div>
+                      {paperDeployResult.success && onNavigateTab && (
+                        <button
+                          onClick={() => onNavigateTab('paper')}
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition ml-2 shrink-0"
+                        >
+                          View in Paper Tab →
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -561,25 +786,31 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                 <div className="flex justify-between p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
                   <span className="text-slate-400">Call Wall (Major Resistance):</span>
                   <span className="font-bold text-rose-400">
-                    ₹{stateData?.regime?.keyLevels?.callWall?.toLocaleString() || '24,200'}
+                    {stateData?.regime?.keyLevels?.callWall
+                      ? `₹${stateData.regime.keyLevels.callWall.toLocaleString()}`
+                      : (stateData?.features?.callWallStrike ? `₹${stateData.features.callWallStrike.toLocaleString()}` : 'Calculating...')}
                   </span>
                 </div>
                 <div className="flex justify-between p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
                   <span className="text-slate-400">Gamma Flip Strike:</span>
                   <span className="font-bold text-purple-400">
-                    ₹{stateData?.regime?.keyLevels?.gammaFlip?.toLocaleString() || '24,050'}
+                    {stateData?.regime?.keyLevels?.gammaFlip
+                      ? `₹${stateData.regime.keyLevels.gammaFlip.toLocaleString()}`
+                      : (stateData?.features?.gammaFlipStrike ? `₹${stateData.features.gammaFlipStrike.toLocaleString()}` : 'Calculating...')}
                   </span>
                 </div>
                 <div className="flex justify-between p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
                   <span className="text-slate-400">Put Wall (Major Support):</span>
                   <span className="font-bold text-emerald-400">
-                    ₹{stateData?.regime?.keyLevels?.putWall?.toLocaleString() || '23,900'}
+                    {stateData?.regime?.keyLevels?.putWall
+                      ? `₹${stateData.regime.keyLevels.putWall.toLocaleString()}`
+                      : (stateData?.features?.putWallStrike ? `₹${stateData.features.putWallStrike.toLocaleString()}` : 'Calculating...')}
                   </span>
                 </div>
                 <div className="flex justify-between p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
                   <span className="text-slate-400">Expected 1-Day Move:</span>
                   <span className="font-bold text-amber-400">
-                    ±₹{stateData?.regime?.keyLevels?.expectedMove || '165'}
+                    ±₹{stateData?.regime?.keyLevels?.expectedMove || (stateData?.features?.atr14 ? Math.round(stateData.features.atr14) : '—')}
                   </span>
                 </div>
               </div>
@@ -591,12 +822,14 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                 <span>Dealer Gamma Exposure</span>
               </h3>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                Market makers are net long gamma in current zone (+₹42.5 Cr). They sell into rallies and buy into dips, acting as a volatility dampener.
+                Market makers are net {(stateData?.features?.estimatedNetGamma ?? 0) >= 0 ? 'long' : 'short'} gamma in the current strike cluster ({stateData?.features?.estimatedNetGamma !== undefined ? `${stateData.features.estimatedNetGamma >= 0 ? '+' : ''}${stateData.features.estimatedNetGamma.toFixed(2)} γ` : 'Calculating...'}). {(stateData?.features?.estimatedNetGamma ?? 0) >= 0 ? 'They sell into rallies and buy into dips, acting as a volatility dampener.' : 'Dealer short gamma accelerates directional expansions and intraday breakouts.'}
               </p>
               <div className="p-3 bg-purple-950/40 border border-purple-500/30 rounded-xl text-xs space-y-1">
-                <div className="text-purple-300 font-bold">Stance: Mean Reversion Bias</div>
+                <div className="text-purple-300 font-bold">Stance: {(stateData?.features?.estimatedNetGamma ?? 0) >= 0 ? 'Mean Reversion Bias' : 'Breakout Acceleration Bias'}</div>
                 <div className="text-[10px] text-slate-400">
-                  Vol expansions favor breakout straddles only once spot crosses ₹24,200 Call Wall.
+                  {stateData?.regime?.keyLevels?.callWall 
+                    ? `Vol expansions favor breakout straddles only once spot crosses ₹${stateData.regime.keyLevels.callWall.toLocaleString()} Call Wall.`
+                    : 'Monitor Call and Put wall threshold crosses for regime transition.'}
                 </div>
               </div>
             </div>
@@ -644,7 +877,18 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                       <td className="p-3 text-center text-slate-300">{entry.regimeFitScore}%</td>
                       <td className="p-3 text-center text-slate-300">{entry.historicalEdgeScore}%</td>
                       <td className="p-3 text-center font-bold text-emerald-400">{entry.expectedValue}</td>
-                      <td className="p-3 text-center text-slate-300">{entry.historicalProbPct}%</td>
+                      <td className="p-3 text-center text-slate-300">
+                        <div>{entry.historicalProbPct}%</div>
+                        {entry.isEmpiricallyValidated === false ? (
+                          <div className="text-[9px] text-amber-400/90 font-mono" title={entry.sampleSizeWarning || 'Cold start: uncalibrated baseline'}>
+                            (n={entry.sampleSize ?? 0})
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-emerald-400/80 font-mono" title="Empirically verified from closed trades">
+                            (n={entry.sampleSize})
+                          </div>
+                        )}
+                      </td>
                       <td className="p-3 text-center">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -684,33 +928,179 @@ export const QuantIntelligenceDashboard: React.FC = () => {
               <div>
                 <h2 className="text-base font-bold text-white">Quantitative Strategy Lab</h2>
                 <p className="text-xs text-slate-400">
-                  Event-driven options backtester with true statutory friction, Walk-Forward splits, and Monte Carlo runs.
+                  Event-driven options backtester replaying SQLite ticks & option snapshots with true statutory friction and Walk-Forward gates.
                 </p>
               </div>
 
-              <div className="flex items-center space-x-3">
+              {/* Data Availability Badge */}
+              {dataAvailability && (
+                <div className="text-[11px] bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 flex items-center space-x-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-slate-300">
+                    SQLite Repository: <strong className="text-emerald-400">{dataAvailability.candleRange.count}</strong> 15m Candles ({dataAvailability.candleRange.minDate ? dataAvailability.candleRange.minDate.slice(0, 10) : '2026-08-17'} to {dataAvailability.candleRange.maxDate ? dataAvailability.candleRange.maxDate.slice(0, 10) : 'Today'}) & <strong className="text-cyan-400">{dataAvailability.optionRange.count.toLocaleString()}</strong> Option Snapshots
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Backtest Control Configuration Panel */}
+            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                {/* Strategy Selector */}
+                <div className="flex items-center space-x-2">
+                  <span className="text-slate-400">Strategy:</span>
+                  <select
+                    value={selectedLabStrategy}
+                    onChange={(e) => setSelectedLabStrategy(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 text-slate-100 rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500 font-semibold text-xs"
+                  >
+                    {strategies.length > 0 ? (
+                      strategies.map((s: any) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.status || 'ACTIVE'})
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="STRAT_BULL_CALL_SPREAD_01">Bull Call Spread (NIFTY Momentum)</option>
+                        <option value="STRAT_BEAR_PUT_SPREAD_01">Bear Put Spread (NIFTY Breakdown)</option>
+                        <option value="STRAT_IRON_CONDOR_01">Iron Condor (NIFTY Delta Neutral)</option>
+                        <option value="STRAT_IRON_FLY_01">Iron Fly (NIFTY Delta Neutral)</option>
+                        <option value="STRAT_SHORT_STRADDLE_01">Short Straddle (Expiry Theta)</option>
+                        <option value="STRAT_LONG_STRADDLE_01">Long Straddle (IV Surge Long Gamma)</option>
+                        <option value="STRAT_CALENDAR_SPREAD_01">Calendar Spread (Time Decay Skew)</option>
+                        <option value="STRAT_JADE_LIZARD_01">Jade Lizard (Asymmetric OTM Theta)</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                {/* Date Range Inputs */}
+                <div className="flex flex-wrap items-center space-x-2">
+                  <span className="text-slate-400">From:</span>
+                  <input
+                    type="date"
+                    value={labStartDate}
+                    onChange={(e) => setLabStartDate(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 text-slate-200 px-2 py-1 rounded text-xs focus:outline-none focus:border-emerald-500"
+                  />
+                  <span className="text-slate-400">To:</span>
+                  <input
+                    type="date"
+                    value={labEndDate}
+                    onChange={(e) => setLabEndDate(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 text-slate-200 px-2 py-1 rounded text-xs focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {/* Quick Range Presets */}
+                <div className="flex items-center space-x-1.5">
+                  <button
+                    onClick={() => {
+                      if (dataAvailability?.minDate) setLabStartDate(dataAvailability.minDate.slice(0, 10));
+                      if (dataAvailability?.maxDate) setLabEndDate(dataAvailability.maxDate.slice(0, 10));
+                    }}
+                    className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-300 font-semibold transition"
+                  >
+                    Full DB
+                  </button>
+                  <button
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 14);
+                      setLabStartDate(d.toISOString().slice(0, 10));
+                      setLabEndDate(new Date().toISOString().slice(0, 10));
+                    }}
+                    className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-300 font-semibold transition"
+                  >
+                    Last 14D
+                  </button>
+                  <button
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 7);
+                      setLabStartDate(d.toISOString().slice(0, 10));
+                      setLabEndDate(new Date().toISOString().slice(0, 10));
+                    }}
+                    className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[11px] text-slate-300 font-semibold transition"
+                  >
+                    Last 7D
+                  </button>
+                </div>
+
+                {/* Run Button */}
                 <button
-                  onClick={() => handleRunBacktest()}
+                  onClick={() => handleRunBacktest(selectedLabStrategy, labStartDate, labEndDate)}
                   disabled={runningBacktest}
-                  className="flex items-center space-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold transition shadow"
+                  className="flex items-center space-x-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold transition shadow disabled:opacity-50"
                 >
                   <Play className={`w-4 h-4 ${runningBacktest ? 'animate-spin' : ''}`} />
-                  <span>{runningBacktest ? 'Simulating...' : 'Run Simulation'}</span>
+                  <span>{runningBacktest ? 'Simulating Replay...' : 'Run Simulation'}</span>
                 </button>
               </div>
             </div>
 
-            {backtestResult ? (
+            {/* Insufficient Historical Data Alert */}
+            {backtestResult && backtestResult.status === 'INSUFFICIENT_HISTORICAL_DATA' && (
+              <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-4 text-xs space-y-2">
+                <div className="flex items-center space-x-2 text-amber-300 font-bold">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Insufficient Historical Data For Requested Window</span>
+                </div>
+                <p className="text-slate-300 text-[11px]">
+                  {backtestResult.failureReason || 'No recorded option chain snapshots or 15m candles match the requested period.'}
+                </p>
+                <div className="flex items-center justify-between pt-1 text-[11px]">
+                  <span className="text-slate-400">
+                    Available in SQLite: <strong className="text-amber-300">{backtestResult.availableDataRange?.minDate?.slice(0, 10)}</strong> to <strong className="text-amber-300">{backtestResult.availableDataRange?.maxDate?.slice(0, 10)}</strong>
+                  </span>
+                  <button
+                    onClick={() => {
+                      const s = backtestResult.availableDataRange?.minDate?.slice(0, 10) || '2026-08-17';
+                      const e = backtestResult.availableDataRange?.maxDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+                      setLabStartDate(s);
+                      setLabEndDate(e);
+                      handleRunBacktest(selectedLabStrategy, s, e);
+                    }}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-lg transition"
+                  >
+                    Re-run on Available History
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Completed Backtest Summary & Results */}
+            {backtestResult && backtestResult.status !== 'INSUFFICIENT_HISTORICAL_DATA' ? (
               <div className="space-y-6 pt-2">
+                {/* Data Source Badge & Period */}
+                <div className="flex flex-wrap items-center justify-between text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-slate-400">Replay Data Source:</span>
+                    <span className={`px-2 py-0.5 rounded font-bold ${
+                      backtestResult.dataSource === 'REAL_HISTORICAL_OPTION_CHAIN'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                    }`}>
+                      {backtestResult.dataSource === 'REAL_HISTORICAL_OPTION_CHAIN'
+                        ? 'REAL_HISTORICAL_OPTION_CHAIN (SQLite Snapshot Quotes)'
+                        : 'MODELED_OPTIONS_ON_REAL_UNDERLYING (Real 15m Candles + European Greeks)'}
+                    </span>
+                  </div>
+                  <div className="text-slate-400">
+                    Simulated Period: <span className="text-slate-200 font-semibold">{backtestResult.periodStart}</span> to <span className="text-slate-200 font-semibold">{backtestResult.periodEnd}</span>
+                  </div>
+                </div>
+
                 {/* Metric Summary Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs">
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
                     <div className="text-slate-400">Net P&L</div>
-                    <div className="text-lg font-bold text-emerald-400 mt-1">
-                      +₹{backtestResult.totalNetPnl.toLocaleString()}
+                    <div className={`text-lg font-bold mt-1 ${backtestResult.totalNetPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {backtestResult.totalNetPnl >= 0 ? '+' : ''}₹{backtestResult.totalNetPnl.toLocaleString()}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      Taxes/Costs: ₹{backtestResult.totalTransactionCosts.toLocaleString()}
+                      Taxes/Costs: ₹{(backtestResult.totalTransactionCosts || 0).toLocaleString()}
                     </div>
                   </div>
 
@@ -740,7 +1130,7 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                       {backtestResult.profitFactor}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      Avg Win: ₹{backtestResult.avgWin}
+                      Avg Win: ₹{(backtestResult.avgWin || 0).toLocaleString()}
                     </div>
                   </div>
 
@@ -757,8 +1147,10 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
                     <div className="text-slate-400">Production Gates</div>
                     <div className="text-base font-bold text-emerald-400 mt-1 flex items-center space-x-1">
-                      <CheckCircle className="w-4 h-4 text-emerald-400" />
-                      <span>{backtestResult.passedGates ? 'PASSED' : 'FAILED'}</span>
+                      <CheckCircle className={`w-4 h-4 ${backtestResult.passedGates ? 'text-emerald-400' : 'text-rose-400'}`} />
+                      <span className={backtestResult.passedGates ? 'text-emerald-400' : 'text-rose-400'}>
+                        {backtestResult.passedGates ? 'PASSED' : 'FAILED'}
+                      </span>
                     </div>
                     <div className="text-[10px] text-slate-500">
                       Walk-Forward Verified
@@ -774,14 +1166,14 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                   <div className="grid grid-cols-3 gap-3 text-center text-xs">
                     <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
                       <div className="text-slate-400 text-[10px]">5th Percentile (Worst Case)</div>
-                      <div className="text-rose-400 font-bold mt-0.5">
-                        +₹{backtestResult.monteCarloP5?.toLocaleString()}
+                      <div className={`font-bold mt-0.5 ${backtestResult.monteCarloP5 >= 0 ? 'text-rose-400' : 'text-rose-500'}`}>
+                        {backtestResult.monteCarloP5 >= 0 ? '+' : ''}₹{backtestResult.monteCarloP5?.toLocaleString()}
                       </div>
                     </div>
                     <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
                       <div className="text-slate-400 text-[10px]">50th Percentile (Median)</div>
-                      <div className="text-cyan-400 font-bold mt-0.5">
-                        +₹{backtestResult.monteCarloP50?.toLocaleString()}
+                      <div className={`font-bold mt-0.5 ${backtestResult.monteCarloP50 >= 0 ? 'text-cyan-400' : 'text-rose-400'}`}>
+                        {backtestResult.monteCarloP50 >= 0 ? '+' : ''}₹{backtestResult.monteCarloP50?.toLocaleString()}
                       </div>
                     </div>
                     <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
@@ -792,6 +1184,67 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Simulated Historical Trades Log Table */}
+                {backtestResult.trades && backtestResult.trades.length > 0 && (
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-slate-200 flex items-center space-x-2">
+                        <span>Simulated Historical Trades</span>
+                        <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">
+                          {backtestResult.trades.length} Executed
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                      <table className="w-full text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400">
+                            <th className="p-2">Trade ID</th>
+                            <th className="p-2">Entry Time</th>
+                            <th className="p-2">Exit Time</th>
+                            <th className="p-2">Dir</th>
+                            <th className="p-2 text-right">Gross P&L</th>
+                            <th className="p-2 text-right">Costs/Tax</th>
+                            <th className="p-2 text-right">Net P&L</th>
+                            <th className="p-2">Exit Reason</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-900">
+                          {backtestResult.trades.map((t: any, idx: number) => (
+                            <tr key={t.id || idx} className="hover:bg-slate-900/60 transition">
+                              <td className="p-2 text-slate-300 font-mono text-[10px]">{t.id}</td>
+                              <td className="p-2 text-slate-400">{t.entryTime ? t.entryTime.replace('T', ' ').slice(0, 16) : '-'}</td>
+                              <td className="p-2 text-slate-400">{t.exitTime ? t.exitTime.replace('T', ' ').slice(0, 16) : '-'}</td>
+                              <td className="p-2">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                  t.direction === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                                }`}>
+                                  {t.direction}
+                                </span>
+                              </td>
+                              <td className={`p-2 text-right font-bold ${t.grossPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {t.grossPnl >= 0 ? '+' : ''}₹{Math.round(t.grossPnl).toLocaleString()}
+                              </td>
+                              <td className="p-2 text-right text-slate-400">
+                                ₹{Math.round(t.costs).toLocaleString()}
+                              </td>
+                              <td className={`p-2 text-right font-bold ${t.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {t.netPnl >= 0 ? '+' : ''}₹{Math.round(t.netPnl).toLocaleString()}
+                              </td>
+                              <td className="p-2">
+                                <span className="px-1.5 py-0.5 rounded bg-slate-900 text-[10px] text-slate-300 border border-slate-800">
+                                  {t.exitReason}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Strategy Promotion Controls */}
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -813,11 +1266,11 @@ export const QuantIntelligenceDashboard: React.FC = () => {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : !backtestResult ? (
               <div className="p-8 text-center text-slate-400 text-xs">
-                Click "Run Simulation" above to execute backtesting on active canonical strategies.
+                Select a canonical strategy and date range above, then click "Run Simulation" to execute backtesting on real historical market data.
               </div>
-            )}
+            ) : null}
           </div>
 
           {/* Embedded Walk-Forward and Monte Carlo Robustness Engine */}

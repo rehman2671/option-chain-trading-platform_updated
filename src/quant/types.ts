@@ -4,7 +4,9 @@
  * Position Recovery, Monte Carlo, Walk-Forward, and Risk Intelligence.
  */
 
-export type QuantUnderlying = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
+import { ALL_CONFIGURED_SYMBOLS } from '../shared/marketConfig.js';
+
+export type QuantUnderlying = typeof ALL_CONFIGURED_SYMBOLS[number];
 
 export type MarketRegimeType =
   | 'TREND_UP'
@@ -224,6 +226,9 @@ export interface BacktestResult {
   strategyVersion: number;
   periodStart: string;
   periodEnd: string;
+  dataSource?: 'REAL_HISTORICAL_OPTION_CHAIN' | 'MODELED_OPTIONS_ON_REAL_UNDERLYING' | 'INSUFFICIENT_HISTORICAL_DATA';
+  status?: 'COMPLETED' | 'INSUFFICIENT_HISTORICAL_DATA';
+  availableDataRange?: { minDate: string; maxDate: string };
   sampleSize: number;
   winRate: number;
   lossRate: number;
@@ -275,6 +280,9 @@ export interface StrategyTournamentEntry {
   historicalProbPct: number;
   recommendation: 'STRONG_BUY' | 'BUY' | 'WATCH' | 'AVOID';
   structureDesc: string;
+  sampleSize?: number;
+  isEmpiricallyValidated?: boolean;
+  sampleSizeWarning?: string;
 }
 
 export interface QuantDecisionOutput {
@@ -611,4 +619,35 @@ export interface TradeReviewRecord {
   timingWasOptimal: boolean;
   strikeSelectionWasOptimal: boolean;
   lessonsLearned: string;
+  predictedProbAtEntry?: number; // 0.0 to 1.0 (or percentage 0 to 100) predicted at entry
+}
+
+export type QuantExecutionMode = 'ADVISORY_ONLY' | 'SHADOW' | 'LIVE_PAPER' | 'LIVE_REAL';
+
+export interface QuantUserSettings {
+  userId: string;
+  quantExecutionMode: QuantExecutionMode;
+  minConfidenceThreshold: number;
+  allowedUnderlyings: QuantUnderlying[];
+  maxDailyQuantOrders: number;
+  updatedAt: string;
+}
+
+export interface QuantOrderRecord {
+  id: string;
+  userId?: string;
+  strategyId: string;
+  decisionId: string;
+  underlying: string;
+  symbol: string;
+  action: 'BUY' | 'SELL';
+  mode: QuantExecutionMode;
+  status: 'SHADOW_LOGGED' | 'SIMULATED' | 'ACCEPTED' | 'REJECTED';
+  executedPrice: number;
+  slippage: number;
+  quantity: number;
+  legs?: any[];
+  decision?: any;
+  auditTrailId?: number;
+  createdAt: string;
 }

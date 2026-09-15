@@ -5,6 +5,7 @@
  */
 
 import { QuantUnderlying } from '../types.js';
+import { getLotSize } from '../../shared/marketConfig.js';
 
 export interface MarginRequirement {
   underlying: QuantUnderlying;
@@ -39,7 +40,7 @@ export class MarginAdapter {
     lots: number = 1,
     availableCapital: number = 500000
   ): MarginRequirement {
-    const lotSize = underlying === 'NIFTY' ? 25 : underlying === 'BANKNIFTY' ? 15 : 10;
+    const lotSize = getLotSize(underlying);
     const structureUpper = strategyStructure.toUpperCase();
 
     let baseSpanPerLot = 95000;

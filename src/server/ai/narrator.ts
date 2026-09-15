@@ -139,7 +139,7 @@ Return your narrative structured clearly.`;
       : `Provide institutional market narration and greeks analysis for ${symbol}.\n\nPre-calculated Market Data: ${JSON.stringify(contextData)}${partialInfo}`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
+      model: 'gemini-3.8-flash',
       contents: promptText,
       config: {
         systemInstruction: systemPrompt,
@@ -177,7 +177,7 @@ Return your narrative structured clearly.`;
 
       if (modelContent && functionResponseParts.length > 0) {
         const secondResponse = await ai.models.generateContent({
-          model: 'gemini-3.7-flash',
+          model: 'gemini-3.8-flash',
           contents: [
             { role: 'user', parts: [{ text: promptText }] },
             modelContent,

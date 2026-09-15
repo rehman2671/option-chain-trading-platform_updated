@@ -180,7 +180,7 @@ export default function App() {
         )}
 
         {activeTab === 'quant' && (
-          <QuantIntelligenceDashboard />
+          <QuantIntelligenceDashboard onNavigateTab={(tab) => setActiveTab(tab)} />
         )}
 
         {activeTab === 'chain' && (

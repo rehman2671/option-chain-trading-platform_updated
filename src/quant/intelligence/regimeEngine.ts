@@ -5,6 +5,7 @@
  */
 
 import { QuantUnderlying, MarketRegimeType, MarketRegimeState, QuantFeatureSnapshot } from '../types.js';
+import { getStepSize } from '../../shared/marketConfig.js';
 
 export class RegimeEngine {
   private static instance: RegimeEngine;
@@ -43,8 +44,10 @@ export class RegimeEngine {
     // 1. Trend Direction Classification
     const isStrongUp = distVwapPct > 0.25 && distEma20Pct > 0.2 && rsi14 > 58 && pcrOi > 1.1;
     const isStrongDown = distVwapPct < -0.25 && distEma20Pct < -0.2 && rsi14 < 42 && pcrOi < 0.9;
-    const isBreakout = spotPrice >= callWallStrike - 20 && returns15m > 0.35;
-    const isBreakdown = spotPrice <= putWallStrike + 20 && returns15m < -0.35;
+    const step = getStepSize(underlying);
+    const wallBuffer = Math.max(1, step * 0.4);
+    const isBreakout = spotPrice >= callWallStrike - wallBuffer && returns15m > 0.35;
+    const isBreakdown = spotPrice <= putWallStrike + wallBuffer && returns15m < -0.35;
 
     if (isBreakout) {
       primaryRegime = 'BREAKOUT';

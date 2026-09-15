@@ -143,6 +143,21 @@ export class DecisionEngine {
       reason: `Tournament Winner: ${topPick.name} (Score: ${topPick.score}/100)`
     });
 
+    // Persist probabilistic forecast for calibration tracking (Section 74)
+    try {
+      dbEngine.saveForecastEntry({
+        decisionId,
+        strategyId: topPick.strategyId,
+        strategyName: topPick.name,
+        symbol: `${underlying} ${strikes || ''}`,
+        regime: regime.primaryRegime,
+        predictedProb: topPick.historicalProbPct / 100.0,
+        expectedValueR: Number(parseFloat(topPick.expectedValue)) || 0.0
+      });
+    } catch (err: any) {
+      console.warn('[DECISION ENGINE] Failed to persist forecast entry:', err?.message);
+    }
+
     return output;
   }
 }

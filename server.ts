@@ -29,6 +29,7 @@ import { quantRouter } from './src/quant/api/quantRouter.js';
 import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron } from './src/server/engine/upstoxAuthService.js';
 import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
+import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -243,6 +244,8 @@ async function startServer() {
   await dbEngine.initialize();
   // Initialize 15-Minute 23/50 EMA Alert Engine
   await globalEma15mEngine.initialize();
+  // Initialize Autonomous Quant Background Learning Scheduler
+  await quantScheduler.initialize();
 
   // -------------------------------------------------------------
   // API ENDPOINTS
@@ -901,7 +904,7 @@ async function startServer() {
         createdPositions.push(pos);
       }
 
-      updatePaperPositionsMTM();
+      updatePaperPositionsMTM(userId);
       res.json({
         success: true,
         strategyGroupId,
@@ -939,7 +942,7 @@ async function startServer() {
 
       const closed = dbEngine.closePaperPosition(id, exitPrice, Number(pnl.toFixed(2)), closeReasonParam, userId);
       if (closed) {
-        updatePaperPositionsMTM();
+        updatePaperPositionsMTM(userId);
         const portfolio = await getPaperPortfolioData(userId);
         res.json({ success: true, portfolio });
       } else {
@@ -962,7 +965,7 @@ async function startServer() {
 
       const closed = dbEngine.closePaperGroup(groupId, req.body?.reason || 'Manual Strategy Close', userId);
       if (closed) {
-        updatePaperPositionsMTM();
+        updatePaperPositionsMTM(userId);
         const portfolio = await getPaperPortfolioData(userId);
         res.json({ success: true, portfolio });
       } else {

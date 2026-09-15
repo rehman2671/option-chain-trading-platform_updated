@@ -5,6 +5,7 @@
  */
 
 import { QuantUnderlying } from '../types.js';
+import { CANONICAL_INSTRUMENTS, isEquitySymbol, isCommoditySymbol } from '../../shared/marketConfig.js';
 
 export interface ExpiryResolution {
   currentExpiry: string;
@@ -29,14 +30,33 @@ export class ExpiryResolver {
       .sort();
 
     if (sortedDates.length === 0) {
-      // Fallback projection based on standard NSE/BSE expiry cycles
-      // NIFTY: Thursday, BANKNIFTY: Wednesday, SENSEX: Friday
-      const nextDate = new Date(referenceDate);
-      const targetDay = underlying === 'SENSEX' ? 5 : underlying === 'BANKNIFTY' ? 3 : 4;
-      const daysUntil = (targetDay - nextDate.getDay() + 7) % 7;
-      nextDate.setDate(nextDate.getDate() + (daysUntil === 0 ? 0 : daysUntil));
-      const projected = nextDate.toISOString().split('T')[0];
-      sortedDates.push(projected);
+      const cfg = CANONICAL_INSTRUMENTS[underlying];
+      const isEquity = isEquitySymbol(underlying);
+      const isCommodity = isCommoditySymbol(underlying);
+
+      if (isEquity || isCommodity || !cfg?.weeklyExpiryDay) {
+        // Equity & Commodity derivatives trade primarily on monthly expiry cycles (last Thursday of the month)
+        const d = new Date(referenceDate);
+        const year = d.getFullYear();
+        const month = d.getMonth();
+        const lastDay = new Date(year, month + 1, 0);
+        let lastThu = lastDay.getDate() - ((lastDay.getDay() - 4 + 7) % 7);
+        let targetMonthDate = new Date(year, month, lastThu);
+        if (targetMonthDate < referenceDate) {
+          const nextMonthLastDay = new Date(year, month + 2, 0);
+          lastThu = nextMonthLastDay.getDate() - ((nextMonthLastDay.getDay() - 4 + 7) % 7);
+          targetMonthDate = new Date(year, month + 1, lastThu);
+        }
+        sortedDates.push(targetMonthDate.toISOString().split('T')[0]);
+      } else {
+        // Index weekly expiry cycle
+        const nextDate = new Date(referenceDate);
+        const targetDay = cfg.weeklyExpiryDay;
+        const daysUntil = (targetDay - nextDate.getDay() + 7) % 7;
+        nextDate.setDate(nextDate.getDate() + (daysUntil === 0 ? 0 : daysUntil));
+        const projected = nextDate.toISOString().split('T')[0];
+        sortedDates.push(projected);
+      }
     }
 
     const currentExpiry = sortedDates[0];

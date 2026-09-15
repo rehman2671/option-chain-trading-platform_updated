@@ -5,7 +5,8 @@
  */
 
 import { Router } from 'express';
-import { QuantUnderlying } from '../types.js';
+import { QuantUnderlying, QuantExecutionMode, QuantUserSettings } from '../types.js';
+import { getComputedMarketContext, getHistoricalCandles } from '../context/marketContext.js';
 import { marketDataAdapter } from '../adapters/marketDataAdapter.js';
 import { featureEngine } from '../features/featureEngine.js';
 import { regimeEngine } from '../intelligence/regimeEngine.js';
@@ -38,6 +39,7 @@ import { metaStrategyEngine } from '../decision/metaStrategyEngine.js';
 import { rollEngine } from '../position/rollEngine.js';
 import { positionMonitor } from '../position/positionMonitor.js';
 import { continuousResearchEngine } from '../learning/continuousResearch.js';
+import { quantScheduler } from '../scheduler/quantScheduler.js';
 import { strategyMutationEngine } from '../research/strategyMutation.js';
 import { marginAdapter } from '../adapters/marginAdapter.js';
 import { positionAdapter } from '../adapters/positionAdapter.js';
@@ -58,33 +60,17 @@ import { quantEventBus } from '../events/quantEventBus.js';
 import { quantConfigRegistry } from '../config/quantConfig.js';
 import { shadowModeEngine } from '../decision/shadowModeEngine.js';
 import { qualityGatesEngine } from '../research/qualityGatesEngine.js';
+import { ALL_CONFIGURED_SYMBOLS } from '../../shared/marketConfig.js';
 
 export const quantRouter = Router();
 
-// Helper to resolve underlying safely
-function resolveUnderlying(req: any): QuantUnderlying {
-  const query = ((req.query.underlying || req.query.symbol || 'NIFTY') as string).toUpperCase();
-  if (query === 'BANKNIFTY' || query === 'SENSEX') return query;
+// Helper to resolve underlying safely across all 17 canonical symbols
+export function resolveUnderlying(req: any): QuantUnderlying {
+  const query = ((req?.query?.underlying || req?.query?.symbol || 'NIFTY') as string).toUpperCase();
+  if ((ALL_CONFIGURED_SYMBOLS as readonly string[]).includes(query)) {
+    return query as QuantUnderlying;
+  }
   return 'NIFTY';
-}
-
-function getComputedMarketContext(underlying: QuantUnderlying) {
-  const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-  const basePrices: Record<QuantUnderlying, number> = {
-    NIFTY: 24017.70,
-    BANKNIFTY: 51240.50,
-    SENSEX: 78920.10
-  };
-  const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : basePrices[underlying];
-  const candles = Array.from({ length: 60 }).map((_, idx) => ({
-    close: spotPrice + Math.sin(idx * 0.2) * 45,
-    high: spotPrice + Math.sin(idx * 0.2) * 45 + 15,
-    low: spotPrice + Math.sin(idx * 0.2) * 45 - 15,
-    volume: 12000
-  }));
-  const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
-  const regime = regimeEngine.classify(features);
-  return { snapshots, spotPrice, features, regime };
 }
 
 // 0. Quant Engine Health
@@ -126,26 +112,7 @@ quantRouter.get('/health', (req, res) => {
 quantRouter.get(['/state', '/market-state'], (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const quality = marketDataAdapter.evaluateQuality(snapshots);
-
-    const basePrices: Record<QuantUnderlying, number> = {
-      NIFTY: 24017.70,
-      BANKNIFTY: 51240.50,
-      SENSEX: 78920.10
-    };
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : basePrices[underlying];
-
-    // Dummy candles for indicator calculations
-    const candles = Array.from({ length: 60 }).map((_, idx) => ({
-      close: spotPrice + Math.sin(idx * 0.2) * 45,
-      high: spotPrice + Math.sin(idx * 0.2) * 45 + 15,
-      low: spotPrice + Math.sin(idx * 0.2) * 45 - 15,
-      volume: 12000 + Math.floor(Math.random() * 5000)
-    }));
-
-    const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
-    const regime = regimeEngine.classify(features);
+    const { snapshots, spotPrice, features, regime, quality } = getComputedMarketContext(underlying);
 
     res.json({
       underlying,
@@ -164,16 +131,7 @@ quantRouter.get(['/state', '/market-state'], (req, res) => {
 quantRouter.get(['/regime', '/regimes'], (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
-    const candles = Array.from({ length: 60 }).map((_, idx) => ({
-      close: spotPrice + Math.sin(idx * 0.2) * 40,
-      high: spotPrice + Math.sin(idx * 0.2) * 40 + 10,
-      low: spotPrice + Math.sin(idx * 0.2) * 40 - 10,
-      volume: 10000
-    }));
-    const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
-    const regime = regimeEngine.classify(features);
+    const { regime } = getComputedMarketContext(underlying);
     res.json(regime);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'REGIME_ERROR', message: err.message, safeDefaultApplied: true } });
@@ -185,7 +143,7 @@ quantRouter.get(['/gamma', '/gamma-levels'], (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
     const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
+    const spotPrice = marketDataAdapter.getSpotPrice(underlying);
     const gammaProfile = gammaEngine.computeProfile(underlying, snapshots, spotPrice);
     res.json(gammaProfile);
   } catch (err: any) {
@@ -197,15 +155,7 @@ quantRouter.get(['/gamma', '/gamma-levels'], (req, res) => {
 quantRouter.get(['/analogues', '/historical-analogues'], (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
-    const candles = Array.from({ length: 60 }).map((_, idx) => ({
-      close: spotPrice + Math.sin(idx * 0.2) * 40,
-      high: spotPrice + 10,
-      low: spotPrice - 10,
-      volume: 10000
-    }));
-    const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
+    const { features } = getComputedMarketContext(underlying);
     const analogues = analogueEngine.findAnalogues(features);
     res.json(analogues);
   } catch (err: any) {
@@ -217,16 +167,7 @@ quantRouter.get(['/analogues', '/historical-analogues'], (req, res) => {
 quantRouter.get('/tournament', (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
-    const candles = Array.from({ length: 60 }).map((_, idx) => ({
-      close: spotPrice + Math.sin(idx * 0.2) * 40,
-      high: spotPrice + 10,
-      low: spotPrice - 10,
-      volume: 10000
-    }));
-    const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
-    const regime = regimeEngine.classify(features);
+    const { regime, features } = getComputedMarketContext(underlying);
     const rankings = tournamentEngine.runTournament(regime, features);
     res.json(rankings);
   } catch (err: any) {
@@ -238,17 +179,8 @@ quantRouter.get('/tournament', (req, res) => {
 quantRouter.get('/decision', (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
+    const { snapshots, regime, features } = getComputedMarketContext(underlying);
     const quality = marketDataAdapter.evaluateQuality(snapshots);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
-    const candles = Array.from({ length: 60 }).map((_, idx) => ({
-      close: spotPrice + Math.sin(idx * 0.2) * 40,
-      high: spotPrice + 10,
-      low: spotPrice - 10,
-      volume: 10000
-    }));
-    const features = featureEngine.computeFeatures(underlying, spotPrice, candles, snapshots);
-    const regime = regimeEngine.classify(features);
     const decision = decisionEngine.decide(underlying, regime, features, quality, true);
     res.json(decision);
   } catch (err: any) {
@@ -322,14 +254,30 @@ quantRouter.get('/backtests', (req, res) => {
   }
 });
 
+quantRouter.get('/backtests/availability', (req, res) => {
+  try {
+    const underlying = resolveUnderlying(req);
+    const availability = backtestEngine.getHistoricalDataAvailability(underlying);
+    res.json(availability);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 quantRouter.post(['/backtests/run', '/backtest/run'], (req, res) => {
   try {
     const { strategyId, periodStart, periodEnd } = req.body;
     const strategy = CANONICAL_STRATEGIES.find(s => s.id === strategyId) || CANONICAL_STRATEGIES[0];
+    const underlying = (strategy as any).symbol || (strategy as any).underlying || (strategy.id.includes('bank') ? 'BANKNIFTY' : 'NIFTY');
+    const availability = backtestEngine.getHistoricalDataAvailability(underlying);
+
+    const defaultStart = availability.minDate ? availability.minDate.slice(0, 10) : '2026-08-17';
+    const defaultEnd = availability.maxDate ? availability.maxDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
     const result = backtestEngine.runBacktest({
       strategy,
-      periodStart: periodStart || '2024-01-01',
-      periodEnd: periodEnd || '2026-09-01'
+      periodStart: periodStart || defaultStart,
+      periodEnd: periodEnd || defaultEnd
     });
     res.json(result);
   } catch (err: any) {
@@ -384,7 +332,7 @@ quantRouter.get('/iv-surface', (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
     const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
+    const spotPrice = marketDataAdapter.getSpotPrice(underlying);
     const surface = ivSurfaceEngine.computeSurface(underlying, spotPrice, snapshots);
     res.json(surface);
   } catch (err: any) {
@@ -396,9 +344,9 @@ quantRouter.get('/iv-surface', (req, res) => {
 quantRouter.get('/market-structure', (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
-    const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
-    const structure = marketStructureEngine.analyzeStructure(underlying, spotPrice, []);
+    const spotPrice = marketDataAdapter.getSpotPrice(underlying);
+    const candles = getHistoricalCandles(underlying, spotPrice, 60);
+    const structure = marketStructureEngine.analyzeStructure(underlying, spotPrice, candles);
     res.json(structure);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'STRUCTURE_ERROR', message: err.message, safeDefaultApplied: true } });
@@ -410,7 +358,7 @@ quantRouter.get(['/option-flow', '/option-intelligence'], (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
     const snapshots = marketDataAdapter.getLatestSnapshots(underlying);
-    const spotPrice = snapshots.length > 0 && snapshots[0].ltp ? snapshots[0].ltp : 24017.70;
+    const spotPrice = marketDataAdapter.getSpotPrice(underlying);
     const flow = optionFlowEngine.analyzeFlow(underlying, spotPrice, snapshots);
     res.json(flow);
   } catch (err: any) {
@@ -554,7 +502,7 @@ quantRouter.get('/conversions', (req, res) => {
     const positionId = (req.query.positionId as string) || 'POS_CURRENT_01';
     const symbol = (req.query.symbol as string) || 'NIFTY';
     const currentStructure = (req.query.structure as string) || 'LONG_CALL';
-    const spotPrice = parseFloat((req.query.spotPrice as string) || '24017.70');
+    const spotPrice = parseFloat((req.query.spotPrice as string) || String(marketDataAdapter.getSpotPrice(symbol as any)));
     const netPnl = parseFloat((req.query.netPnl as string) || '4200');
 
     const plans = conversionEngine.evaluateConversion(positionId, symbol, currentStructure, spotPrice, netPnl);
@@ -572,7 +520,7 @@ quantRouter.get('/hedges', (req, res) => {
     const delta = parseFloat((req.query.delta as string) || '0.48');
     const gamma = parseFloat((req.query.gamma as string) || '-0.045');
     const vega = parseFloat((req.query.vega as string) || '18.2');
-    const spotPrice = parseFloat((req.query.spotPrice as string) || '24017.70');
+    const spotPrice = parseFloat((req.query.spotPrice as string) || String(marketDataAdapter.getSpotPrice(symbol as any)));
 
     const hedges = hedgeEngine.evaluateHedges(positionId, symbol, delta, gamma, vega, spotPrice);
     res.json(hedges);
@@ -747,10 +695,33 @@ quantRouter.get('/strategy-mutations', (req, res) => {
 // 35. Continuous Research Cycle Execution (Section 51 & 69)
 quantRouter.post(['/research-cycle', '/continuous-research/run', '/research/run'], (req, res) => {
   try {
-    const summary = continuousResearchEngine.runPostMarketCycle();
+    const summary = continuousResearchEngine.runPostMarketCycle({
+      baseStrategyId: req.body?.baseStrategyId,
+      triggerSource: 'MANUAL',
+      force: true
+    });
     res.json(summary);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'RESEARCH_CYCLE_ERROR', message: err.message } });
+  }
+});
+
+// Continuous Research Background Scheduler Telemetry & Cycle History
+quantRouter.get(['/research-cycle/status', '/continuous-research/status'], (req, res) => {
+  try {
+    res.json(quantScheduler.getStatus());
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'SCHEDULER_STATUS_ERROR', message: err.message } });
+  }
+});
+
+quantRouter.get(['/research-cycle/history', '/continuous-research/history', '/research-cycles'], (req, res) => {
+  try {
+    const limit = Math.min(Math.max(1, Number(req.query.limit) || 20), 100);
+    const cycles = dbEngine.getQuantResearchCycles(limit);
+    res.json(cycles);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'RESEARCH_CYCLES_ERROR', message: err.message } });
   }
 });
 
@@ -769,6 +740,138 @@ quantRouter.post('/order-submit', (req, res) => {
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'ORDER_SUBMIT_ERROR', message: err.message } });
+  }
+});
+
+// 36b. Quant Execution Settings & Mode Gating
+quantRouter.get('/settings', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || (req.query.userId as string) || 'GLOBAL';
+    const settings = dbEngine.getQuantUserSettings(userId);
+    const killSwitchState = killSwitchEngine.getState(userId);
+    const drawdownState = drawdownController.getStatus(userId);
+
+    res.json({
+      userId,
+      settings,
+      riskStatus: {
+        isKillSwitchActive: killSwitchState.isTradingHalted,
+        killSwitchReason: killSwitchState.haltReason,
+        killSwitchTriggeredAt: killSwitchState.haltedAt,
+        isDrawdownHalted: drawdownState.isHalted,
+        drawdownPct: drawdownState.currentDrawdownPct
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'SETTINGS_GET_ERROR', message: err.message } });
+  }
+});
+
+quantRouter.post('/settings', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || req.body.userId || 'GLOBAL';
+    const currentSettings = dbEngine.getQuantUserSettings(userId);
+
+    const targetMode: QuantExecutionMode = req.body.quantExecutionMode || req.body.executionMode || currentSettings.quantExecutionMode || 'ADVISORY_ONLY';
+
+    // Strict safety gate: Activating LIVE_REAL or LIVE_PAPER requires explicit confirmation
+    if ((targetMode === 'LIVE_REAL' || targetMode === 'LIVE_PAPER') && currentSettings.quantExecutionMode !== targetMode) {
+      if (!req.body.confirmRiskAcknowledged) {
+        return res.status(400).json({
+          error: {
+            code: 'CONFIRMATION_REQUIRED',
+            message: `Explicit user risk confirmation required before enabling ${targetMode} mode. Please confirm with confirmRiskAcknowledged: true.`
+          }
+        });
+      }
+    }
+
+    const updatedSettings: QuantUserSettings = {
+      userId,
+      quantExecutionMode: targetMode,
+      minConfidenceThreshold: Number(req.body.minConfidenceThreshold ?? currentSettings.minConfidenceThreshold ?? 60),
+      allowedUnderlyings: req.body.allowedUnderlyings || currentSettings.allowedUnderlyings || ['NIFTY', 'BANKNIFTY'],
+      maxDailyQuantOrders: Number(req.body.maxDailyQuantOrders ?? currentSettings.maxDailyQuantOrders ?? 5),
+      updatedAt: new Date().toISOString()
+    };
+
+    dbEngine.saveQuantUserSettings(updatedSettings);
+
+    quantAuditLogger.log({
+      actor: (req as any).user?.id || 'USER',
+      action: 'QUANT_SETTINGS_UPDATED',
+      entityType: 'SETTINGS',
+      entityId: userId,
+      afterState: updatedSettings,
+      reason: `Updated execution mode to ${targetMode}`
+    });
+
+    res.json({
+      success: true,
+      message: `Quant execution settings updated successfully. Mode: ${targetMode}`,
+      settings: updatedSettings
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'SETTINGS_UPDATE_ERROR', message: err.message } });
+  }
+});
+
+// 36c. Trigger Decision Engine Execution Cycle
+quantRouter.post('/decision-cycle/trigger', async (req, res) => {
+  try {
+    const userId = (req as any).user?.id || req.body.userId || 'GLOBAL';
+    const underlying = resolveUnderlying(req);
+    const result = await quantScheduler.runQuantDecisionExecutionCycle(userId, underlying);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'DECISION_CYCLE_ERROR', message: err.message } });
+  }
+});
+
+// 36d. Quant Orders History
+quantRouter.get('/orders', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || (req.query.userId as string) || undefined;
+    const limit = Math.min(Math.max(1, Number(req.query.limit) || 50), 200);
+    const orders = orderAdapter.getRecentOrders(userId, limit);
+    res.json(orders);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'ORDERS_GET_ERROR', message: err.message } });
+  }
+});
+
+// 36e. Unified Kill Switch Controls
+quantRouter.get('/kill-switch', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || (req.query.userId as string) || 'GLOBAL';
+    const state = killSwitchEngine.getState(userId);
+    res.json(state);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'KILL_SWITCH_STATUS_ERROR', message: err.message } });
+  }
+});
+
+quantRouter.post('/kill-switch/halt', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || req.body.userId || 'GLOBAL';
+    const reason = req.body.reason || 'Manual emergency halt requested via quant API';
+    const operator = (req as any).user?.email || req.body.operator || 'OPERATOR';
+    const result = killSwitchEngine.manualEmergencyKill(operator, userId, reason);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'KILL_SWITCH_HALT_ERROR', message: err.message } });
+  }
+});
+
+quantRouter.post('/kill-switch/reset', (req, res) => {
+  try {
+    const userId = (req as any).user?.id || req.body.userId || 'GLOBAL';
+    const supervisorKey = req.body.supervisorKey || 'RESET_RISK_AUTH';
+    const reason = req.body.reason || 'Manual emergency reset requested via quant API';
+    const result = killSwitchEngine.resetKillSwitch(supervisorKey, reason, userId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: { code: 'KILL_SWITCH_RESET_ERROR', message: err.message } });
   }
 });
 
@@ -1004,7 +1107,10 @@ quantRouter.get('/strategies/:id/health', (req, res) => {
 quantRouter.get('/decision/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const underlying = (id === 'BANKNIFTY' || id === 'SENSEX') ? id : 'NIFTY';
+    const cleanId = (id || '').toUpperCase();
+    const underlying: QuantUnderlying = (ALL_CONFIGURED_SYMBOLS as readonly string[]).includes(cleanId)
+      ? (cleanId as QuantUnderlying)
+      : 'NIFTY';
     const { snapshots, features, regime } = getComputedMarketContext(underlying);
     const quality = marketDataAdapter.evaluateQuality(snapshots);
     const decision = decisionEngine.decide(underlying, regime, features, quality, true);

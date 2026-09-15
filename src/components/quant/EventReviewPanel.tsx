@@ -221,7 +221,12 @@ export const EventReviewPanel: React.FC<Props> = ({ underlying }) => {
         </div>
 
         <div className="space-y-3">
-          {reviews.map((rev) => (
+          {reviews.length === 0 ? (
+            <div className="p-6 text-center text-slate-500 border border-slate-800/60 rounded-xl bg-slate-950/40 text-xs">
+              No trade reviews recorded yet. Real trade reviews are automatically captured and persisted upon position closure.
+            </div>
+          ) : (
+            reviews.map((rev) => (
             <div
               key={rev.tradeId}
               className="p-4 bg-slate-950 border border-slate-800 rounded-xl text-xs space-y-2.5"
@@ -279,7 +284,7 @@ export const EventReviewPanel: React.FC<Props> = ({ underlying }) => {
                 </div>
               </div>
             </div>
-          ))}
+          )))}
         </div>
       </div>
     </div>

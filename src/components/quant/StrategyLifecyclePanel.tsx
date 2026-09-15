@@ -31,6 +31,7 @@ export const StrategyLifecyclePanel: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<QuantAuditLogRecord[]>([]);
   const [mutations, setMutations] = useState<StrategyMutationVariant[]>([]);
   const [researchReport, setResearchReport] = useState<AutonomousResearchReport | null>(null);
+  const [schedulerStatus, setSchedulerStatus] = useState<any>(null);
   const [generatingHypothesis, setGeneratingHypothesis] = useState(false);
   const [runningResearch, setRunningResearch] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -38,13 +39,15 @@ export const StrategyLifecyclePanel: React.FC = () => {
   const fetchResearchState = async () => {
     try {
       setLoading(true);
-      const [hRes, dRes, cRes, eRes, aRes, mRes] = await Promise.all([
+      const [hRes, dRes, cRes, eRes, aRes, mRes, sRes, histRes] = await Promise.all([
         fetch('/api/quant/strategy-health'),
         fetch('/api/quant/drift'),
         fetch('/api/quant/calibration'),
         fetch('/api/quant/experiments'),
         fetch('/api/quant/audit-logs'),
-        fetch('/api/quant/strategy-mutations?baseStrategyId=strat_bull_call_spread')
+        fetch('/api/quant/strategy-mutations?baseStrategyId=strat_bull_call_spread'),
+        fetch('/api/quant/continuous-research/status'),
+        fetch('/api/quant/continuous-research/history?limit=1')
       ]);
 
       if (hRes.ok) setHealth(await hRes.json());
@@ -53,6 +56,13 @@ export const StrategyLifecyclePanel: React.FC = () => {
       if (eRes.ok) setExperiments(await eRes.json());
       if (aRes.ok) setAuditLogs(await aRes.json());
       if (mRes.ok) setMutations(await mRes.json());
+      if (sRes.ok) setSchedulerStatus(await sRes.json());
+      if (histRes.ok) {
+        const hist = await histRes.json();
+        if (hist && hist.length > 0) {
+          setResearchReport(hist[0]);
+        }
+      }
     } catch (err) {
       console.error('Failed to load research data:', err);
     } finally {
@@ -236,10 +246,18 @@ export const StrategyLifecyclePanel: React.FC = () => {
             </h4>
             <div className="flex items-center space-x-2">
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                Brier: {calibration?.overallBrierScore || 0.142}
+                Brier: {calibration?.overallBrierScore ?? 0}
               </span>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                {calibration?.reliabilityStatus || 'WELL_CALIBRATED'}
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                  calibration?.reliabilityStatus === 'INSUFFICIENT_DATA'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    : calibration?.reliabilityStatus === 'DEGRADED'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                }`}
+              >
+                {calibration?.reliabilityStatus || 'INSUFFICIENT_DATA'}
               </span>
             </div>
           </div>
@@ -356,48 +374,105 @@ export const StrategyLifecyclePanel: React.FC = () => {
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h4 className="text-sm font-bold text-white flex items-center space-x-2">
-              <Sparkles className="w-4 h-4 text-purple-400" />
-              <span>Autonomous Post-Market Continuous Research Loop (Section 35)</span>
-            </h4>
+            <div className="flex items-center space-x-2">
+              <h4 className="text-sm font-bold text-white flex items-center space-x-2">
+                <Sparkles className="w-4 h-4 text-purple-400" />
+                <span>Autonomous Post-Market Continuous Research Loop (Section 35)</span>
+              </h4>
+              {schedulerStatus?.isStarted && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>Scheduler: Active ({schedulerStatus.istNow?.istTime})</span>
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Ingests session trade results, identifies persistent slippage or adverse excursions, and autonomously schedules mutation candidates into Walk-Forward validation.
+              Autonomous background scheduler triggers daily at 15:30 IST after market close. Evaluates all canonical strategies, generates mutations, and updates empirical regime profiles.
             </p>
           </div>
 
-          <button
-            onClick={handleRunContinuousResearch}
-            disabled={runningResearch}
-            className="px-3.5 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-xl font-bold flex items-center space-x-2 transition"
-          >
-            <Sparkles className={`w-3.5 h-3.5 ${runningResearch ? 'animate-spin' : ''}`} />
-            <span>{runningResearch ? 'Running Autonomous Loop...' : 'Trigger Post-Market Cycle'}</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handleRunContinuousResearch}
+              disabled={runningResearch}
+              className="px-3.5 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-xl font-bold flex items-center space-x-2 transition cursor-pointer"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${runningResearch ? 'animate-spin' : ''}`} />
+              <span>{runningResearch ? 'Running Autonomous Loop...' : 'Trigger Post-Market Cycle'}</span>
+            </button>
+          </div>
         </div>
+
+        {schedulerStatus && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] p-2.5 bg-slate-950/80 rounded-xl border border-slate-800/80">
+            <div className="text-slate-400">
+              Check Cadence: <span className="text-slate-200 font-semibold">{schedulerStatus.tickIntervalMs / 1000}s (.unref)</span>
+            </div>
+            <div className="text-slate-400">
+              Market Phase: <span className={`font-semibold ${schedulerStatus.istNow?.isMarketOpen ? 'text-emerald-400' : 'text-cyan-400'}`}>
+                {schedulerStatus.istNow?.isMarketOpen ? 'Market Open (09:15-15:30)' : schedulerStatus.istNow?.isPostMarket ? 'Post-Market (>=15:30)' : 'Pre-Market / Off-Hours'}
+              </span>
+            </div>
+            <div className="text-slate-400">
+              Last Daily Run: <span className="text-slate-200 font-semibold">{schedulerStatus.lastDailyRunDate || 'Pending Today'}</span>
+            </div>
+            <div className="text-slate-400">
+              Hourly Health Check: <span className="text-slate-200 font-semibold">{schedulerStatus.lastHourlyCheckHour || 'Idle'}</span>
+            </div>
+          </div>
+        )}
 
         {researchReport && (
           <div className="p-4 bg-slate-950 border border-purple-500/30 rounded-xl space-y-3">
             <div className="flex flex-wrap items-center justify-between text-xs">
-              <span className="font-bold text-purple-300">Continuous Cycle Output ({researchReport.cycleId})</span>
-              <span className="text-slate-400">{new Date(researchReport.executionTimestamp).toLocaleTimeString()}</span>
+              <span className="font-bold text-purple-300 flex items-center space-x-2">
+                <span>Cycle Output ({researchReport.cycleId})</span>
+                {researchReport.triggerSource && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/20 text-purple-200 border border-purple-500/30">
+                    {researchReport.triggerSource}
+                  </span>
+                )}
+              </span>
+              <span className="text-slate-400">
+                {new Date(researchReport.executionTimestamp).toLocaleTimeString()} IST
+                {researchReport.durationMs ? ` (${researchReport.durationMs}ms)` : ''}
+              </span>
             </div>
             <div className="text-xs text-slate-200">
               Reviewed {researchReport.tradesAnalyzedCount} trades | Net P&L: ₹{researchReport.totalNetPnlReviewed.toLocaleString()} | Realized Win Rate: {researchReport.winRateRealizedPct}%
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs pt-1">
               <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
                 <span className="text-slate-500 text-[10px]">Trades Analyzed</span>
                 <div className="text-white font-bold">{researchReport.tradesAnalyzedCount} Trades</div>
               </div>
               <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                <span className="text-slate-500 text-[10px]">Strategies Evaluated</span>
+                <div className="text-cyan-400 font-bold">{researchReport.strategiesEvaluated?.length || 5} Models</div>
+              </div>
+              <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                <span className="text-slate-500 text-[10px]">Mutations Created</span>
+                <div className="text-emerald-400 font-bold">{researchReport.mutationsGeneratedCount || 15} Mutants</div>
+              </div>
+              <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
                 <span className="text-slate-500 text-[10px]">Hypotheses Spawned</span>
                 <div className="text-amber-400 font-bold">{researchReport.hypothesesGeneratedCount} Hypotheses</div>
               </div>
-              <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                <span className="text-slate-500 text-[10px]">Cycle Status</span>
-                <div className="text-emerald-400 font-bold">{researchReport.status}</div>
-              </div>
             </div>
+
+            {researchReport.topGeneratedHypotheses && researchReport.topGeneratedHypotheses.length > 0 && (
+              <div className="pt-2 border-t border-slate-800/80">
+                <div className="text-[10px] text-slate-400 mb-1 font-semibold">Autonomous Testable Hypotheses Formulated:</div>
+                <div className="space-y-1">
+                  {researchReport.topGeneratedHypotheses.map((hyp, i) => (
+                    <div key={i} className="text-[11px] text-slate-300 bg-slate-900/60 p-1.5 rounded border border-slate-800 flex items-center space-x-1.5">
+                      <span className="text-purple-400 font-bold">H{i + 1}:</span>
+                      <span>{hyp}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

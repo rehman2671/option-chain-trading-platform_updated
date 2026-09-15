@@ -251,11 +251,31 @@ export const COMMODITY_SYMBOLS = Object.values(CANONICAL_INSTRUMENTS)
   .filter(i => i.type === 'COMMODITY')
   .map(i => i.symbol);
 
-/** All configured canonical symbols across all asset categories */
-export const ALL_CONFIGURED_SYMBOLS = Object.keys(CANONICAL_INSTRUMENTS);
+/** All configured canonical symbols across all asset categories (authoritative tuple for type derivation) */
+export const ALL_CONFIGURED_SYMBOLS = [
+  'NIFTY',
+  'BANKNIFTY',
+  'SENSEX',
+  'FINNIFTY',
+  'MIDCPNIFTY',
+  'RELIANCE',
+  'TCS',
+  'HDFCBANK',
+  'TATAMOTORS',
+  'GOLD',
+  'CRUDEOIL',
+  'SILVER',
+  'NATURALGAS',
+  'COPPER',
+  'INFY',
+  'SBIN',
+  'ICICIBANK'
+] as const;
+
+export type CanonicalSymbol = typeof ALL_CONFIGURED_SYMBOLS[number];
 
 /** Active symbols monitored for high-volume coverage and system health (dynamically derived from CANONICAL_INSTRUMENTS) */
-export const PRIMARY_COVERAGE_SYMBOLS = Object.keys(CANONICAL_INSTRUMENTS);
+export const PRIMARY_COVERAGE_SYMBOLS = [...ALL_CONFIGURED_SYMBOLS];
 
 /** Historical candle synchronization symbols */
 export const HISTORICAL_SYNC_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK', 'TATAMOTORS'];
@@ -275,6 +295,10 @@ export function isIndexSymbol(symbol: string): boolean {
 
 export function isEquitySymbol(symbol: string): boolean {
   return CANONICAL_INSTRUMENTS[symbol]?.type === 'EQUITY';
+}
+
+export function isCommoditySymbol(symbol: string): boolean {
+  return CANONICAL_INSTRUMENTS[symbol]?.type === 'COMMODITY';
 }
 
 export function getLotSize(symbol: string): number {

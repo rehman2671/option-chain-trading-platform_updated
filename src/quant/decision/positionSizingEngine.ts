@@ -6,6 +6,7 @@
  */
 
 import { QuantUnderlying } from '../types.js';
+import { getLotSize } from '../../shared/marketConfig.js';
 
 export interface SizingInputParams {
   underlying: QuantUnderlying;
@@ -42,15 +43,7 @@ export class PositionSizingEngine {
    * Get NSE lot size for instrument
    */
   public getLotSize(underlying: QuantUnderlying): number {
-    switch (underlying) {
-      case 'BANKNIFTY':
-        return 15;
-      case 'SENSEX':
-        return 10;
-      case 'NIFTY':
-      default:
-        return 25;
-    }
+    return getLotSize(underlying);
   }
 
   /**
@@ -88,8 +81,8 @@ export class PositionSizingEngine {
     // Sizing based on margin availability
     const rawLotsByMargin = premiumPerLot > 0 ? Math.floor((params.availableMargin * 0.7) / premiumPerLot) : 1;
 
-    // Exchange freeze limit per order
-    const maxLotsExchange = params.underlying === 'NIFTY' ? 72 : 60; // 1800 units NIFTY, 900 units BANKNIFTY
+    // Exchange freeze limit per order (scaled by instrument lot size)
+    const maxLotsExchange = Math.max(20, Math.floor(1800 / Math.max(1, lotSize)));
 
     const recommendedLots = Math.max(1, Math.min(rawLotsByRisk, rawLotsByMargin, maxLotsExchange));
     const totalQuantity = recommendedLots * lotSize;

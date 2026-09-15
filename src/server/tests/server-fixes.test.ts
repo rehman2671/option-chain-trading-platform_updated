@@ -7,7 +7,12 @@ import { describe, it, before } from 'node:test';
 import assert from 'node:assert';
 import { dbEngine } from '../db.js';
 import { globalMarketFeed, UNDERLYING_CONFIGS } from '../engine/marketFeed.js';
-import { CANONICAL_INSTRUMENTS, PRIMARY_COVERAGE_SYMBOLS, ALL_CONFIGURED_SYMBOLS } from '../../shared/marketConfig.js';
+import { CANONICAL_INSTRUMENTS, PRIMARY_COVERAGE_SYMBOLS, ALL_CONFIGURED_SYMBOLS, getLotSize, getStepSize } from '../../shared/marketConfig.js';
+import { ContractMaster } from '../../quant/data/contractMaster.js';
+import { resolveUnderlying } from '../../quant/api/quantRouter.js';
+import { ExpiryResolver } from '../../quant/data/expiryResolver.js';
+import { strikeSelectionEngine } from '../../quant/decision/strikeSelectionEngine.js';
+import { positionSizingEngine } from '../../quant/decision/positionSizingEngine.js';
 
 describe('Server & Data Integrity Test Suite', () => {
   before(async () => {
@@ -132,6 +137,113 @@ describe('Server & Data Integrity Test Suite', () => {
       assert.strictEqual(coverageKeys.length, 17);
       for (const sym of PRIMARY_COVERAGE_SYMBOLS) {
         assert.ok(sym in coverage, `Symbol ${sym} must be present in collection coverage`);
+      }
+    });
+  });
+
+  describe('Task I: Dynamic 1-Minute Candle Aggregation', () => {
+    it('seeds known tick rows and aggregates exact 1-minute OHLCV candles', () => {
+      const testSymbol = 'TEST_CANDLE_SYM_' + Date.now();
+      // Seed ticks for minute 1: 2026-09-12T10:00:xx
+      dbEngine.recordHistoricalTick(testSymbol, 100, 15, 50, '2026-09-12T10:00:05.000Z');
+      dbEngine.recordHistoricalTick(testSymbol, 115, 15, 20, '2026-09-12T10:00:20.000Z'); // High
+      dbEngine.recordHistoricalTick(testSymbol, 95, 15, 30, '2026-09-12T10:00:40.000Z');  // Low
+      dbEngine.recordHistoricalTick(testSymbol, 105, 15, 40, '2026-09-12T10:00:55.000Z'); // Close
+
+      // Seed ticks for minute 2: 2026-09-12T10:01:xx
+      dbEngine.recordHistoricalTick(testSymbol, 106, 15, 10, '2026-09-12T10:01:05.000Z'); // Open
+      dbEngine.recordHistoricalTick(testSymbol, 120, 15, 80, '2026-09-12T10:01:30.000Z'); // High
+      dbEngine.recordHistoricalTick(testSymbol, 102, 15, 15, '2026-09-12T10:01:45.000Z'); // Low
+      dbEngine.recordHistoricalTick(testSymbol, 118, 15, 25, '2026-09-12T10:01:58.000Z'); // Close
+
+      const candles = dbEngine.getRecentSpotCandlesForUnderlying(testSymbol, 10);
+      assert.ok(candles.length >= 2, 'Should aggregate at least 2 minute candles');
+
+      const c1 = candles.find(c => c.timestamp.startsWith('2026-09-12T10:00'));
+      assert.ok(c1, 'Minute 1 candle should exist');
+      assert.strictEqual(c1.open, 100);
+      assert.strictEqual(c1.high, 115);
+      assert.strictEqual(c1.low, 95);
+      assert.strictEqual(c1.close, 105);
+      assert.strictEqual(c1.volume, 140); // 50 + 20 + 30 + 40
+
+      const c2 = candles.find(c => c.timestamp.startsWith('2026-09-12T10:01'));
+      assert.ok(c2, 'Minute 2 candle should exist');
+      assert.strictEqual(c2.open, 106);
+      assert.strictEqual(c2.high, 120);
+      assert.strictEqual(c2.low, 102);
+      assert.strictEqual(c2.close, 118);
+      assert.strictEqual(c2.volume, 130); // 10 + 80 + 15 + 25
+    });
+  });
+
+  describe('Task 3: Quant Intelligence Generalization to All Configured Symbols', () => {
+    it('verifies ALL_CONFIGURED_SYMBOLS contains all 17 expected canonical instruments', () => {
+      assert.strictEqual(ALL_CONFIGURED_SYMBOLS.length, 17);
+      const expectedSymbols = [
+        'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX',
+        'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'SBIN', 'ICICIBANK', 'TATAMOTORS',
+        'GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER'
+      ];
+      for (const sym of expectedSymbols) {
+        assert.ok(ALL_CONFIGURED_SYMBOLS.includes(sym as any), `Missing symbol: ${sym}`);
+      }
+    });
+
+    it('ContractMaster provides contract specs dynamically for every configured symbol', () => {
+      for (const sym of ALL_CONFIGURED_SYMBOLS) {
+        const spec = ContractMaster.getContractSpec(sym);
+        assert.ok(spec, `Contract spec should exist for ${sym}`);
+        assert.strictEqual(spec.underlying, sym);
+        assert.strictEqual(spec.lotSize, getLotSize(sym));
+        assert.strictEqual(spec.strikeInterval, getStepSize(sym));
+      }
+    });
+
+    it('resolveUnderlying routes every configured symbol properly and defaults gracefully', () => {
+      for (const sym of ALL_CONFIGURED_SYMBOLS) {
+        assert.strictEqual(resolveUnderlying({ query: { underlying: sym } }), sym);
+        assert.strictEqual(resolveUnderlying({ query: { symbol: sym.toLowerCase() } }), sym);
+      }
+      // Unknown symbol should default to NIFTY
+      assert.strictEqual(resolveUnderlying({ query: { underlying: 'UNKNOWN_TICKER' } }), 'NIFTY');
+      assert.strictEqual(resolveUnderlying({ query: {} }), 'NIFTY');
+    });
+
+    it('strikeSelectionEngine uses dynamic step sizes for all configured symbols', () => {
+      for (const sym of ALL_CONFIGURED_SYMBOLS) {
+        const expectedStep = getStepSize(sym);
+        const spec = ContractMaster.getContractSpec(sym);
+        assert.strictEqual(spec.strikeInterval, expectedStep, `Strike step mismatch for ${sym}`);
+      }
+    });
+
+    it('positionSizingEngine uses dynamic lot sizes for all configured symbols', () => {
+      for (const sym of ALL_CONFIGURED_SYMBOLS) {
+        const expectedLot = getLotSize(sym);
+        assert.strictEqual(positionSizingEngine.getLotSize(sym), expectedLot, `Lot size mismatch for ${sym}`);
+        const sizing = positionSizingEngine.calculatePositionSize({
+          underlying: sym,
+          accountCapital: 1000000,
+          availableMargin: 800000,
+          strategyConfidence: 0.75,
+          winRate: 0.6,
+          profitFactor: 1.8,
+          stopLossPoints: 40,
+          targetPoints: 80,
+          premiumPrice: 150
+        });
+        assert.strictEqual(sizing.lotSize, expectedLot, `Sizing result lot size mismatch for ${sym}`);
+        assert.ok(sizing.recommendedLots >= 0);
+      }
+    });
+
+    it('ExpiryResolver resolves expiries gracefully for indices, equities, and commodities', () => {
+      for (const sym of ALL_CONFIGURED_SYMBOLS) {
+        const resolved = ExpiryResolver.resolve(sym, []);
+        assert.ok(resolved.currentExpiry, `Current expiry must be resolved for ${sym}`);
+        assert.ok(resolved.monthlyExpiry, `Monthly expiry must be resolved for ${sym}`);
+        assert.ok(resolved.allExpiries.length > 0, `allExpiries should not be empty for ${sym}`);
       }
     });
   });

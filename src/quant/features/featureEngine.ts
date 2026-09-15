@@ -5,6 +5,7 @@
 
 import { QuantUnderlying, QuantOptionSnapshot, QuantFeatureSnapshot } from '../types.js';
 import { ContractMaster } from '../data/contractMaster.js';
+import { getInstrumentConfig } from '../../shared/marketConfig.js';
 
 export class FeatureEngine {
   private static instance: FeatureEngine;
@@ -61,7 +62,7 @@ export class FeatureEngine {
     const distEma20Pct = Number((((spotPrice - ema20) / ema20) * 100).toFixed(3));
     const distEma50Pct = Number((((spotPrice - ema50) / ema50) * 100).toFixed(3));
 
-    const atr = this.calculateAtr(candles, 14) || 25;
+    const atr = this.calculateAtr(candles, 14) || Number((spotPrice * 0.005).toFixed(2));
     const rsi14 = this.calculateRsi(closes, 14);
     const adx14 = 24.5; // Baseline adaptive momentum
 
@@ -74,7 +75,7 @@ export class FeatureEngine {
     let callWallStrike = atmStrike + spec.strikeInterval * 2;
     let maxPutOi = -1;
     let putWallStrike = atmStrike - spec.strikeInterval * 2;
-    let atmIv = 14.5;
+    let atmIv = getInstrumentConfig(underlying).indiaVixBase || 14.5;
     let callOiChange = 0;
     let putOiChange = 0;
     let netGamma = 0;
