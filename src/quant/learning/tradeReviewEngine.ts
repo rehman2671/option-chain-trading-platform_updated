@@ -116,10 +116,11 @@ export class TradeReviewEngine {
       symbol: string;
       strategyName?: string;
       openedAt?: string;
-      entryPrice: number;
+      entryPrice?: number;
       stopLoss?: number;
       targetPrice?: number;
       legLabel?: string;
+      [key: string]: any;
     },
     exitPrice: number,
     pnl: number,
@@ -132,12 +133,12 @@ export class TradeReviewEngine {
       const brokerage = 40;
       const netPnl = Number((grossPnl - brokerage).toFixed(2));
       const now = exitTime || new Date().toISOString();
-      const entryTime = pos.openedAt || now;
+      const entryTime = pos.openedAt || pos.opened_at || now;
 
       let maxFavorableExcursionR = 0;
       let maxAdverseExcursionR = 0;
-      const entryPrice = Number(pos.entryPrice || 0);
-      const stopLoss = Number(pos.stopLoss || 0);
+      const entryPrice = Number(pos.entryPrice || pos.entry_price || 0);
+      const stopLoss = Number(pos.stopLoss || pos.stop_loss || 0);
 
       if (entryPrice > 0 && stopLoss > 0 && Math.abs(entryPrice - stopLoss) > 0) {
         const risk = Math.abs(entryPrice - stopLoss);
@@ -153,11 +154,11 @@ export class TradeReviewEngine {
       this.addReview({
         tradeId: `REV_${pos.id}`,
         symbol: pos.symbol,
-        strategyName: pos.strategyName || 'Paper Position',
+        strategyName: pos.strategyName || pos.strategy_name || 'Paper Position',
         strategyVersion: 1,
         entryTime,
         exitTime: now,
-        entryThesis: pos.legLabel ? `Leg: ${pos.legLabel}` : '',
+        entryThesis: (pos.legLabel || pos.leg_label) ? `Leg: ${pos.legLabel || pos.leg_label}` : '',
         exitReason: exitReason || 'Position Closed',
         regimeAtEntry: 'RANGE',
         grossPnl,

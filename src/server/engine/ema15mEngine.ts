@@ -18,6 +18,7 @@ import {
   EmaPaperTrade
 } from '../../types.js';
 import { EMA_15M_INSTRUMENTS } from '../../shared/marketConfig.js';
+import { tradeReviewEngine } from '../../quant/learning/tradeReviewEngine.js';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
@@ -375,6 +376,23 @@ export class Ema15mEngine {
         if (existingOpen.direction !== newDirection) {
           // Reversal: close the opposing trade at the crossover candle's close price
           dbEngine.closeEmaPaperTrade(existingOpen.id, signal.price, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
+          try {
+            const isLong = (existingOpen.direction || '').toUpperCase() === 'LONG';
+            const grossPnl = isLong
+              ? (signal.price - existingOpen.entryPrice) * (existingOpen.quantity || 1)
+              : (existingOpen.entryPrice - signal.price) * (existingOpen.quantity || 1);
+            const netPnl = grossPnl - 40;
+            tradeReviewEngine.recordFromEmaTrade(
+              existingOpen,
+              signal.price,
+              grossPnl,
+              netPnl,
+              'OPPOSITE_CROSSOVER',
+              signal.signalConfirmedAt || new Date().toISOString()
+            );
+          } catch (revErr) {
+            console.error('[EMA PAPER TRADING] Failed to record trade review:', revErr);
+          }
           console.log(`[EMA PAPER TRADING] 🔄 Reversal: Closed ${existingOpen.direction} trade ${existingOpen.id} on ${signal.instrument} @ ₹${signal.price} (Reason: OPPOSITE_CROSSOVER)`);
         } else {
           console.log(`[EMA PAPER TRADING] Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position.`);

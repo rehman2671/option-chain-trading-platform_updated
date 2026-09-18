@@ -10,6 +10,8 @@ import { killSwitchEngine } from '../risk/killSwitch.js';
 import { drawdownController } from '../risk/drawdownController.js';
 import { exposureController } from '../risk/exposureController.js';
 import { QuantOrderRecord } from '../types.js';
+import { activeProvider } from '../../server/engine/providers/index.js';
+import { globalMarketFeed } from '../../server/engine/marketFeed.js';
 
 export interface QuantOrderRequest {
   strategyId: string;
@@ -48,7 +50,7 @@ export class OrderAdapter {
   /**
    * Submit an order execution request with mode safety and hard risk gating checks
    */
-  public submitOrder(order: QuantOrderRequest): QuantOrderResult {
+  public async submitOrder(order: QuantOrderRequest): Promise<QuantOrderResult> {
     const timestamp = new Date().toISOString();
     const orderId = `QORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const userId = order.userId || 'GLOBAL';
@@ -160,7 +162,7 @@ export class OrderAdapter {
       return result;
     }
 
-    // 3. Live Mode: Verifies broker token and safe execution path
+    // 3. Live Mode: Verifies broker token and real execution path via Upstox API
     const brokerStatus = brokerAdapter.getStatus();
     if (!brokerStatus.tokenValid || brokerStatus.provider !== 'UPSTOX') {
       const result: QuantOrderResult = {
@@ -175,17 +177,56 @@ export class OrderAdapter {
       return result;
     }
 
-    // Live order routing would go through the existing Upstox order API
-    const result: QuantOrderResult = {
-      orderId,
-      status: 'ACCEPTED',
-      executedPrice: order.limitPrice || 0,
-      slippage: 0,
-      message: 'Order routed to Upstox exchange gateway.',
-      timestamp
-    };
-    this.recordOrder(order, result);
-    return result;
+    const brokerProvider = activeProvider || globalMarketFeed.getBrokerClient();
+    if (!brokerProvider || typeof brokerProvider.placeOrder !== 'function') {
+      const result: QuantOrderResult = {
+        orderId,
+        status: 'REJECTED',
+        executedPrice: 0,
+        slippage: 0,
+        message: 'Live execution rejected: No active broker client available with order placement capabilities.',
+        timestamp
+      };
+      this.recordOrder(order, result);
+      return result;
+    }
+
+    try {
+      const brokerResponse = await brokerProvider.placeOrder({
+        tradingsymbol: order.symbol,
+        symbol: order.symbol,
+        transactionType: order.action,
+        quantity: order.quantity,
+        product: 'D',
+        orderType: order.orderType || 'MARKET',
+        price: order.limitPrice || 0
+      });
+
+      const realOrderId = brokerResponse?.order_id || brokerResponse?.orderId || `upstox-${Date.now()}`;
+      const result: QuantOrderResult = {
+        orderId: realOrderId,
+        status: 'ACCEPTED',
+        executedPrice: order.limitPrice || 0,
+        slippage: 0,
+        message: `Order successfully routed to Upstox exchange gateway. Broker Order ID: ${realOrderId}`,
+        timestamp
+      };
+      this.recordOrder(order, result);
+      return result;
+    } catch (err: any) {
+      const errMsg = err?.message || 'Upstox live order placement failed';
+      console.error('[ORDER ADAPTER] Live execution error via Upstox API:', errMsg);
+      const result: QuantOrderResult = {
+        orderId,
+        status: 'REJECTED',
+        executedPrice: 0,
+        slippage: 0,
+        message: `Live order rejected by exchange gateway: ${errMsg}`,
+        timestamp
+      };
+      this.recordOrder(order, result);
+      return result;
+    }
   }
 
   private recordOrder(order: QuantOrderRequest, result: QuantOrderResult): void {

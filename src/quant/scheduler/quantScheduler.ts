@@ -322,6 +322,38 @@ export class QuantScheduler {
     const { features, regime, quality } = getComputedMarketContext(underlying);
     const ist = this.getIstDateTime();
 
+    // Naturally accumulate feature history in database
+    try {
+      dbEngine.saveQuantFeatureRecord({
+        id: `FEAT_${underlying}_${Date.now()}`,
+        timestamp: features.timestamp || new Date().toISOString(),
+        underlying,
+        spotPrice: features.spotPrice,
+        returns1m: features.returns1m,
+        returns5m: features.returns5m,
+        returns15m: features.returns15m,
+        distVwapPct: features.distVwapPct,
+        distEma20Pct: features.distEma20Pct,
+        distEma50Pct: features.distEma50Pct,
+        atr: features.atr,
+        atrPercentile: features.atrPercentile,
+        rsi14: features.rsi14,
+        adx14: features.adx14,
+        pcrOi: features.pcrOi,
+        ivRank: features.ivRank,
+        regime: regime.primaryRegime,
+        forwardReturn15m: 0,
+        forwardReturn30m: 0,
+        forwardReturn1h: 0,
+        forwardReturnEod: 0,
+        mfeR: 0,
+        maeR: 0,
+        eventName: 'Live Cycle Snapshot'
+      });
+    } catch (featErr) {
+      console.warn('[QuantScheduler] Failed to record feature snapshot:', featErr);
+    }
+
     // 6. Generate decision via decisionEngine
     const decision = decisionEngine.decide(underlying, regime, features, quality, ist.isMarketOpen);
 
@@ -385,7 +417,7 @@ export class QuantScheduler {
     };
 
     // Route order through orderAdapter (which enforces risk checks & logging)
-    const orderResult = orderAdapter.submitOrder(orderReq);
+    const orderResult = await orderAdapter.submitOrder(orderReq);
 
     quantAuditLogger.log({
       actor: 'QUANT_SCHEDULER',

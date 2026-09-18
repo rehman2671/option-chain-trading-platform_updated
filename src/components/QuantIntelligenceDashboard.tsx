@@ -1292,11 +1292,26 @@ export const QuantIntelligenceDashboard: React.FC<QuantIntelligenceDashboardProp
       {activeTab === 'ANALOGUES' && (
         <div className="space-y-4 font-mono">
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-            <div>
-              <h2 className="text-base font-bold text-white">Historical Multi-Regime Analogue Engine</h2>
-              <p className="text-xs text-slate-400">
-                Maps current multidimensional feature vector to historical setups across 3-year tick repository.
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-base font-bold text-white">Historical Multi-Regime Analogue Engine</h2>
+                <p className="text-xs text-slate-400">
+                  Maps current multidimensional feature vector to historical setups across empirical feature repository.
+                </p>
+              </div>
+              {analogues && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="px-2.5 py-1 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg">
+                    {analogues.sampleCount || 0} Historical Episodes
+                  </span>
+                  <span className="px-2.5 py-1 bg-slate-950 border border-slate-800 text-cyan-400 rounded-lg">
+                    {analogues.periodLookback || 'Baseline'}
+                  </span>
+                  <span className="px-2.5 py-1 bg-purple-950/60 border border-purple-800/60 text-purple-300 rounded-lg font-bold">
+                    Avg Match: {Math.round((analogues.similarityScore || 0) * 100)}%
+                  </span>
+                </div>
+              )}
             </div>
 
             {analogues ? (

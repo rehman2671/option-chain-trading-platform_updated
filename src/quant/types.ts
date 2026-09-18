@@ -145,6 +145,34 @@ export interface QuantFeatureSnapshot {
   marketStructure: 'HH_HL' | 'LH_LL' | 'RANGE' | 'BOS_BULL' | 'BOS_BEAR';
 }
 
+export interface QuantFeatureRecord {
+  id: string;
+  timestamp: string;
+  underlying: QuantUnderlying;
+  spotPrice: number;
+  returns1m: number;
+  returns5m: number;
+  returns15m: number;
+  distVwapPct: number;
+  distEma20Pct: number;
+  distEma50Pct: number;
+  atr: number;
+  atrPercentile: number;
+  rsi14: number;
+  adx14: number;
+  pcrOi: number;
+  ivRank: number;
+  regime?: string;
+  forwardReturn15m: number;
+  forwardReturn30m: number;
+  forwardReturn1h: number;
+  forwardReturnEod: number;
+  mfeR: number;
+  maeR: number;
+  eventName?: string;
+  createdAt?: string;
+}
+
 export interface MarketRegimeState {
   underlying: QuantUnderlying;
   asOf: string;

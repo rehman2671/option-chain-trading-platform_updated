@@ -726,9 +726,9 @@ quantRouter.get(['/research-cycle/history', '/continuous-research/history', '/re
 });
 
 // 36. Order Execution Submission Adapter (Section 6)
-quantRouter.post('/order-submit', (req, res) => {
+quantRouter.post('/order-submit', async (req, res) => {
   try {
-    const result = orderAdapter.submitOrder(req.body);
+    const result = await orderAdapter.submitOrder(req.body);
     quantAuditLogger.log({
       actor: 'system',
       action: 'ORDER_SUBMITTED',

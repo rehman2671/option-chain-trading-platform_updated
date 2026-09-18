@@ -48,13 +48,13 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), false);
   });
 
-  it('2. Verifies Kill Switch effectively BLOCKS OrderAdapter across all modes (SHADOW, PAPER, LIVE)', () => {
+  it('2. Verifies Kill Switch effectively BLOCKS OrderAdapter across all modes (SHADOW, PAPER, LIVE)', async () => {
     // Trigger kill switch
     killSwitchEngine.manualEmergencyKill('TEST_SUITE', TEST_USER, 'Testing order gating');
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), true);
 
     // Attempt SHADOW order
-    const shadowResult = orderAdapter.submitOrder({
+    const shadowResult = await orderAdapter.submitOrder({
       strategyId: 'STRAT-BULL-CALL',
       symbol: 'NIFTY 24000 CE',
       action: 'BUY',
@@ -67,7 +67,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(shadowResult.message.toLowerCase().includes('kill switch is active'));
 
     // Attempt PAPER order
-    const paperResult = orderAdapter.submitOrder({
+    const paperResult = await orderAdapter.submitOrder({
       strategyId: 'STRAT-BEAR-PUT',
       symbol: 'NIFTY 24000 PE',
       action: 'BUY',
@@ -81,7 +81,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(paperResult.message.toLowerCase().includes('kill switch is active'));
 
     // Attempt LIVE order
-    const liveResult = orderAdapter.submitOrder({
+    const liveResult = await orderAdapter.submitOrder({
       strategyId: 'STRAT-IRON-CONDOR',
       symbol: 'NIFTY 24200 CE',
       action: 'SELL',
@@ -167,12 +167,12 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(result.message.toLowerCase().includes('kill switch is active'));
   });
 
-  it('8. Verifies Drawdown Controller blocks orders when drawdown exceeds limit', () => {
+  it('8. Verifies Drawdown Controller blocks orders when drawdown exceeds limit', async () => {
     // Peak 100k, current 80k = 20% drawdown (exceeds 15% critical threshold)
     drawdownController.evaluateDrawdown(80000, 100000, TEST_USER);
     assert.strictEqual(drawdownController.isHalted(TEST_USER), true);
 
-    const orderResult = orderAdapter.submitOrder({
+    const orderResult = await orderAdapter.submitOrder({
       strategyId: 'STRAT-BULL-CALL',
       symbol: 'NIFTY 24000 CE',
       action: 'BUY',
@@ -198,7 +198,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(gating.reason?.includes('Limit breach detected'));
   });
 
-  it('10. Verifies authorized Kill Switch reset unlocks execution safely', () => {
+  it('10. Verifies authorized Kill Switch reset unlocks execution safely', async () => {
     // Halt
     killSwitchEngine.manualEmergencyKill('TEST_SUITE', TEST_USER, 'Temporary halt');
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), true);
@@ -214,7 +214,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), false);
 
     // Orders now permitted
-    const orderResult = orderAdapter.submitOrder({
+    const orderResult = await orderAdapter.submitOrder({
       strategyId: 'STRAT-BULL-CALL',
       symbol: 'NIFTY 24000 CE',
       action: 'BUY',
@@ -224,5 +224,25 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
       userId: TEST_USER
     });
     assert.strictEqual(orderResult.status, 'SHADOW_LOGGED');
+  });
+
+  it('11. Verifies LIVE real order execution fails safe with REJECTED when broker rejects or is disconnected', async () => {
+    // Ensure kill switch is unarmed
+    killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Ensure armed', TEST_USER);
+
+    // Live order with no valid Upstox session
+    const liveOrder = await orderAdapter.submitOrder({
+      strategyId: 'STRAT-LIVE-REAL',
+      symbol: 'NIFTY 24500 CE',
+      action: 'BUY',
+      orderType: 'MARKET',
+      quantity: 25,
+      mode: 'LIVE',
+      userId: TEST_USER
+    });
+
+    assert.strictEqual(liveOrder.status, 'REJECTED');
+    assert.ok(liveOrder.message.toLowerCase().includes('live execution rejected') || liveOrder.message.toLowerCase().includes('rejected'));
+    assert.strictEqual(liveOrder.slippage, 0);
   });
 });

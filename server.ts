@@ -30,6 +30,7 @@ import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefres
 import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
 import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
+import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -218,6 +219,17 @@ function updatePaperPositionsMTM(targetUserId?: string | null) {
         pnl: pos.pnl,
         reason: autoCloseReason
       });
+      try {
+        tradeReviewEngine.recordFromPaperPosition(
+          pos,
+          pos.currentPrice,
+          pos.pnl,
+          autoCloseReason,
+          new Date().toISOString()
+        );
+      } catch (err) {
+        console.error('[MTM AUTO-CLOSE] Error recording trade review:', err);
+      }
     } else {
       toUpdate.push({
         id: pos.id,
@@ -942,6 +954,17 @@ async function startServer() {
 
       const closed = dbEngine.closePaperPosition(id, exitPrice, Number(pnl.toFixed(2)), closeReasonParam, userId);
       if (closed) {
+        try {
+          tradeReviewEngine.recordFromPaperPosition(
+            pos,
+            exitPrice,
+            Number(pnl.toFixed(2)),
+            closeReasonParam,
+            new Date().toISOString()
+          );
+        } catch (revErr) {
+          console.error('[MANUAL CLOSE] Error recording trade review:', revErr);
+        }
         updatePaperPositionsMTM(userId);
         const portfolio = await getPaperPortfolioData(userId);
         res.json({ success: true, portfolio });
@@ -963,8 +986,25 @@ async function startServer() {
         return res.status(400).json({ error: 'Group ID is required' });
       }
 
-      const closed = dbEngine.closePaperGroup(groupId, req.body?.reason || 'Manual Strategy Close', userId);
+      const allPositions = dbEngine.loadAllPaperPositions(userId);
+      const groupLegs = allPositions.filter(p => (p.strategyGroupId === groupId || p.id === groupId) && p.status === 'OPEN');
+      const reason = req.body?.reason || 'Manual Strategy Close';
+
+      const closed = dbEngine.closePaperGroup(groupId, reason, userId);
       if (closed) {
+        for (const leg of groupLegs) {
+          try {
+            tradeReviewEngine.recordFromPaperPosition(
+              leg,
+              leg.currentPrice,
+              leg.pnl || 0,
+              reason,
+              new Date().toISOString()
+            );
+          } catch (revErr) {
+            console.error('[GROUP CLOSE] Error recording leg trade review:', revErr);
+          }
+        }
         updatePaperPositionsMTM(userId);
         const portfolio = await getPaperPortfolioData(userId);
         res.json({ success: true, portfolio });
@@ -1432,6 +1472,23 @@ async function startServer() {
       const closePrice = exitPrice !== undefined ? Number(exitPrice) : trade.currentPrice;
       const closed = dbEngine.closeEmaPaperTrade(id, closePrice, reason || 'MANUAL_SQUARE_OFF');
       if (closed) {
+        try {
+          const isLong = (trade.direction || '').toUpperCase() === 'LONG';
+          const grossPnl = isLong
+            ? (closePrice - trade.entryPrice) * (trade.quantity || 1)
+            : (trade.entryPrice - closePrice) * (trade.quantity || 1);
+          const netPnl = grossPnl - 40;
+          tradeReviewEngine.recordFromEmaTrade(
+            trade,
+            closePrice,
+            grossPnl,
+            netPnl,
+            reason || 'MANUAL_SQUARE_OFF',
+            new Date().toISOString()
+          );
+        } catch (revErr) {
+          console.error('[EMA CLOSE] Error recording trade review:', revErr);
+        }
         const summary = dbEngine.getEmaPaperTradingSummary();
         res.json({ success: true, message: `Trade ${id} closed successfully @ ₹${closePrice}`, summary });
       } else {

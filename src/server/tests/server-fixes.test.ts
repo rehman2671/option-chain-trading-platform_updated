@@ -30,18 +30,58 @@ describe('Server & Data Integrity Test Suite', () => {
   });
 
   describe('Task B: Multi-User Active View Concurrency', () => {
+    it('honors valid explicit non-default expiry when set', () => {
+      const niftyExpiries = UNDERLYING_CONFIGS['NIFTY'].expiries;
+      assert.ok(Array.isArray(niftyExpiries) && niftyExpiries.length > 0, 'NIFTY expiries must be available');
+
+      // Pick an explicit expiry that is not the first one if multiple exist
+      const chosenExpiry = niftyExpiries.length > 1 ? niftyExpiries[niftyExpiries.length - 1] : niftyExpiries[0];
+
+      globalMarketFeed.setActiveView('NIFTY', chosenExpiry);
+      const activeView = globalMarketFeed.getActiveView('NIFTY');
+
+      assert.strictEqual(activeView.symbol, 'NIFTY');
+      assert.strictEqual(activeView.expiry, chosenExpiry);
+    });
+
+    it('falls back to default nearest expiry when given an invalid or expired date', () => {
+      // Call with an invalid date far in the past guaranteed not to be in validExpiries
+      globalMarketFeed.setActiveView('NIFTY', '2000-01-01');
+
+      // Independently compute expected fallback from fresh UNDERLYING_CONFIGS['NIFTY'].expiries[0]
+      const expectedFallback = UNDERLYING_CONFIGS['NIFTY'].expiries[0];
+      const activeView = globalMarketFeed.getActiveView('NIFTY');
+
+      assert.strictEqual(activeView.symbol, 'NIFTY');
+      assert.strictEqual(activeView.expiry, expectedFallback);
+    });
+
     it('concurrently tracks active views for multiple symbols with TTL', () => {
-      globalMarketFeed.setActiveView('NIFTY', '2026-09-17');
-      globalMarketFeed.setActiveView('BANKNIFTY', '2026-09-17');
+      const niftyExpiries = UNDERLYING_CONFIGS['NIFTY'].expiries;
+      const bankniftyExpiries = UNDERLYING_CONFIGS['BANKNIFTY'].expiries;
+
+      // Pick independently chosen valid expiries
+      const explicitNiftyExpiry = niftyExpiries.length > 1 ? niftyExpiries[1] : niftyExpiries[0];
+      const explicitBankniftyExpiry = bankniftyExpiries.length > 1 ? bankniftyExpiries[bankniftyExpiries.length - 1] : bankniftyExpiries[0];
+
+      globalMarketFeed.setActiveView('NIFTY', explicitNiftyExpiry);
+      globalMarketFeed.setActiveView('BANKNIFTY', explicitBankniftyExpiry);
 
       const niftyView = globalMarketFeed.getActiveView('NIFTY');
       const bankniftyView = globalMarketFeed.getActiveView('BANKNIFTY');
 
       assert.strictEqual(niftyView.symbol, 'NIFTY');
-      assert.strictEqual(niftyView.expiry, '2026-09-17');
+      assert.strictEqual(niftyView.expiry, explicitNiftyExpiry);
 
       assert.strictEqual(bankniftyView.symbol, 'BANKNIFTY');
-      assert.strictEqual(bankniftyView.expiry, '2026-09-17');
+      assert.strictEqual(bankniftyView.expiry, explicitBankniftyExpiry);
+
+      // Verify mutual independence: updating NIFTY must not overwrite BANKNIFTY
+      const alternateNiftyExpiry = niftyExpiries[0];
+      globalMarketFeed.setActiveView('NIFTY', alternateNiftyExpiry);
+
+      assert.strictEqual(globalMarketFeed.getActiveView('NIFTY').expiry, alternateNiftyExpiry);
+      assert.strictEqual(globalMarketFeed.getActiveView('BANKNIFTY').expiry, explicitBankniftyExpiry);
 
       assert.ok(globalMarketFeed.isSymbolActivelyViewed('NIFTY'));
       assert.ok(globalMarketFeed.isSymbolActivelyViewed('BANKNIFTY'));
