@@ -254,10 +254,6 @@ setInterval(() => {
 async function startServer() {
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
-  // Initialize 15-Minute 23/50 EMA Alert Engine
-  await globalEma15mEngine.initialize();
-  // Initialize Autonomous Quant Background Learning Scheduler
-  await quantScheduler.initialize();
 
   // -------------------------------------------------------------
   // API ENDPOINTS
@@ -1549,6 +1545,14 @@ async function startServer() {
       console.log('[UPSTOX] Starting Upstox V3 Protobuf WebSocket Streamer...');
       globalUpstoxStreamer.connect(process.env.UPSTOX_ACCESS_TOKEN).catch(e => console.warn('[UPSTOX V3 STREAMER] Startup error:', e.message));
     }
+
+    // Initialize background engines asynchronously without blocking port 3000 startup probe
+    globalEma15mEngine.initialize().catch(err => {
+      console.warn('[EMA 15M ENGINE] Async initialization note:', err.message);
+    });
+    quantScheduler.initialize().catch(err => {
+      console.warn('[QUANT SCHEDULER] Async initialization note:', err.message);
+    });
   });
 }
 

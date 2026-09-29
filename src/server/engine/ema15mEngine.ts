@@ -34,6 +34,7 @@ export class Ema15mEngine {
   private activeCandles: Map<Ema15mInstrument, Ema15mCandle> = new Map();
   // In-memory cache of completed candles (sorted chronological)
   private candleCache: Map<Ema15mInstrument, Ema15mCandle[]> = new Map();
+  private lastAutoSyncMap: Map<string, number> = new Map();
   // Engine running state
   private isRunning: boolean = false;
   private intervalTimer: NodeJS.Timeout | null = null;
@@ -90,8 +91,10 @@ export class Ema15mEngine {
 
       let candles = dbEngine.getEma15mCandles(inst, 2000);
       const isFlatVolume = candles.length > 0 && candles.slice(0, 20).every(c => c.volume === 15000 || !c.volume);
+      const lastCandle = candles[candles.length - 1];
+      const isStale = !lastCandle || (Date.now() - new Date(lastCandle.timestamp).getTime() > 24 * 60 * 60 * 1000);
 
-      if (candles.length < 100 || isFlatVolume) {
+      if (candles.length < 100 || isFlatVolume || isStale) {
         // Real market sync without fake generator (fetch 1 month of authentic 15m exchange candles)
         this.syncRealMarketData(inst, 600).catch(err => {
           console.warn(`[EMA 15M ENGINE] Initial sync note for ${inst}:`, err.message);
@@ -778,6 +781,18 @@ export class Ema15mEngine {
   ): Ema15mCandle[] {
     const history = this.candleCache.get(inst) || [];
     const active = this.activeCandles.get(inst);
+
+    // Auto-sync in background if cached candles are missing or older than 24 hours
+    const lastHistCandle = history[history.length - 1];
+    const now = Date.now();
+    const lastSync = this.lastAutoSyncMap.get(inst) || 0;
+    const isStale = !lastHistCandle || (now - new Date(lastHistCandle.timestamp).getTime() > 24 * 60 * 60 * 1000);
+    if (isStale && now - lastSync > 60000) {
+      this.lastAutoSyncMap.set(inst, now);
+      this.syncRealMarketData(inst, 600).catch(err => {
+        console.warn(`[EMA 15M ENGINE] Auto-sync in getCandles for ${inst}:`, err.message);
+      });
+    }
 
     let raw = [...history];
     if (active) {
