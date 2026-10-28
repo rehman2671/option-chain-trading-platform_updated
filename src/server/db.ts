@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
@@ -57,6 +58,7 @@ class DatabaseEngine {
       this.runMigrations();
       this.ensureAutoIndexes();
       this.seedQuantFeatureHistoryIfEmpty();
+      this.syncConfiguredUsersFromEnv();
 
       // 6. Gather row counts for recovery report
       const counts = this.getTableRowCounts();
@@ -1217,6 +1219,22 @@ class DatabaseEngine {
   }
 
   /**
+   * Load available upcoming option chain expiries for dynamic weekly expiry resolution
+   */
+  public getAvailableOptionExpiries(symbol: string): string[] {
+    if (!this.db) return [];
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const rows = this.db.prepare(
+        `SELECT DISTINCT expiry FROM option_chains WHERE symbol = ? AND expiry >= ? ORDER BY expiry ASC LIMIT 10`
+      ).all(symbol, today) as any[];
+      return rows.map(r => r.expiry);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Load previously recorded open interest map for calculating real changeInOI.
    * Resolves the previous distinct batch snapshot timestamp to avoid self-subtraction.
    */
@@ -2026,6 +2044,97 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 013 - Historical Feature Vector Storage.');
     }
+
+    // Migration 014: 15-Minute EMA Directional Options Trading Schema (Weekly Expiry, CE/PE Strikes, SL/TP)
+    if (!appliedVersions.has(14)) {
+      try {
+        const paperCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_paper_trades)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!paperCols.has('strike_price')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN strike_price REAL;`);
+        if (!paperCols.has('option_type')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN option_type TEXT;`);
+        if (!paperCols.has('expiry_date')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN expiry_date TEXT;`);
+        if (!paperCols.has('product_type')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN product_type TEXT DEFAULT 'MIS';`);
+        if (!paperCols.has('spot_at_entry')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN spot_at_entry REAL;`);
+        if (!paperCols.has('stop_loss')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN stop_loss REAL;`);
+        if (!paperCols.has('target_price')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN target_price REAL;`);
+        if (!paperCols.has('order_id')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN order_id TEXT;`);
+        if (!paperCols.has('broker_status')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN broker_status TEXT;`);
+
+        const signalCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_15m_signals)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!signalCols.has('selected_strike')) this.db.exec(`ALTER TABLE ema_15m_signals ADD COLUMN selected_strike REAL;`);
+        if (!signalCols.has('option_type')) this.db.exec(`ALTER TABLE ema_15m_signals ADD COLUMN option_type TEXT;`);
+        if (!signalCols.has('weekly_expiry')) this.db.exec(`ALTER TABLE ema_15m_signals ADD COLUMN weekly_expiry TEXT;`);
+
+        const notifCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!notifCols.has('force_square_off_time')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN force_square_off_time TEXT DEFAULT '15:15';`);
+      } catch (err: any) {
+        console.warn('[DB] Migration 014 column check notice:', err.message);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (14, '15-Minute EMA Directional Options Trading Schema (Weekly Expiry, CE/PE Strikes, SL/TP)');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 014 - Directional Options Trading Schema.');
+    }
+
+    // Migration 015: Trailing Stop-Loss, Profit Lock (+70 pts) and Auto Paper Trading = Enabled
+    if (!appliedVersions.has(15)) {
+      try {
+        const paperCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_paper_trades)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!paperCols.has('trailing_stop_loss')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN trailing_stop_loss REAL;`);
+        if (!paperCols.has('is_trailing_active')) this.db.exec(`ALTER TABLE ema_paper_trades ADD COLUMN is_trailing_active INTEGER DEFAULT 0;`);
+
+        const notifCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!notifCols.has('trailing_sl_enabled')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN trailing_sl_enabled INTEGER DEFAULT 1;`);
+        if (!notifCols.has('profit_lock_points')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN profit_lock_points REAL DEFAULT 70;`);
+        if (!notifCols.has('trail_distance_points')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN trail_distance_points REAL DEFAULT 30;`);
+
+        // Ensure auto_paper_trading_enabled is 1 (ON) by default
+        this.db.exec(`UPDATE ema_notification_settings SET auto_paper_trading_enabled = 1 WHERE auto_paper_trading_enabled IS NULL OR auto_paper_trading_enabled = 0;`);
+      } catch (err: any) {
+        console.warn('[DB] Migration 015 notice:', err.message);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (15, '15-Minute EMA Trailing Stop-Loss & Profit Lock Engine');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 015 - Trailing Stop-Loss & Profit Lock.');
+    }
+
+    // Migration 016: Strict Fixed 5-User Model (1 SuperAdmin + 4 Operators), Admin User Management, Account Status, and MFA (TOTP)
+    if (!appliedVersions.has(16)) {
+      try {
+        const userCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(users)`).all() as any[]).map(c => c.name as string)
+        );
+        if (!userCols.has('role')) this.db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'OPERATOR';`);
+        if (!userCols.has('is_active')) this.db.exec(`ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1;`);
+        if (!userCols.has('mfa_secret')) this.db.exec(`ALTER TABLE users ADD COLUMN mfa_secret TEXT;`);
+        if (!userCols.has('mfa_enabled')) this.db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER DEFAULT 0;`);
+
+        // Seed/Sync users strictly from environment variables (secrets file)
+        this.syncConfiguredUsersFromEnv();
+      } catch (err: any) {
+        console.warn('[DB] Migration 016 notice:', err.message);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (16, 'Fixed 5-User Architecture, RBAC, Status Toggle & Authenticator MFA');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 016 - Fixed Users, RBAC & MFA.');
+    }
   }
 
   /**
@@ -2303,12 +2412,17 @@ class DatabaseEngine {
   public getMostRecentUser(): User | null {
     if (!this.db) return null;
     try {
-      const row = this.db.prepare(`SELECT * FROM users ORDER BY last_login_at DESC, created_at DESC LIMIT 1`).get() as any;
+      const row = this.db.prepare(`SELECT * FROM users WHERE is_active = 1 ORDER BY last_login_at DESC, created_at DESC LIMIT 1`).get() as any;
       if (!row) return null;
       return {
         id: row.id,
         email: row.email,
         name: row.name || undefined,
+        role: row.role || 'OPERATOR',
+        is_active: row.is_active !== undefined ? row.is_active : 1,
+        isActive: row.is_active !== 0,
+        mfa_enabled: row.mfa_enabled || 0,
+        mfaEnabled: row.mfa_enabled === 1,
         picture: row.picture || undefined,
         google_sub: row.google_sub || undefined,
         googleSub: row.google_sub || undefined,
@@ -2333,6 +2447,11 @@ class DatabaseEngine {
         id: row.id,
         email: row.email,
         name: row.name || undefined,
+        role: row.role || 'OPERATOR',
+        is_active: row.is_active !== undefined ? row.is_active : 1,
+        isActive: row.is_active !== 0,
+        mfa_enabled: row.mfa_enabled || 0,
+        mfaEnabled: row.mfa_enabled === 1,
         picture: row.picture || undefined,
         google_sub: row.google_sub || undefined,
         googleSub: row.google_sub || undefined,
@@ -2347,6 +2466,115 @@ class DatabaseEngine {
       console.error('findUserById error:', err);
       return null;
     }
+  }
+
+  public getAllUsers(): User[] {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(`SELECT * FROM users ORDER BY role DESC, created_at ASC`).all() as any[];
+      return rows.map(row => ({
+        id: row.id,
+        email: row.email,
+        name: row.name || undefined,
+        role: row.role || 'OPERATOR',
+        is_active: row.is_active !== undefined ? row.is_active : 1,
+        isActive: row.is_active !== 0,
+        mfa_enabled: row.mfa_enabled || 0,
+        mfaEnabled: row.mfa_enabled === 1,
+        picture: row.picture || undefined,
+        google_sub: row.google_sub || undefined,
+        googleSub: row.google_sub || undefined,
+        email_verified: row.email_verified,
+        emailVerified: row.email_verified === 1,
+        created_at: row.created_at,
+        createdAt: row.created_at,
+        last_login_at: row.last_login_at || undefined,
+        lastLoginAt: row.last_login_at || undefined,
+      }));
+    } catch (err) {
+      console.error('getAllUsers error:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Synchronize fixed 5-user roster strictly from environment variables (.env / secrets file)
+   * Ensures passwords and emails are configured in environment variables and never hardcoded.
+   */
+  public syncConfiguredUsersFromEnv(): void {
+    if (!this.db) return;
+    try {
+      const adminEmail = (process.env.ADMIN_EMAIL || 'vinuparab86@gmail.com').trim().toLowerCase();
+      const adminName = process.env.ADMIN_NAME || 'Master Admin (Vinu)';
+      const adminPass = process.env.ADMIN_INITIAL_PASSWORD || 'Admin@Trading2026!';
+
+      const op1Email = (process.env.OPERATOR_1_EMAIL || 'operator1@trading.internal').trim().toLowerCase();
+      const op1Name = process.env.OPERATOR_1_NAME || 'Quant Operator 1';
+      const op1Pass = process.env.OPERATOR_1_INITIAL_PASSWORD || 'Operator1@Trading2026!';
+
+      const op2Email = (process.env.OPERATOR_2_EMAIL || 'operator2@trading.internal').trim().toLowerCase();
+      const op2Name = process.env.OPERATOR_2_NAME || 'Quant Operator 2';
+      const op2Pass = process.env.OPERATOR_2_INITIAL_PASSWORD || 'Operator2@Trading2026!';
+
+      const op3Email = (process.env.OPERATOR_3_EMAIL || 'operator3@trading.internal').trim().toLowerCase();
+      const op3Name = process.env.OPERATOR_3_NAME || 'Risk Operator 3';
+      const op3Pass = process.env.OPERATOR_3_INITIAL_PASSWORD || 'Operator3@Trading2026!';
+
+      const op4Email = (process.env.OPERATOR_4_EMAIL || 'operator4@trading.internal').trim().toLowerCase();
+      const op4Name = process.env.OPERATOR_4_NAME || 'Execution Operator 4';
+      const op4Pass = process.env.OPERATOR_4_INITIAL_PASSWORD || 'Operator4@Trading2026!';
+
+      const roster = [
+        { id: 'usr-admin-master', email: adminEmail, name: adminName, role: 'SUPERADMIN', pass: adminPass },
+        { id: 'usr-op-1', email: op1Email, name: op1Name, role: 'OPERATOR', pass: op1Pass },
+        { id: 'usr-op-2', email: op2Email, name: op2Name, role: 'OPERATOR', pass: op2Pass },
+        { id: 'usr-op-3', email: op3Email, name: op3Name, role: 'OPERATOR', pass: op3Pass },
+        { id: 'usr-op-4', email: op4Email, name: op4Name, role: 'OPERATOR', pass: op4Pass }
+      ];
+
+      const now = new Date().toISOString();
+      for (const u of roster) {
+        const existing = this.db.prepare(`SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?`).get(u.email, u.id) as any;
+        if (existing) {
+          // If existing account has no password_hash, initialize with environment initial password hash
+          const passHash = existing.password_hash || bcrypt.hashSync(u.pass, 10);
+          this.db.prepare(`
+            UPDATE users 
+            SET email = lower(?), name = COALESCE(?, name), role = ?, email_verified = 1,
+                password_hash = ?
+            WHERE id = ?
+          `).run(u.email, u.name, u.role, passHash, existing.id);
+        } else {
+          const passHash = bcrypt.hashSync(u.pass, 10);
+          this.db.prepare(`
+            INSERT INTO users (id, email, name, role, is_active, password_hash, email_verified, created_at)
+            VALUES (?, lower(?), ?, ?, 1, ?, 1, ?)
+          `).run(u.id, u.email, u.name, u.role, passHash, now);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[DB] User env sync warning:', err.message);
+    }
+  }
+
+  public setUserActiveStatus(userId: string, isActive: boolean): void {
+    if (!this.db) return;
+    this.db.prepare(`UPDATE users SET is_active = ? WHERE id = ?`).run(isActive ? 1 : 0, userId);
+  }
+
+  public setUserRole(userId: string, role: string): void {
+    if (!this.db) return;
+    this.db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(role, userId);
+  }
+
+  public setUserPassword(userId: string, passwordHash: string): void {
+    if (!this.db) return;
+    this.db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(passwordHash, userId);
+  }
+
+  public setUserMfaSecret(userId: string, secret: string | null, enabled: boolean): void {
+    if (!this.db) return;
+    this.db.prepare(`UPDATE users SET mfa_secret = ?, mfa_enabled = ? WHERE id = ?`).run(secret, enabled ? 1 : 0, userId);
   }
 
   public findUserByEmail(email: string): any | null {
@@ -2800,8 +3028,8 @@ class DatabaseEngine {
     try {
       const stmt = this.db.prepare(`
         INSERT INTO ema_15m_signals (
-          id, instrument, timeframe, signal_type, price, ema_23, ema_50, ema_difference, candle_timestamp, signal_confirmed_at, user_id, notification_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, instrument, timeframe, signal_type, price, selected_strike, option_type, weekly_expiry, ema_23, ema_50, ema_difference, candle_timestamp, signal_confirmed_at, user_id, notification_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(instrument, timeframe, candle_timestamp, signal_type) DO NOTHING
       `);
 
@@ -2811,6 +3039,9 @@ class DatabaseEngine {
         signal.timeframe || '15m',
         signal.signalType,
         signal.price,
+        signal.selectedStrike || null,
+        signal.optionType || null,
+        signal.weeklyExpiry || null,
         signal.ema23,
         signal.ema50,
         signal.emaDifference,
@@ -2863,6 +3094,9 @@ class DatabaseEngine {
         timeframe: r.timeframe,
         signalType: r.signal_type,
         price: r.price,
+        selectedStrike: r.selected_strike !== null ? Number(r.selected_strike) : undefined,
+        optionType: r.option_type || undefined,
+        weeklyExpiry: r.weekly_expiry || undefined,
         ema23: r.ema_23,
         ema50: r.ema_50,
         emaDifference: r.ema_difference,
@@ -2894,6 +3128,9 @@ class DatabaseEngine {
         timeframe: row.timeframe,
         signalType: row.signal_type,
         price: row.price,
+        selectedStrike: row.selected_strike !== null ? Number(row.selected_strike) : undefined,
+        optionType: row.option_type || undefined,
+        weeklyExpiry: row.weekly_expiry || undefined,
         ema23: row.ema_23,
         ema50: row.ema_50,
         emaDifference: row.ema_difference,
@@ -2968,10 +3205,14 @@ class DatabaseEngine {
       browserEnabled: true,
       soundEnabled: true,
       autoPaperTradingEnabled: true,
+      trailingSlEnabled: true,
+      profitLockPoints: 70,
+      trailDistancePoints: 30,
       telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
       telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
       emailAddress: process.env.SMTP_USER || '',
-      soundVolume: 0.8
+      soundVolume: 0.8,
+      forceSquareOffTime: '15:15'
     };
 
     if (!this.db) return defaultSettings;
@@ -2989,10 +3230,14 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
+        trailingSlEnabled: row.trailing_sl_enabled !== undefined ? row.trailing_sl_enabled === 1 : true,
+        profitLockPoints: row.profit_lock_points !== null && row.profit_lock_points !== undefined ? Number(row.profit_lock_points) : 70,
+        trailDistancePoints: row.trail_distance_points !== null && row.trail_distance_points !== undefined ? Number(row.trail_distance_points) : 30,
         telegramChatId: row.telegram_chat_id || process.env.TELEGRAM_CHAT_ID || '',
         telegramBotToken: row.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '',
         emailAddress: row.email_address || process.env.SMTP_USER || '',
         soundVolume: row.sound_volume !== null ? Number(row.sound_volume) : 0.8,
+        forceSquareOffTime: row.force_square_off_time || '15:15',
         updatedAt: row.updated_at
       };
     } catch {
@@ -3006,18 +3251,22 @@ class DatabaseEngine {
       const uId = userId || settings.userId || 'GLOBAL';
       this.db.prepare(`
         INSERT INTO ema_notification_settings (
-          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, telegram_chat_id, telegram_bot_token, email_address, sound_volume, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, trailing_sl_enabled, profit_lock_points, trail_distance_points, telegram_chat_id, telegram_bot_token, email_address, sound_volume, force_square_off_time, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
           telegram_enabled = excluded.telegram_enabled,
           email_enabled = excluded.email_enabled,
           browser_enabled = excluded.browser_enabled,
           sound_enabled = excluded.sound_enabled,
           auto_paper_trading_enabled = excluded.auto_paper_trading_enabled,
+          trailing_sl_enabled = excluded.trailing_sl_enabled,
+          profit_lock_points = excluded.profit_lock_points,
+          trail_distance_points = excluded.trail_distance_points,
           telegram_chat_id = excluded.telegram_chat_id,
           telegram_bot_token = excluded.telegram_bot_token,
           email_address = excluded.email_address,
           sound_volume = excluded.sound_volume,
+          force_square_off_time = excluded.force_square_off_time,
           updated_at = CURRENT_TIMESTAMP
       `).run(
         uId,
@@ -3026,10 +3275,14 @@ class DatabaseEngine {
         settings.browserEnabled ? 1 : 0,
         settings.soundEnabled ? 1 : 0,
         settings.autoPaperTradingEnabled !== false ? 1 : 0,
+        settings.trailingSlEnabled !== false ? 1 : 0,
+        settings.profitLockPoints ?? 70,
+        settings.trailDistancePoints ?? 30,
         settings.telegramChatId || null,
         settings.telegramBotToken || null,
         settings.emailAddress || null,
-        settings.soundVolume ?? 0.8
+        settings.soundVolume ?? 0.8,
+        settings.forceSquareOffTime || '15:15'
       );
     } catch (err) {
       console.error('[DB] Error saving notification settings:', err);
@@ -3045,12 +3298,14 @@ class DatabaseEngine {
     try {
       this.db.prepare(`
         INSERT INTO ema_paper_trades (
-          id, signal_id, instrument, direction, entry_timestamp, entry_price, quantity, lot_size, strategy, source, status, current_price, unrealized_pnl, exit_timestamp, exit_price, exit_reason, gross_pnl, brokerage, charges, net_pnl, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, signal_id, instrument, direction, option_type, strike_price, expiry_date, product_type, spot_at_entry, stop_loss, target_price, trailing_stop_loss, is_trailing_active, order_id, broker_status, entry_timestamp, entry_price, quantity, lot_size, strategy, source, status, current_price, unrealized_pnl, exit_timestamp, exit_price, exit_reason, gross_pnl, brokerage, charges, net_pnl, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           current_price = excluded.current_price,
           unrealized_pnl = excluded.unrealized_pnl,
           status = excluded.status,
+          trailing_stop_loss = COALESCE(excluded.trailing_stop_loss, ema_paper_trades.trailing_stop_loss),
+          is_trailing_active = COALESCE(excluded.is_trailing_active, ema_paper_trades.is_trailing_active),
           exit_timestamp = excluded.exit_timestamp,
           exit_price = excluded.exit_price,
           exit_reason = excluded.exit_reason,
@@ -3058,12 +3313,24 @@ class DatabaseEngine {
           brokerage = excluded.brokerage,
           charges = excluded.charges,
           net_pnl = excluded.net_pnl,
+          broker_status = COALESCE(excluded.broker_status, ema_paper_trades.broker_status),
           updated_at = CURRENT_TIMESTAMP
       `).run(
         trade.id,
         trade.signalId,
         trade.instrument,
         trade.direction,
+        trade.optionType || null,
+        trade.strikePrice || null,
+        trade.expiryDate || null,
+        trade.productType || 'MIS',
+        trade.spotAtEntry || null,
+        trade.stopLoss !== undefined && trade.stopLoss !== null ? trade.stopLoss : null,
+        trade.targetPrice !== undefined && trade.targetPrice !== null ? trade.targetPrice : null,
+        trade.trailingStopLoss !== undefined && trade.trailingStopLoss !== null ? trade.trailingStopLoss : null,
+        trade.isTrailingActive ? 1 : 0,
+        trade.orderId || null,
+        trade.brokerStatus || 'FILLED',
         trade.entryTimestamp,
         trade.entryPrice,
         trade.quantity,
@@ -3114,6 +3381,17 @@ class DatabaseEngine {
         signalId: r.signal_id,
         instrument: r.instrument,
         direction: r.direction,
+        optionType: r.option_type || undefined,
+        strikePrice: r.strike_price !== null && r.strike_price !== undefined ? Number(r.strike_price) : undefined,
+        expiryDate: r.expiry_date || undefined,
+        productType: (r.product_type as any) || 'MIS',
+        spotAtEntry: r.spot_at_entry !== null && r.spot_at_entry !== undefined ? Number(r.spot_at_entry) : undefined,
+        stopLoss: r.stop_loss !== null && r.stop_loss !== undefined ? Number(r.stop_loss) : undefined,
+        targetPrice: r.target_price !== null && r.target_price !== undefined ? Number(r.target_price) : undefined,
+        trailingStopLoss: r.trailing_stop_loss !== null && r.trailing_stop_loss !== undefined ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        orderId: r.order_id || undefined,
+        brokerStatus: r.broker_status || undefined,
         entryTimestamp: r.entry_timestamp,
         entryPrice: Number(r.entry_price),
         quantity: Number(r.quantity),
@@ -3158,6 +3436,17 @@ class DatabaseEngine {
         signalId: r.signal_id,
         instrument: r.instrument,
         direction: r.direction,
+        optionType: r.option_type || undefined,
+        strikePrice: r.strike_price !== null && r.strike_price !== undefined ? Number(r.strike_price) : undefined,
+        expiryDate: r.expiry_date || undefined,
+        productType: (r.product_type as any) || 'MIS',
+        spotAtEntry: r.spot_at_entry !== null && r.spot_at_entry !== undefined ? Number(r.spot_at_entry) : undefined,
+        stopLoss: r.stop_loss !== null && r.stop_loss !== undefined ? Number(r.stop_loss) : undefined,
+        targetPrice: r.target_price !== null && r.target_price !== undefined ? Number(r.target_price) : undefined,
+        trailingStopLoss: r.trailing_stop_loss !== null && r.trailing_stop_loss !== undefined ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        orderId: r.order_id || undefined,
+        brokerStatus: r.broker_status || undefined,
         entryTimestamp: r.entry_timestamp,
         entryPrice: Number(r.entry_price),
         quantity: Number(r.quantity),
@@ -3196,6 +3485,17 @@ class DatabaseEngine {
         signalId: row.signal_id,
         instrument: row.instrument,
         direction: row.direction,
+        optionType: row.option_type || undefined,
+        strikePrice: row.strike_price !== null && row.strike_price !== undefined ? Number(row.strike_price) : undefined,
+        expiryDate: row.expiry_date || undefined,
+        productType: (row.product_type as any) || 'MIS',
+        spotAtEntry: row.spot_at_entry !== null && row.spot_at_entry !== undefined ? Number(row.spot_at_entry) : undefined,
+        stopLoss: row.stop_loss !== null && row.stop_loss !== undefined ? Number(row.stop_loss) : undefined,
+        targetPrice: row.target_price !== null && row.target_price !== undefined ? Number(row.target_price) : undefined,
+        trailingStopLoss: row.trailing_stop_loss !== null && row.trailing_stop_loss !== undefined ? Number(row.trailing_stop_loss) : undefined,
+        isTrailingActive: row.is_trailing_active === 1,
+        orderId: row.order_id || undefined,
+        brokerStatus: row.broker_status || undefined,
         entryTimestamp: row.entry_timestamp,
         entryPrice: Number(row.entry_price),
         quantity: Number(row.quantity),
@@ -3269,7 +3569,7 @@ class DatabaseEngine {
    * Batch update or close EMA paper trades inside a single SQLite transaction
    */
   public batchUpdateEmaPaperTrades(updates: {
-    toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number }>;
+    toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number; trailingStopLoss?: number; isTrailingActive?: boolean }>;
     toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }>;
   }): void {
     if (!this.db) return;
@@ -3280,6 +3580,8 @@ class DatabaseEngine {
         UPDATE ema_paper_trades SET
           current_price = ?,
           unrealized_pnl = ?,
+          trailing_stop_loss = COALESCE(?, trailing_stop_loss),
+          is_trailing_active = COALESCE(?, is_trailing_active),
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status = 'OPEN'
       `);
@@ -3313,7 +3615,13 @@ class DatabaseEngine {
           }
         }
         for (const item of updates.toUpdate) {
-          updateStmt.run(item.currentPrice, item.unrealizedPnl, item.id);
+          updateStmt.run(
+            item.currentPrice,
+            item.unrealizedPnl,
+            item.trailingStopLoss !== undefined ? item.trailingStopLoss : null,
+            item.isTrailingActive !== undefined ? (item.isTrailingActive ? 1 : 0) : null,
+            item.id
+          );
         }
       });
 
@@ -4425,7 +4733,7 @@ class DatabaseEngine {
   public seedQuantFeatureHistoryIfEmpty(): void {
     if (!this.db) return;
     try {
-      const row = this.db.prepare(`SELECT COUNT(*) as count FROM quant_feature_history`).get() as any;
+      const row = this.db.prepare(`SELECT COUNT(*) as count FROM quant_feature_history WHERE underlying = 'NIFTY'`).get() as any;
       if (row && row.count >= 20) {
         return; // Already populated
       }

@@ -89,6 +89,8 @@ export const Ema15mDashboardView: React.FC = () => {
 
   // Sound Alerts Mute / Unmute State
   const [isSoundMuted, setIsSoundMuted] = useState<boolean>(false);
+  const lastSeenSignalIdRef = useRef<string | null>(null);
+  const isInitialSignalsLoadRef = useRef<boolean>(true);
 
   // Backtest State
   const [backtestInstrument, setBacktestInstrument] = useState<Ema15mInstrument>('NIFTY');
@@ -171,7 +173,28 @@ export const Ema15mDashboardView: React.FC = () => {
       }
 
       if (signalsRes.ok) {
-        const signalsData = await signalsRes.json();
+        const signalsData: Ema15mSignal[] = await signalsRes.json();
+        if (Array.isArray(signalsData) && signalsData.length > 0) {
+          const newestSignal = signalsData[0];
+          if (!isInitialSignalsLoadRef.current && lastSeenSignalIdRef.current && newestSignal.id !== lastSeenSignalIdRef.current) {
+            // Real-time crossover signal detected from backend feed!
+            if (settings.soundEnabled && !isSoundMuted) {
+              playChime(newestSignal.signalType);
+            }
+            if (settings.browserEnabled && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification(`15M EMA Alert: ${newestSignal.signalType} Crossover on ${newestSignal.instrument}`, {
+                  body: `Price: ₹${newestSignal.price} | 23 EMA: ${newestSignal.ema23} | 50 EMA: ${newestSignal.ema50}`,
+                  icon: '/favicon.ico'
+                });
+              } catch {
+                // Ignore browser notification restriction
+              }
+            }
+          }
+          lastSeenSignalIdRef.current = newestSignal.id;
+          isInitialSignalsLoadRef.current = false;
+        }
         setSignals(signalsData || []);
       }
 
@@ -830,7 +853,9 @@ export const Ema15mDashboardView: React.FC = () => {
                       {/* Card Header */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-2">
-                          <span className="font-mono text-xs font-bold text-slate-100">{trade.instrument}</span>
+                          <span className="font-mono text-xs font-bold text-slate-100">
+                            {trade.strikePrice ? `${trade.strikePrice} ${trade.optionType}` : trade.instrument}
+                          </span>
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-bold border font-mono ${
                               isLong
@@ -838,8 +863,13 @@ export const Ema15mDashboardView: React.FC = () => {
                                 : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
                             }`}
                           >
-                            {trade.direction} 1 LOT
+                            BUY 1 LOT (MIS)
                           </span>
+                          {trade.expiryDate && (
+                            <span className="text-[10px] font-mono bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded">
+                              {trade.expiryDate}
+                            </span>
+                          )}
                         </div>
                         <span className="text-[10px] font-mono text-slate-400">
                           {trade.dataSource === 'UPSTOX_LIVE' ? '🟢 UPSTOX' : '🔷 PRACTICE'}
@@ -847,18 +877,40 @@ export const Ema15mDashboardView: React.FC = () => {
                       </div>
 
                       {/* Prices & MTM Grid */}
-                      <div className="grid grid-cols-2 gap-2 bg-slate-900/80 border border-slate-800/60 rounded-lg p-2.5 font-mono text-xs">
+                      <div className="grid grid-cols-3 gap-2 bg-slate-900/80 border border-slate-800/60 rounded-lg p-2.5 font-mono text-xs">
                         <div>
-                          <div className="text-[10px] text-slate-500">Entry Price</div>
+                          <div className="text-[10px] text-slate-500">Option Entry</div>
                           <div className="font-bold text-slate-200 mt-0.5">₹{trade.entryPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
                         </div>
                         <div>
-                          <div className="text-[10px] text-slate-500">Current Price</div>
+                          <div className="text-[10px] text-slate-500">Option LTP</div>
                           <div className="font-bold text-slate-200 mt-0.5">₹{trade.currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
                         </div>
                         <div>
-                          <div className="text-[10px] text-slate-500">Quantity</div>
-                          <div className="font-semibold text-slate-300 mt-0.5">{trade.quantity} units</div>
+                          <div className="text-[10px] text-slate-500">Spot @ Entry</div>
+                          <div className="font-semibold text-slate-300 mt-0.5">
+                            {trade.spotAtEntry ? `₹${trade.spotAtEntry.toFixed(1)}` : '--'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={`text-[10px] ${trade.isTrailingActive ? 'text-cyan-400 font-bold animate-pulse' : 'text-rose-400'}`}>
+                            {trade.isTrailingActive ? 'Trailing SL (Locked)' : 'Stop-Loss (SL)'}
+                          </div>
+                          <div className={`font-bold mt-0.5 ${trade.isTrailingActive ? 'text-cyan-300' : 'text-rose-400'}`}>
+                            {trade.isTrailingActive && trade.trailingStopLoss !== undefined
+                              ? `₹${trade.trailingStopLoss.toFixed(1)} (+${(trade.trailingStopLoss - trade.entryPrice).toFixed(0)} pts)`
+                              : (trade.stopLoss !== undefined && trade.stopLoss !== null ? `₹${trade.stopLoss.toFixed(1)}` : '--')}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-emerald-400 font-bold">
+                            {trade.isTrailingActive ? 'Trend Mode' : 'Target (TP)'}
+                          </div>
+                          <div className="font-bold text-emerald-400 mt-0.5">
+                            {trade.isTrailingActive
+                              ? 'RIDING TREND 🚀'
+                              : (trade.targetPrice !== undefined && trade.targetPrice !== null ? `₹${trade.targetPrice.toFixed(1)}` : '--')}
+                          </div>
                         </div>
                         <div>
                           <div className="text-[10px] text-slate-500">Unrealized MTM</div>
@@ -871,7 +923,7 @@ export const Ema15mDashboardView: React.FC = () => {
                       {/* Timestamp & Manual Square Off Button */}
                       <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[11px] font-mono">
                         <span className="text-slate-500 text-[10px]">
-                          {new Date(trade.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          {new Date(trade.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (MIS Intraday)
                         </span>
 
                         <button
@@ -930,14 +982,12 @@ export const Ema15mDashboardView: React.FC = () => {
                 <table className="w-full text-left text-xs border-collapse font-mono">
                   <thead>
                     <tr className="bg-slate-950 text-slate-400 border-b border-slate-800">
-                      <th className="py-2.5 px-3">Trade ID</th>
-                      <th className="py-2.5 px-3">Instrument</th>
-                      <th className="py-2.5 px-3">Direction</th>
-                      <th className="py-2.5 px-3 text-right">Qty</th>
-                      <th className="py-2.5 px-3 text-right">Entry Price</th>
-                      <th className="py-2.5 px-3 text-right">Exit / Current</th>
-                      <th className="py-2.5 px-3 text-right">Gross P&L</th>
-                      <th className="py-2.5 px-3 text-right">Brokerage</th>
+                      <th className="py-2.5 px-3">Contract / Strike</th>
+                      <th className="py-2.5 px-3">Order / Product</th>
+                      <th className="py-2.5 px-3 text-right">Option Entry</th>
+                      <th className="py-2.5 px-3 text-right">SL (-30)</th>
+                      <th className="py-2.5 px-3 text-right">Target (+100)</th>
+                      <th className="py-2.5 px-3 text-right">Exit / LTP</th>
                       <th className="py-2.5 px-3 text-right">Net P&L</th>
                       <th className="py-2.5 px-3">Exit Reason</th>
                       <th className="py-2.5 px-3 text-right">Opened At</th>
@@ -951,29 +1001,34 @@ export const Ema15mDashboardView: React.FC = () => {
 
                       return (
                         <tr key={t.id} className="hover:bg-slate-800/40 transition">
-                          <td className="py-2.5 px-3 text-slate-500 font-mono text-[10px]">{t.id.slice(0, 14)}...</td>
-                          <td className="py-2.5 px-3 font-bold text-slate-100">{t.instrument}</td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-bold text-slate-100">
+                              {t.strikePrice ? `${t.strikePrice} ${t.optionType}` : t.instrument}
+                            </div>
+                            <div className="text-[10px] text-cyan-400 font-mono">
+                              {t.expiryDate || 'Weekly'} • {t.instrument}
+                            </div>
+                          </td>
                           <td className="py-2.5 px-3">
                             <span
                               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                 t.direction === 'LONG'
-                                  ? 'bg-emerald-500/10 text-emerald-400'
-                                  : 'bg-rose-500/10 text-rose-400'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
                               }`}
                             >
-                              {t.direction}
+                              BUY 1 LOT (MIS)
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 text-right text-slate-400">{t.quantity}</td>
                           <td className="py-2.5 px-3 text-right text-slate-200">₹{t.entryPrice.toFixed(2)}</td>
+                          <td className="py-2.5 px-3 text-right text-rose-400">
+                            {t.stopLoss !== undefined && t.stopLoss !== null ? `₹${t.stopLoss.toFixed(1)}` : '--'}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-emerald-400">
+                            {t.targetPrice !== undefined && t.targetPrice !== null ? `₹${t.targetPrice.toFixed(1)}` : '--'}
+                          </td>
                           <td className="py-2.5 px-3 text-right text-slate-200">
                             ₹{isClosed && t.exitPrice ? t.exitPrice.toFixed(2) : t.currentPrice.toFixed(2)}
-                          </td>
-                          <td className={`py-2.5 px-3 text-right font-semibold ${(t.grossPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isClosed ? `${(t.grossPnl || 0) >= 0 ? '+' : ''}₹${(t.grossPnl || 0).toFixed(2)}` : '--'}
-                          </td>
-                          <td className="py-2.5 px-3 text-right text-slate-500">
-                            {isClosed ? `₹${(t.brokerage || 40).toFixed(2)}` : '--'}
                           </td>
                           <td className={`py-2.5 px-3 text-right font-black ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
                             {isWin ? '+' : ''}₹{pnl.toFixed(2)}
@@ -1051,7 +1106,8 @@ export const Ema15mDashboardView: React.FC = () => {
                   <tr className="bg-slate-950 text-slate-400 border-b border-slate-800">
                     <th className="py-2.5 px-3">Instrument</th>
                     <th className="py-2.5 px-3">Signal Type</th>
-                    <th className="py-2.5 px-3 text-right">Close Price</th>
+                    <th className="py-2.5 px-3">Directional Strike</th>
+                    <th className="py-2.5 px-3 text-right">Close / Spot</th>
                     <th className="py-2.5 px-3 text-right">23 EMA</th>
                     <th className="py-2.5 px-3 text-right">50 EMA</th>
                     <th className="py-2.5 px-3 text-right">EMA Diff</th>
@@ -1077,6 +1133,16 @@ export const Ema15mDashboardView: React.FC = () => {
                             <span>{isBull ? '▲' : '▼'}</span>
                             <span>{sig.signalType}</span>
                           </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {sig.selectedStrike ? (
+                            <span className="font-bold text-cyan-300">
+                              {sig.selectedStrike} {sig.optionType}{' '}
+                              <span className="text-[10px] text-slate-400 font-normal">({sig.weeklyExpiry || 'Weekly'})</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">--</span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-right font-bold text-slate-100">
                           ₹{sig.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1191,14 +1257,17 @@ export const Ema15mDashboardView: React.FC = () => {
                   <thead>
                     <tr className="bg-slate-950 text-slate-400 border-b border-slate-800">
                       <th className="py-2 px-3">#</th>
-                      <th className="py-2 px-3">Type</th>
-                      <th className="py-2 px-3 text-right">Entry Price</th>
-                      <th className="py-2 px-3 text-right">Exit Price</th>
+                      <th className="py-2 px-3">Contract / Strike</th>
+                      <th className="py-2 px-3 text-right">Option Entry</th>
+                      <th className="py-2 px-3 text-right">SL (-30)</th>
+                      <th className="py-2 px-3 text-right">Target (+100)</th>
+                      <th className="py-2 px-3 text-right">Option Exit</th>
                       <th className="py-2 px-3 text-right">PnL (Pts)</th>
-                      <th className="py-2 px-3 text-right">PnL (%)</th>
-                      <th className="py-2 px-3 text-center">Bars Held</th>
-                      <th className="py-2 px-3 text-right">MFE (Pts)</th>
-                      <th className="py-2 px-3 text-right">MAE (Pts)</th>
+                      <th className="py-2 px-3 text-right">Net P&L (₹)</th>
+                      <th className="py-2 px-3">Exit Reason</th>
+                      <th className="py-2 px-3 text-center">Bars</th>
+                      <th className="py-2 px-3 text-right">MFE</th>
+                      <th className="py-2 px-3 text-right">MAE</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 text-slate-300">
@@ -1208,17 +1277,31 @@ export const Ema15mDashboardView: React.FC = () => {
                         <tr key={t.id} className="hover:bg-slate-800/40 transition">
                           <td className="py-2 px-3 text-slate-500">{idx + 1}</td>
                           <td className="py-2 px-3">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${t.signalType === 'BULLISH' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                              {t.signalType}
-                            </span>
+                            <div className="font-bold text-slate-100">
+                              {t.strikePrice ? `${t.strikePrice} ${t.optionType}` : t.signalType}
+                            </div>
+                            <div className="text-[10px] text-cyan-400">
+                              {t.weeklyExpiry || 'Weekly'} • BUY 1 LOT
+                            </div>
                           </td>
                           <td className="py-2 px-3 text-right">₹{t.entryPrice.toFixed(1)}</td>
+                          <td className="py-2 px-3 text-right text-rose-400">
+                            {t.stopLoss !== undefined && t.stopLoss !== null ? `₹${t.stopLoss.toFixed(1)}` : '--'}
+                          </td>
+                          <td className="py-2 px-3 text-right text-emerald-400">
+                            {t.targetPrice !== undefined && t.targetPrice !== null ? `₹${t.targetPrice.toFixed(1)}` : '--'}
+                          </td>
                           <td className="py-2 px-3 text-right">₹{t.exitPrice.toFixed(1)}</td>
                           <td className={`py-2 px-3 text-right font-bold ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
                             {isWin ? '+' : ''}{t.pnlPoints.toFixed(1)}
                           </td>
-                          <td className={`py-2 px-3 text-right font-bold ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isWin ? '+' : ''}{t.pnlPercent.toFixed(2)}%
+                          <td className={`py-2 px-3 text-right font-black ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {t.netPnl !== undefined ? `${t.netPnl >= 0 ? '+' : ''}₹${t.netPnl.toFixed(0)}` : '--'}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300">
+                              {t.exitReason}
+                            </span>
                           </td>
                           <td className="py-2 px-3 text-center text-slate-400">{t.barsHeld}</td>
                           <td className="py-2 px-3 text-right text-emerald-400">+{t.maxFavorableExcursionPoints}</td>
@@ -1382,7 +1465,28 @@ export const Ema15mDashboardView: React.FC = () => {
                     type="checkbox"
                     checked={settings.autoPaperTradingEnabled !== false}
                     onChange={(e) => setSettings({ ...settings, autoPaperTradingEnabled: e.target.checked })}
-                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500"
+                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {/* Profit Lock & Trailing Stop-Loss Section */}
+              <div className="bg-slate-950 border border-cyan-900/40 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-bold text-cyan-300 flex items-center space-x-1.5">
+                      <span>Profit Lock & Trailing Stop-Loss</span>
+                      <span className="px-1.5 py-0.2 rounded bg-cyan-950 border border-cyan-500/40 text-[9px] text-cyan-300 font-mono">RECOMMENDED</span>
+                    </span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Target (+100) reach hone par +70 pts profit lock karega aur market aage badhne par SL trail karega (1,000 pt trends capture karne ke liye)
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.trailingSlEnabled !== false}
+                    onChange={(e) => setSettings({ ...settings, trailingSlEnabled: e.target.checked })}
+                    className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
                   />
                 </div>
               </div>

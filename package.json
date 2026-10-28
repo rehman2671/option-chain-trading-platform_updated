@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "build": "vite build && esbuild serverApp.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node server.ts",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/quant/tests/*.test.ts src/server/tests/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 src/quant/tests/*.test.ts src/server/tests/*.test.ts",
+    "auth:local": "node scripts/upstox_zero_click.js"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -20,6 +21,7 @@
     "better-sqlite3": "^13.0.2",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.25.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.6.2",
     "google-auth-library": "^11.0.0",
@@ -27,7 +29,12 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "nodemailer": "^9.0.4",
+    "otplib": "^13.5.0",
     "protobufjs": "^8.8.0",
+    "puppeteer": "^25.14.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "qrcode": "^1.5.4",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.10.1",
@@ -35,8 +42,7 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
-    "ws": "^8.21.1",
-    "esbuild": "^0.25.0"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
@@ -46,6 +52,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^8.0.1",
+    "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.21"
   }

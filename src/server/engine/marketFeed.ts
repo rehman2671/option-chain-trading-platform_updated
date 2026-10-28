@@ -289,8 +289,8 @@ export class MarketFeedEngine {
     dbEngine.recordTick(symbol, spot, vix || (cfg ? cfg.indiaVixBase : 15.0), volume || 0);
 
     // Feed tick directly into 15m EMA Strategy Engine and Quant Data Adapter
-    if (symbol === 'NIFTY' || symbol === 'BANKNIFTY' || symbol === 'SENSEX') {
-      globalEma15mEngine.ingestTick(symbol, spot, volume || 0);
+    if (symbol === 'NIFTY' || symbol === 'BANKNIFTY' || symbol === 'SENSEX' || symbol === 'FINNIFTY' || symbol === 'MIDCPNIFTY') {
+      globalEma15mEngine.ingestTick(symbol as any, spot, volume || 0);
       marketDataAdapter.updateSpotPrice(symbol as any, spot);
     }
 

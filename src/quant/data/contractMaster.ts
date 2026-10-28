@@ -61,4 +61,20 @@ export class ContractMaster {
   public static getNearestStrike(price: number, strikeInterval: number): number {
     return Math.round(price / strikeInterval) * strikeInterval;
   }
+
+  /**
+   * Directional ATM Strike Selection:
+   * Bullish (CE): Nearest valid strike at or above current spot price (CEILING)
+   * Bearish (PE): Nearest valid strike at or below current spot price (FLOOR)
+   * Example: Spot 25,180 with step 50 -> CE = 25,200, PE = 25,150
+   */
+  public static getDirectionalAtmStrike(price: number, optionType: 'CE' | 'PE', strikeInterval: number = 50): number {
+    const step = strikeInterval > 0 ? strikeInterval : 50;
+    if (optionType === 'CE') {
+      return Math.ceil(price / step) * step;
+    } else {
+      return Math.floor(price / step) * step;
+    }
+  }
 }
+

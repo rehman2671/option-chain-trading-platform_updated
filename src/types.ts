@@ -2,10 +2,17 @@
  * Option Chain Trading Platform - Shared TypeScript Definitions
  */
 
+export type UserRole = 'SUPERADMIN' | 'OPERATOR';
+
 export interface User {
   id: string;
   email: string;
   name?: string;
+  role?: UserRole;
+  isActive?: boolean;
+  is_active?: number;
+  mfaEnabled?: boolean;
+  mfa_enabled?: number;
   picture?: string;
   googleSub?: string;
   google_sub?: string;
@@ -619,7 +626,10 @@ export interface Ema15mSignal {
   instrument: Ema15mInstrument;
   timeframe: '15m';
   signalType: 'BULLISH' | 'BEARISH';
-  price: number; // Candle Close price
+  price: number; // Candle Close price (Spot)
+  selectedStrike?: number;
+  optionType?: 'CE' | 'PE';
+  weeklyExpiry?: string;
   ema23: number;
   ema50: number;
   emaDifference: number; // ema23 - ema50
@@ -658,6 +668,17 @@ export interface EmaPaperTrade {
   signalId: string;
   instrument: Ema15mInstrument;
   direction: 'LONG' | 'SHORT';
+  optionType?: 'CE' | 'PE';
+  strikePrice?: number;
+  expiryDate?: string;
+  productType?: 'MIS' | 'NRML';
+  spotAtEntry?: number;
+  stopLoss?: number;
+  targetPrice?: number;
+  trailingStopLoss?: number;
+  isTrailingActive?: boolean;
+  orderId?: string;
+  brokerStatus?: 'PENDING' | 'SUBMITTED' | 'FILLED' | 'REJECTED' | 'CANCELLED';
   entryTimestamp: string;
   entryPrice: number;
   quantity: number;
@@ -669,7 +690,7 @@ export interface EmaPaperTrade {
   unrealizedPnl: number;
   exitTimestamp?: string | null;
   exitPrice?: number | null;
-  exitReason?: 'OPPOSITE_CROSSOVER' | 'SL_HIT' | 'TARGET_HIT' | 'MANUAL' | 'EOD' | null;
+  exitReason?: 'OPPOSITE_CROSSOVER' | 'SL_HIT' | 'TARGET_HIT' | 'TRAILING_SL_HIT' | 'FORCED_INTRADAY_SQUARE_OFF' | 'MANUAL' | 'EOD' | null;
   grossPnl: number;
   brokerage: number;
   charges: number;
@@ -700,10 +721,14 @@ export interface EmaNotificationSettings {
   browserEnabled: boolean;
   soundEnabled: boolean;
   autoPaperTradingEnabled?: boolean;
+  trailingSlEnabled?: boolean;
+  profitLockPoints?: number; // e.g. 70 points
+  trailDistancePoints?: number; // e.g. 30 points
   telegramChatId?: string;
   telegramBotToken?: string;
   emailAddress?: string;
   soundVolume?: number; // 0 to 1
+  forceSquareOffTime?: string; // e.g. "15:15"
   updatedAt?: string;
 }
 
@@ -728,16 +753,23 @@ export interface Ema15mBacktestTrade {
   id: string;
   instrument: Ema15mInstrument;
   signalType: 'BULLISH' | 'BEARISH';
+  strikePrice?: number;
+  optionType?: 'CE' | 'PE';
+  weeklyExpiry?: string;
+  spotAtEntry?: number;
+  stopLoss?: number;
+  targetPrice?: number;
   entryTimestamp: string;
   entryPrice: number;
   exitTimestamp: string;
   exitPrice: number;
   pnlPoints: number;
   pnlPercent: number;
+  netPnl?: number;
   barsHeld: number;
   maxFavorableExcursionPoints: number;
   maxAdverseExcursionPoints: number;
-  exitReason: 'OPPOSITE_CROSSOVER' | 'END_OF_PERIOD';
+  exitReason: 'OPPOSITE_CROSSOVER' | 'SL_HIT' | 'TARGET_HIT' | 'TRAILING_SL_HIT' | 'FORCED_INTRADAY_SQUARE_OFF' | 'END_OF_PERIOD';
 }
 
 export interface Ema15mBacktestResult {

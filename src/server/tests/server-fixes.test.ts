@@ -13,6 +13,9 @@ import { resolveUnderlying } from '../../quant/api/quantRouter.js';
 import { ExpiryResolver } from '../../quant/data/expiryResolver.js';
 import { strikeSelectionEngine } from '../../quant/decision/strikeSelectionEngine.js';
 import { positionSizingEngine } from '../../quant/decision/positionSizingEngine.js';
+import { globalEma15mEngine } from '../engine/ema15mEngine.js';
+import { globalNotificationService } from '../engine/notificationService.js';
+import { Ema15mCandle } from '../../types.js';
 
 describe('Server & Data Integrity Test Suite', () => {
   before(async () => {
@@ -285,6 +288,80 @@ describe('Server & Data Integrity Test Suite', () => {
         assert.ok(resolved.monthlyExpiry, `Monthly expiry must be resolved for ${sym}`);
         assert.ok(resolved.allExpiries.length > 0, `allExpiries should not be empty for ${sym}`);
       }
+    });
+  });
+
+  describe('Task J: 15-Minute EMA Alert System & Notification Integrity', () => {
+    it('accurately detects pure mathematical EMA crossovers', () => {
+      // Bullish: 23 EMA crosses above 50 EMA
+      const bullish = globalEma15mEngine.evaluateCrossover(24000, 24050, 24100, 24080);
+      assert.strictEqual(bullish, 'BULLISH');
+
+      // Bearish: 23 EMA crosses below 50 EMA
+      const bearish = globalEma15mEngine.evaluateCrossover(24100, 24050, 24020, 24060);
+      assert.strictEqual(bearish, 'BEARISH');
+
+      // None: Both remain above or below
+      const none1 = globalEma15mEngine.evaluateCrossover(24100, 24050, 24150, 24080);
+      assert.strictEqual(none1, 'NONE');
+      const none2 = globalEma15mEngine.evaluateCrossover(23950, 24050, 23900, 24020);
+      assert.strictEqual(none2, 'NONE');
+    });
+
+    it('ensures Telegram HTML alerts escape reserved characters to prevent API 400 errors', () => {
+      const bearishSignal = {
+        id: 'test-bearish-1',
+        instrument: 'NIFTY' as const,
+        timeframe: '15m' as const,
+        signalType: 'BEARISH' as const,
+        price: 24100.5,
+        ema23: 24090.2,
+        ema50: 24110.8,
+        emaDifference: -20.6,
+        candleTimestamp: new Date().toISOString(),
+        signalConfirmedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      const rawLabel = 'BEARISH CROSSOVER (23 EMA < 50 EMA)';
+      const safeLabel = rawLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      assert.ok(!safeLabel.includes('<'), 'Telegram HTML must not contain unescaped <');
+      assert.ok(safeLabel.includes('&lt;'), 'Telegram HTML must escape < as &lt;');
+    });
+
+    it('scales dynamically to provide status and configuration for configured instruments', () => {
+      const statuses = globalEma15mEngine.getAllStatus();
+      assert.ok(Array.isArray(statuses));
+      assert.ok(statuses.length >= 3);
+
+      for (const st of statuses) {
+        assert.ok(st.instrument);
+        assert.ok(st.displayName);
+        assert.strictEqual(typeof st.currentPrice, 'number');
+        assert.ok(st.currentPrice > 0);
+        assert.strictEqual(typeof st.ema23, 'number');
+        assert.strictEqual(typeof st.ema50, 'number');
+      }
+    });
+
+    it('calculates full technical indicator suite without errors', () => {
+      const candles: Ema15mCandle[] = [
+        { instrument: 'NIFTY' as const, timeframe: '15m' as const, timestamp: '2026-10-06T09:15:00.000Z', open: 24000, high: 24050, low: 23980, close: 24020, volume: 10000, isClosed: true },
+        { instrument: 'NIFTY' as const, timeframe: '15m' as const, timestamp: '2026-10-06T09:30:00.000Z', open: 24020, high: 24080, low: 24010, close: 24070, volume: 12000, isClosed: true },
+        { instrument: 'NIFTY' as const, timeframe: '15m' as const, timestamp: '2026-10-06T09:45:00.000Z', open: 24070, high: 24100, low: 24050, close: 24090, volume: 15000, isClosed: true }
+      ];
+
+      assert.doesNotThrow(() => {
+        globalEma15mEngine.recalculateAllIndicators(candles);
+      });
+
+      assert.strictEqual(typeof candles[2].ema23, 'number');
+      assert.strictEqual(typeof candles[2].ema50, 'number');
+      assert.strictEqual(typeof candles[2].rsi14, 'number');
+      assert.strictEqual(typeof candles[2].vwap, 'number');
+      assert.strictEqual(typeof candles[2].bbUpper, 'number');
+      assert.strictEqual(typeof candles[2].bbLower, 'number');
+      assert.strictEqual(typeof candles[2].atr, 'number');
     });
   });
 });

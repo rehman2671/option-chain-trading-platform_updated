@@ -2,6 +2,12 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { User } from '../types';
 import { apiFetch, setAuthToken } from '../lib/api';
 
+interface MfaPendingState {
+  required: boolean;
+  tempToken: string | null;
+  email: string | null;
+}
+
 interface AuthContextType {
   user: User | null;
   loading: boolean;
@@ -11,7 +17,10 @@ interface AuthContextType {
   setAuthModalTab: (tab: 'login' | 'signup' | 'forgot' | 'reset') => void;
   resetToken: string | null;
   setResetToken: (token: string | null) => void;
-  login: (email: string, pass: string) => Promise<any>;
+  mfaPending: MfaPendingState;
+  cancelMfa: () => void;
+  login: (email: string, pass: string, totpCode?: string) => Promise<any>;
+  verifyMfa: (totpCode: string) => Promise<any>;
   signup: (email: string, pass: string, name?: string) => Promise<any>;
   googleLogin: (credential: string) => Promise<any>;
   logout: () => Promise<void>;
@@ -29,6 +38,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'signup' | 'forgot' | 'reset'>('login');
   const [resetToken, setResetToken] = useState<string | null>(null);
+  const [mfaPending, setMfaPending] = useState<MfaPendingState>({
+    required: false,
+    tempToken: null,
+    email: null
+  });
+
+  const cancelMfa = () => {
+    setMfaPending({ required: false, tempToken: null, email: null });
+  };
 
   const refreshUser = async () => {
     try {
@@ -86,57 +104,64 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return data;
   };
 
-  const login = async (email: string, pass: string) => {
+  const login = async (email: string, pass: string, totpCode?: string) => {
     const res = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: pass })
+      body: JSON.stringify({ email, password: pass, totpCode })
     });
     const data = await parseJsonResponse(res, 'Login failed');
+
+    // If 2FA MFA is required, retain tempToken and trigger TOTP prompt
+    if (data.mfaRequired) {
+      setMfaPending({
+        required: true,
+        tempToken: data.tempToken,
+        email: data.email || email
+      });
+      return data;
+    }
+
     if (data.token) {
       setAuthToken(data.token);
     }
     setUser(data.user);
+    setMfaPending({ required: false, tempToken: null, email: null });
     setAuthModalOpen(false);
     return data;
   };
 
-  const signup = async (email: string, pass: string, name?: string) => {
-    const res = await apiFetch('/api/auth/signup', {
+  const verifyMfa = async (totpCode: string) => {
+    if (!mfaPending.tempToken) {
+      throw new Error('No active MFA verification session. Please sign in again.');
+    }
+    const res = await apiFetch('/api/auth/login/mfa', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: pass, name })
+      body: JSON.stringify({ tempToken: mfaPending.tempToken, totpCode })
     });
-    const data = await parseJsonResponse(res, 'Registration failed');
-    if (data.token) {
-      setAuthToken(data.token);
-    }
-    if (data.user) {
-      setUser(data.user);
-    }
-    return data;
-  };
-
-  const googleLogin = async (credential: string) => {
-    const res = await apiFetch('/api/auth/google', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credential })
-    });
-    const data = await parseJsonResponse(res, 'Google login failed');
+    const data = await parseJsonResponse(res, 'Invalid Authenticator code');
     if (data.token) {
       setAuthToken(data.token);
     }
     setUser(data.user);
+    setMfaPending({ required: false, tempToken: null, email: null });
     setAuthModalOpen(false);
     return data;
+  };
+
+  const signup = async () => {
+    throw new Error('Self-registration is disabled. Contact Master Administrator for credentials.');
+  };
+
+  const googleLogin = async () => {
+    throw new Error('Google Sign-In is disabled on this private system.');
   };
 
   const logout = async () => {
     await apiFetch('/api/auth/logout', { method: 'POST' });
     setAuthToken(null);
     setUser(null);
-    // Refresh page or trigger state reset
     window.location.reload();
   };
 
@@ -184,7 +209,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setAuthModalTab,
         resetToken,
         setResetToken,
+        mfaPending,
+        cancelMfa,
         login,
+        verifyMfa,
         signup,
         googleLogin,
         logout,

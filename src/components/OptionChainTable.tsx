@@ -41,13 +41,16 @@ export const OptionChainTable: React.FC<OptionChainTableProps> = ({
         <p className="text-xs text-slate-400 mt-2 max-w-md mx-auto">
           {snapshot.brokerStatusMessage || 'Upstox v2 credentials (UPSTOX_API_KEY, UPSTOX_ACCESS_TOKEN) are not configured or access token is expired.'}
         </p>
-        <div className="mt-4 p-3.5 bg-slate-950 rounded-lg border border-slate-800 text-[11px] text-slate-300 max-w-lg mx-auto text-left">
-          <p className="font-bold text-cyan-400 mb-1.5">To enable live Upstox market feed:</p>
-          <ol className="list-decimal list-inside space-y-1 text-slate-400">
-            <li>Authorize via <a href="/api/upstox/login" target="_blank" className="text-cyan-400 underline font-bold">/api/upstox/login</a> or Upstox Developer Portal.</li>
-            <li>Configure <code className="text-emerald-400">UPSTOX_API_KEY</code> and <code className="text-emerald-400">UPSTOX_ACCESS_TOKEN</code> in environment variables.</li>
-            <li>Stream live ticks and compute Black-Scholes Greeks on real Upstox market data.</li>
-          </ol>
+        <div className="mt-6 flex flex-col items-center gap-2.5">
+          <a
+            href="/api/upstox/authorize"
+            className="inline-flex items-center space-x-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm px-6 py-3 rounded-lg shadow-xl shadow-amber-500/20 transition-all uppercase tracking-wider cursor-pointer"
+          >
+            <span>⚡ 1-Tap Fast Connect Upstox</span>
+          </a>
+          <span className="text-[11px] text-slate-500">
+            Click once to authorize session. Automatically connects WebSocket V3 Streamer and returns to terminal.
+          </span>
         </div>
       </div>
     );

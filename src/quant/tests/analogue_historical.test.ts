@@ -17,6 +17,7 @@ import { QuantFeatureSnapshot, QuantFeatureRecord } from '../types.js';
 describe('Historical Analogue Engine Real Pattern Matching', () => {
   before(async () => {
     await dbEngine.initialize();
+    dbEngine.seedQuantFeatureHistoryIfEmpty();
   });
 
   it('verifies Migration 013 created quant_feature_history table with indexes', () => {

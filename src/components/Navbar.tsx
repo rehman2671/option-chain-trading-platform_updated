@@ -24,10 +24,13 @@ import {
   Pin,
   PinOff,
   PanelTopClose,
-  PanelTopOpen
+  PanelTopOpen,
+  Users
 } from 'lucide-react';
 import { OptionChainSnapshot, EventReactiveState } from '../types.js';
 import { useAuth } from '../context/AuthContext';
+import { UpstoxBrokerModal } from './UpstoxBrokerModal';
+import { UserManagementModal } from './UserManagementModal';
 
 interface NavbarProps {
   currentSymbol: string;
@@ -51,6 +54,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   isRefreshing
 }) => {
   const { user, logout, setAuthModalOpen } = useAuth();
+  const [isUpstoxModalOpen, setIsUpstoxModalOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
 
   // Header visibility and freeze/sticky preferences with local persistence
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
@@ -210,49 +215,64 @@ export const Navbar: React.FC<NavbarProps> = ({
 
               {/* Upstox Live Broker Connection Indicator & 1-Click Login */}
               {snapshot?.isBrokerConnected ? (
-                <div className="hidden sm:flex items-center space-x-1.5 bg-emerald-950/60 border border-emerald-500/50 px-2 py-1 rounded" title="Upstox API v2 & V3 Protobuf WebSocket Feed Active">
+                <button
+                  onClick={() => setIsUpstoxModalOpen(true)}
+                  className="hidden sm:flex items-center space-x-1.5 bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-500/50 hover:border-emerald-400 px-2 py-1 rounded transition-colors cursor-pointer"
+                  title="Upstox API v2 & V3 Protobuf WebSocket Feed Active. Click for Broker Manager."
+                >
                   <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
                   <span className="text-[10px] font-mono text-emerald-300 font-bold uppercase">UPSTOX: V3 STREAM</span>
-                </div>
+                </button>
               ) : (
-                <a
-                  href="/api/upstox/login"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center space-x-1.5 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-500/60 hover:border-amber-400 px-2.5 py-1 rounded transition-all group"
-                  title="Click to authorize Upstox session"
+                <button
+                  onClick={() => setIsUpstoxModalOpen(true)}
+                  className="flex items-center space-x-1.5 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-500/60 hover:border-amber-400 px-2.5 py-1 rounded transition-all group cursor-pointer"
+                  title="Click to open Upstox Broker Manager & 1-Click Connect"
                 >
                   <div className="w-2 h-2 rounded-full bg-amber-400 group-hover:animate-ping"></div>
                   <span className="text-[10px] font-mono text-amber-300 font-bold uppercase tracking-tight">CONNECT UPSTOX</span>
-                </a>
+                </button>
               )}
 
               {/* User Authentication Badge / Account Controls */}
               {user ? (
-                <div className="flex items-center space-x-2 bg-slate-800/90 border border-slate-700 px-2.5 py-1 rounded">
-                  {user.picture ? (
-                    <img src={user.picture} alt={user.name || user.email} className="w-4 h-4 rounded-full" />
-                  ) : (
-                    <UserIcon className="w-3.5 h-3.5 text-blue-400" />
+                <div className="flex items-center space-x-2">
+                  {(user.role === 'SUPERADMIN' || user.email === 'vinuparab86@gmail.com') && (
+                    <button
+                      onClick={() => setIsUserManagementOpen(true)}
+                      className="flex items-center space-x-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-bold bg-purple-950/80 hover:bg-purple-900 text-purple-300 border border-purple-600/60 transition-all cursor-pointer shadow-sm"
+                      title="Manage 5 Fixed Users, Status, Passwords, and Google Authenticator MFA"
+                    >
+                      <Users className="w-3.5 h-3.5 text-purple-400" />
+                      <span>USERS &amp; MFA</span>
+                    </button>
                   )}
-                  <span className="text-[11px] font-mono text-slate-200 max-w-[120px] truncate" title={user.email}>
-                    {user.name || user.email.split('@')[0]}
-                  </span>
-                  <button
-                    onClick={logout}
-                    className="p-0.5 text-slate-400 hover:text-rose-400 transition-colors ml-1"
-                    title="Log Out"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                  </button>
+
+                  <div className="flex items-center space-x-2 bg-slate-800/90 border border-slate-700 px-2.5 py-1 rounded">
+                    {user.picture ? (
+                      <img src={user.picture} alt={user.name || user.email} className="w-4 h-4 rounded-full" />
+                    ) : (
+                      <UserIcon className="w-3.5 h-3.5 text-blue-400" />
+                    )}
+                    <span className="text-[11px] font-mono text-slate-200 max-w-[120px] truncate" title={user.email}>
+                      {user.name || user.email.split('@')[0]}
+                    </span>
+                    <button
+                      onClick={logout}
+                      className="p-0.5 text-slate-400 hover:text-rose-400 transition-colors ml-1 cursor-pointer"
+                      title="Log Out"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <button
                   onClick={() => setAuthModalOpen(true)}
-                  className="flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 text-white font-mono text-xs font-semibold px-2.5 py-1 rounded transition-colors shadow-sm"
+                  className="flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 text-white font-mono text-xs font-semibold px-2.5 py-1 rounded transition-colors shadow-sm cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" />
-                  <span>SIGN IN / REGISTER</span>
+                  <span>SIGN IN / ACCESS</span>
                 </button>
               )}
             </div>
@@ -416,6 +436,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
         </header>
       )}
+
+      <UpstoxBrokerModal
+        isOpen={isUpstoxModalOpen}
+        onClose={() => setIsUpstoxModalOpen(false)}
+        onConnectionChange={onRefresh}
+      />
+
+      <UserManagementModal
+        isOpen={isUserManagementOpen}
+        onClose={() => setIsUserManagementOpen(false)}
+        currentUser={user}
+      />
     </>
   );
 };

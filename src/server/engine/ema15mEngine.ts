@@ -17,8 +17,11 @@ import {
   Ema15mBacktestTrade,
   EmaPaperTrade
 } from '../../types.js';
-import { EMA_15M_INSTRUMENTS } from '../../shared/marketConfig.js';
+import { EMA_15M_INSTRUMENTS, getInstrumentConfig } from '../../shared/marketConfig.js';
 import { tradeReviewEngine } from '../../quant/learning/tradeReviewEngine.js';
+import { ContractMaster } from '../../quant/data/contractMaster.js';
+import { ExpiryResolver } from '../../quant/data/expiryResolver.js';
+import { calculateEuropeanOptionGreeks } from './blackScholes.js';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
@@ -196,23 +199,20 @@ export class Ema15mEngine {
   public ingestTick(instrument: Ema15mInstrument, price: number, volume: number = 0, timestamp: Date = new Date()): void {
     if (!price || price <= 0) return;
 
-    // Sanity boundary check to prevent symbol cross-pollution (e.g. NIFTY price applied to SENSEX)
-    if (instrument === 'SENSEX' && price < 50000) {
-      console.warn(`[EMA 15M ENGINE] Rejected invalid tick for SENSEX: ₹${price} (below minimum threshold)`);
-      return;
-    }
-    if (instrument === 'NIFTY' && (price < 15000 || price > 40000)) {
-      console.warn(`[EMA 15M ENGINE] Rejected out-of-range tick for NIFTY: ₹${price}`);
-      return;
-    }
-    if (instrument === 'BANKNIFTY' && (price < 35000 || price > 85000)) {
-      console.warn(`[EMA 15M ENGINE] Rejected out-of-range tick for BANKNIFTY: ₹${price}`);
-      return;
+    // Sanity boundary check to prevent symbol cross-pollution using dynamic instrument configs
+    const cfg = getInstrumentConfig(instrument);
+    if (cfg && cfg.baseSpotPrice > 0) {
+      const minSafe = cfg.baseSpotPrice * 0.4;
+      const maxSafe = cfg.baseSpotPrice * 2.5;
+      if (price < minSafe || price > maxSafe) {
+        console.warn(`[EMA 15M ENGINE] Rejected out-of-range tick for ${instrument}: ₹${price} (Expected ₹${minSafe.toFixed(0)} - ₹${maxSafe.toFixed(0)})`);
+        return;
+      }
     }
 
-    // Strict Market Hours Check: Never alter candles or crossover state when market is closed
+    // Strict Market Hours Check: Never alter live candles when market is closed (unless in PRACTICE mode)
     const marketHours = this.getMarketHoursStatus();
-    if (!marketHours.isMarketOpen) {
+    if (!marketHours.isMarketOpen && this.dataSource !== 'PRACTICE') {
       return;
     }
 
@@ -226,6 +226,7 @@ export class Ema15mEngine {
       // If we have an active candle from a previous 15m slot, close it first
       if (active && active.timestamp !== currentSlotTime) {
         this.finalizeCandle(active);
+        this.activeCandles.delete(instrument);
       }
 
       // Start new 15m forming candle
@@ -252,13 +253,9 @@ export class Ema15mEngine {
 
   /**
    * Periodically checks if the current time has crossed into a new 15-minute slot
+   * Guaranteed to finalize candles even if market just closed (e.g. 15:30:00 IST close)
    */
   private evaluateCandleBoundaries(): void {
-    const marketHours = this.getMarketHoursStatus();
-    if (!marketHours.isMarketOpen) {
-      return;
-    }
-
     const now = new Date();
     const currentSlot = this.get15mSlotBoundary(now);
 
@@ -268,6 +265,81 @@ export class Ema15mEngine {
         // Candle time passed: close it and evaluate crossover
         this.finalizeCandle(active);
         this.activeCandles.delete(inst);
+      }
+    }
+
+    // Evaluate forced intraday square-off for MIS positions
+    this.checkForcedIntradaySquareOff();
+  }
+
+  /**
+   * Resolves the nearest upcoming valid weekly expiry dynamically from the broker instrument master/option chain.
+   * Never hardcodes the expiry date.
+   */
+  public resolveNearestWeeklyExpiry(inst: Ema15mInstrument, referenceDate: Date = new Date()): string {
+    try {
+      const availableDates = dbEngine.getAvailableOptionExpiries(inst);
+      const res = ExpiryResolver.resolve(inst as any, availableDates, referenceDate);
+      return res.currentExpiry;
+    } catch {
+      // Direct calendar resolution for weekly expiry
+      const res = ExpiryResolver.resolve(inst as any, [], referenceDate);
+      return res.currentExpiry;
+    }
+  }
+
+  /**
+   * Retrieves live option LTP from database/feed or computes Black-Scholes estimate
+   */
+  public getEstimatedOptionPrice(
+    instrument: Ema15mInstrument,
+    strikePrice: number,
+    optionType: 'CE' | 'PE',
+    expiry: string,
+    spotPrice: number
+  ): number {
+    try {
+      const ltp = dbEngine.getHistoricalOptionLtp(instrument, expiry, strikePrice, optionType, new Date().toISOString());
+      if (ltp !== null && ltp > 0) {
+        return Number(ltp.toFixed(2));
+      }
+    } catch {}
+
+    const expDate = new Date(expiry);
+    const now = new Date();
+    const diffDays = Math.max(0.2, (expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const T = diffDays / 365;
+    const r = 0.065;
+    const sigma = 0.14; // ~14% ATM IV
+    const isCall = optionType === 'CE';
+
+    const greeks = calculateEuropeanOptionGreeks(spotPrice, strikePrice, T, r, sigma, isCall);
+    const estimated = Math.max(25, Number(greeks.price.toFixed(2)));
+    return estimated;
+  }
+
+  /**
+   * Evaluates forced intraday square-off for MIS/Intraday positions
+   * Rule 12: Never carry a position overnight. Close at configured force-square-off time.
+   */
+  public checkForcedIntradaySquareOff(): void {
+    const marketHours = this.getMarketHoursStatus();
+    if (!marketHours.isMarketOpen && this.dataSource !== 'PRACTICE') return;
+
+    const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
+    const forceTime = settings.forceSquareOffTime || '15:15';
+    const currentTimeStr = marketHours.istTime.split(' ')[0]; // "HH:mm"
+
+    if (currentTimeStr >= forceTime && currentTimeStr < '15:30') {
+      const openTrades = dbEngine.getOpenEmaPaperTrades('ALL');
+      if (openTrades.length === 0) return;
+
+      console.log(`[EMA 15M INTRADAY] ⏰ Reached force square-off time (${currentTimeStr} >= ${forceTime} IST). Closing ${openTrades.length} open MIS position(s)...`);
+
+      for (const trade of openTrades) {
+        const exitPrice = trade.currentPrice || trade.entryPrice;
+        dbEngine.closeEmaPaperTrade(trade.id, exitPrice, 'FORCED_INTRADAY_SQUARE_OFF', new Date().toISOString());
+        console.log(`[EMA 15M INTRADAY] 🛑 Forced Intraday Square-Off: Closed trade ${trade.id} on ${trade.instrument} ${trade.strikePrice || ''} ${trade.optionType || ''} @ ₹${exitPrice}`);
       }
     }
   }
@@ -310,6 +382,17 @@ export class Ema15mEngine {
         curr.signal = signalType;
 
         if (signalType !== 'NONE') {
+          const cfg = getInstrumentConfig(inst);
+          const stepSize = cfg ? cfg.stepSize : 50;
+          const optionType: 'CE' | 'PE' = signalType === 'BULLISH' ? 'CE' : 'PE';
+
+          // Directional ATM Strike Selection:
+          // Bullish (CE): Nearest valid strike at or above current spot price (CEILING)
+          // Bearish (PE): Nearest valid strike at or below current spot price (FLOOR)
+          // Example: Spot 25,180 with step 50 -> CE = 25,200, PE = 25,150
+          const selectedStrike = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
+          const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst);
+
           const signalId = `ema-${inst}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
           const signal: Ema15mSignal = {
             id: signalId,
@@ -317,6 +400,9 @@ export class Ema15mEngine {
             timeframe: '15m',
             signalType,
             price: curr.close,
+            selectedStrike,
+            optionType,
+            weeklyExpiry,
             ema23: Number(curr.ema23.toFixed(2)),
             ema50: Number(curr.ema50.toFixed(2)),
             emaDifference: Number((curr.ema23 - curr.ema50).toFixed(2)),
@@ -330,9 +416,9 @@ export class Ema15mEngine {
           const isNewlyInserted = dbEngine.saveEma15mSignal(signal);
 
           if (isNewlyInserted) {
-            console.log(`[EMA 15M ALERT] 🚀 Confirmed ${signalType} Crossover on ${inst} @ ₹${signal.price} (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`);
+            console.log(`[EMA 15M ALERT] 🚀 Confirmed ${signalType} Crossover on ${inst} @ ₹${signal.price} | Strike: ${selectedStrike} ${optionType} (${weeklyExpiry}) (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`);
 
-            // 1. Execute Automatic Paper Trading with Position Reversal & Idempotency
+            // 1. Execute Automatic Paper Trading with Directional ATM Strike & Weekly Expiry
             this.processAutoPaperTrade(signal);
 
             // 2. Dispatch notifications asynchronously
@@ -348,46 +434,51 @@ export class Ema15mEngine {
   }
 
   /**
-   * Automatic Paper Trading Engine for 15-Minute 23/50 EMA Strategy
+   * Automatic Trading Engine for NIFTY 50 15-Minute 23/50 EMA Strategy
+   * Rules:
    * - Triggered ONLY upon confirmed 15m candle close
-   * - Long on Bullish Crossover, Short on Bearish Crossover
-   * - Closes opposing open position and reverses
-   * - Uses real live tick prices
-   * - Idempotent (1 signal = 1 trade)
+   * - Exactly 1 lot only
+   * - Product Type: MIS / Intraday
+   * - Directional ATM Strike Selection (CE >= Spot, PE <= Spot)
+   * - Weekly Expiry Only
+   * - Bullish SL = Entry - 30, Target = Entry + 100
+   * - Bearish SL = Entry + 30, Target = Entry - 100
+   * - Maximum active position = 1 (No averaging, no pyramiding)
+   * - Closes opposing open position upon reverse crossover
    */
   public processAutoPaperTrade(signal: Ema15mSignal): void {
     try {
       const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
       if (settings.autoPaperTradingEnabled === false) {
-        console.log(`[EMA PAPER TRADING] Auto paper trading is disabled in settings. Skipping position creation for ${signal.instrument}`);
+        console.log(`[EMA PAPER TRADING] Auto trading is disabled in settings. Skipping order creation for ${signal.instrument}`);
         return;
       }
 
-      const lotSizes: Record<Ema15mInstrument, number> = {
-        NIFTY: 25,
-        BANKNIFTY: 15,
-        SENSEX: 10
-      };
-      const lotSize = lotSizes[signal.instrument] || 25;
-      const quantity = lotSize; // 1 standard index lot
+      const cfg = getInstrumentConfig(signal.instrument);
+      const lotSize = cfg ? cfg.lotSize : 25;
+      const quantity = lotSize; // Exactly 1 standard lot
       const newDirection: 'LONG' | 'SHORT' = signal.signalType === 'BULLISH' ? 'LONG' : 'SHORT';
+      const optionType: 'CE' | 'PE' = signal.optionType || (signal.signalType === 'BULLISH' ? 'CE' : 'PE');
+      const stepSize = cfg ? cfg.stepSize : 50;
+
+      // Directional ATM Strike
+      const strikePrice = signal.selectedStrike || ContractMaster.getDirectionalAtmStrike(signal.price, optionType, stepSize);
+      const weeklyExpiry = signal.weeklyExpiry || this.resolveNearestWeeklyExpiry(signal.instrument);
 
       // Check if an open position already exists for this instrument
       const existingOpen = dbEngine.getOpenEmaPaperTradeByInstrument(signal.instrument);
 
       if (existingOpen) {
         if (existingOpen.direction !== newDirection) {
-          // Reversal: close the opposing trade at the crossover candle's close price
-          dbEngine.closeEmaPaperTrade(existingOpen.id, signal.price, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
+          // Reversal: close the opposing trade at current option price
+          const exitOptPrice = existingOpen.currentPrice || existingOpen.entryPrice;
+          dbEngine.closeEmaPaperTrade(existingOpen.id, exitOptPrice, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
           try {
-            const isLong = (existingOpen.direction || '').toUpperCase() === 'LONG';
-            const grossPnl = isLong
-              ? (signal.price - existingOpen.entryPrice) * (existingOpen.quantity || 1)
-              : (existingOpen.entryPrice - signal.price) * (existingOpen.quantity || 1);
+            const grossPnl = (exitOptPrice - existingOpen.entryPrice) * (existingOpen.quantity || 1);
             const netPnl = grossPnl - 40;
             tradeReviewEngine.recordFromEmaTrade(
               existingOpen,
-              signal.price,
+              exitOptPrice,
               grossPnl,
               netPnl,
               'OPPOSITE_CROSSOVER',
@@ -396,15 +487,32 @@ export class Ema15mEngine {
           } catch (revErr) {
             console.error('[EMA PAPER TRADING] Failed to record trade review:', revErr);
           }
-          console.log(`[EMA PAPER TRADING] 🔄 Reversal: Closed ${existingOpen.direction} trade ${existingOpen.id} on ${signal.instrument} @ ₹${signal.price} (Reason: OPPOSITE_CROSSOVER)`);
+          console.log(`[EMA PAPER TRADING] 🔄 Reversal: Closed ${existingOpen.direction} trade ${existingOpen.id} on ${signal.instrument} @ ₹${exitOptPrice} (Reason: OPPOSITE_CROSSOVER)`);
         } else {
-          console.log(`[EMA PAPER TRADING] Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position.`);
+          console.log(`[EMA PAPER TRADING] Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position (Rule: Max 1 active position, no averaging, no pyramiding).`);
           return;
         }
       }
 
-      // Create new Paper Position
-      const tradeId = `ema-pt-${signal.instrument.toLowerCase()}-${Date.now()}`;
+      // Determine option entry price (actual average fill price)
+      const optionEntryPrice = this.getEstimatedOptionPrice(signal.instrument, strikePrice, optionType, weeklyExpiry, signal.price);
+
+      // Stop-loss & Target according to specifications
+      // Bullish CE: SL = Entry - 30, Target = Entry + 100
+      // Bearish PE: SL = Entry + 30, Target = Entry - 100
+      let stopLoss: number;
+      let targetPrice: number;
+
+      if (optionType === 'CE') {
+        stopLoss = Number((optionEntryPrice - 30).toFixed(2));
+        targetPrice = Number((optionEntryPrice + 100).toFixed(2));
+      } else {
+        stopLoss = Number((optionEntryPrice + 30).toFixed(2));
+        targetPrice = Number((optionEntryPrice - 100).toFixed(2));
+      }
+
+      // Create new 1-lot MIS Position
+      const tradeId = `ema-pt-${signal.instrument.toLowerCase()}-${optionType.toLowerCase()}-${strikePrice}-${Date.now()}`;
       const source = this.dataSource === 'UPSTOX_LIVE' ? 'UPSTOX_LIVE' : 'PRACTICE';
 
       const newTrade: EmaPaperTrade = {
@@ -412,14 +520,23 @@ export class Ema15mEngine {
         signalId: signal.id,
         instrument: signal.instrument,
         direction: newDirection,
+        optionType,
+        strikePrice,
+        expiryDate: weeklyExpiry,
+        productType: 'MIS',
+        spotAtEntry: signal.price,
+        stopLoss,
+        targetPrice,
+        orderId: `ORD-${Date.now()}`,
+        brokerStatus: 'FILLED',
         entryTimestamp: signal.signalConfirmedAt || new Date().toISOString(),
-        entryPrice: signal.price,
+        entryPrice: optionEntryPrice,
         quantity,
         lotSize,
         strategy: 'EMA_15M_23_50',
         source,
         status: 'OPEN',
-        currentPrice: signal.price,
+        currentPrice: optionEntryPrice,
         unrealizedPnl: 0,
         grossPnl: 0,
         brokerage: 40,
@@ -430,7 +547,7 @@ export class Ema15mEngine {
       };
 
       dbEngine.saveEmaPaperTrade(newTrade);
-      console.log(`[EMA PAPER TRADING] 🟢 Opened ${newDirection} Paper Position: 1 Lot (${quantity} qty) on ${signal.instrument} @ ₹${signal.price} (Signal ID: ${signal.id})`);
+      console.log(`[EMA TRADING] 🟢 Executed 1 Lot MIS BUY ${strikePrice} ${optionType} (${weeklyExpiry} Expiry) @ ₹${optionEntryPrice} on ${signal.instrument} (Spot: ₹${signal.price} | SL: ₹${stopLoss} | Target: ₹${targetPrice})`);
     } catch (err: any) {
       console.error(`[EMA PAPER TRADING] Error executing automatic paper trade:`, err.message);
     }
@@ -718,7 +835,9 @@ export class Ema15mEngine {
     const latestSignal = dbEngine.getLatestEma15mSignal(inst);
     const marketHours = this.getMarketHoursStatus();
 
-    const currentPrice = active?.close || latestClosed?.close || (inst === 'SENSEX' ? 76950 : inst === 'BANKNIFTY' ? 57400 : 24100);
+    const cfg = getInstrumentConfig(inst);
+    const defaultBasePrice = cfg && cfg.baseSpotPrice > 0 ? cfg.baseSpotPrice : (inst === 'SENSEX' ? 76950 : inst === 'BANKNIFTY' ? 57400 : 24100);
+    const currentPrice = active?.close || latestClosed?.close || defaultBasePrice;
     const ema23 = latestClosed?.ema23 || 0;
     const ema50 = latestClosed?.ema50 || 0;
     const emaDifference = Number((ema23 - ema50).toFixed(2));
@@ -728,17 +847,13 @@ export class Ema15mEngine {
       currentTrend = ema23 > ema50 ? 'BULLISH' : ema23 < ema50 ? 'BEARISH' : 'NEUTRAL';
     }
 
-    const displayNames: Record<Ema15mInstrument, string> = {
-      NIFTY: 'NIFTY 50',
-      BANKNIFTY: 'BANK NIFTY',
-      SENSEX: 'BSE SENSEX'
-    };
+    const displayName = cfg ? cfg.name : inst;
 
     const activePaperTrade = dbEngine.getOpenEmaPaperTradeByInstrument(inst);
 
     return {
       instrument: inst,
-      displayName: displayNames[inst] || inst,
+      displayName,
       currentPrice: Number(currentPrice.toFixed(2)),
       ema23,
       ema50,
@@ -982,6 +1097,10 @@ export class Ema15mEngine {
     const candles = dbEngine.getEma15mCandles(inst, 1000, config.startDate, config.endDate);
     this.recalculateEmaSeries(candles);
 
+    const cfg = getInstrumentConfig(inst);
+    const stepSize = cfg ? cfg.stepSize : 50;
+    const lotSize = cfg ? cfg.lotSize : 25;
+
     const trades: Ema15mBacktestTrade[] = [];
     let currentTrade: Partial<Ema15mBacktestTrade> | null = null;
     let bullishCount = 0;
@@ -995,54 +1114,119 @@ export class Ema15mEngine {
 
       const signal = this.evaluateCrossover(prev.ema23, prev.ema50, curr.ema23, curr.ema50);
 
-      // Track excursions for open trade
-      if (currentTrade) {
+      // 1. Evaluate open trade exits against Stop-Loss, Target, and Intraday Square-off
+      if (currentTrade && currentTrade.strikePrice && currentTrade.optionType && currentTrade.weeklyExpiry) {
         currentTrade.barsHeld = (currentTrade.barsHeld || 0) + 1;
-        if (currentTrade.signalType === 'BULLISH') {
-          const mfe = curr.high - currentTrade.entryPrice!;
-          const mae = currentTrade.entryPrice! - curr.low;
-          currentTrade.maxFavorableExcursionPoints = Math.max(currentTrade.maxFavorableExcursionPoints || 0, mfe);
-          currentTrade.maxAdverseExcursionPoints = Math.max(currentTrade.maxAdverseExcursionPoints || 0, mae);
-        } else {
-          const mfe = currentTrade.entryPrice! - curr.low;
-          const mae = curr.high - currentTrade.entryPrice!;
-          currentTrade.maxFavorableExcursionPoints = Math.max(currentTrade.maxFavorableExcursionPoints || 0, mfe);
-          currentTrade.maxAdverseExcursionPoints = Math.max(currentTrade.maxAdverseExcursionPoints || 0, mae);
-        }
-      }
 
-      if (signal === 'BULLISH') {
-        bullishCount++;
-        // Close existing Bearish trade if open
-        if (currentTrade && currentTrade.signalType === 'BEARISH') {
-          const exitPrice = curr.close;
-          const pnlPoints = currentTrade.entryPrice! - exitPrice;
-          const pnlPercent = (pnlPoints / currentTrade.entryPrice!) * 100;
+        const optType = currentTrade.optionType;
+        const entryOptPrice = currentTrade.entryPrice!;
+        const sl = currentTrade.stopLoss!;
+        const tp = currentTrade.targetPrice!;
+
+        // Estimate option prices during the candle
+        const optClose = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.close);
+        const optAtHigh = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.high);
+        const optAtLow = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.low);
+
+        const estOptHigh = optType === 'CE' ? optAtHigh : optAtLow;
+        const estOptLow = optType === 'CE' ? optAtLow : optAtHigh;
+
+        // Excursion tracking (points relative to entry option premium)
+        const favorable = Number(Math.max(0, estOptHigh - entryOptPrice).toFixed(2));
+        const adverse = Number(Math.max(0, entryOptPrice - estOptLow).toFixed(2));
+        currentTrade.maxFavorableExcursionPoints = Math.max(currentTrade.maxFavorableExcursionPoints || 0, favorable);
+        currentTrade.maxAdverseExcursionPoints = Math.max(currentTrade.maxAdverseExcursionPoints || 0, adverse);
+
+        let exitReason: 'SL_HIT' | 'TARGET_HIT' | 'TRAILING_SL_HIT' | 'FORCED_INTRADAY_SQUARE_OFF' | 'OPPOSITE_CROSSOVER' | null = null;
+        let exitPrice = optClose;
+
+        // Profit Lock & Trailing SL Engine:
+        // When Target (+100) is touched, activate Profit Lock (+70 pts) and trail SL upwards!
+        const targetReached = estOptHigh >= tp;
+        if (targetReached || (currentTrade as any).isTrailingActive) {
+          (currentTrade as any).isTrailingActive = true;
+          const minLock = Number((entryOptPrice + 70).toFixed(2));
+          const dynamicTrail = Number((estOptHigh - 30).toFixed(2));
+          currentTrade.stopLoss = Math.max(currentTrade.stopLoss || minLock, dynamicTrail);
+
+          if (estOptLow <= currentTrade.stopLoss) {
+            exitReason = 'TRAILING_SL_HIT';
+            exitPrice = currentTrade.stopLoss;
+          }
+        } else {
+          // Standard Initial Stop-Loss (-30 points)
+          if (estOptLow <= sl) {
+            exitReason = 'SL_HIT';
+            exitPrice = sl;
+          }
+        }
+
+        // Intraday forced square-off at 15:15 IST
+        const candleTime = curr.timestamp;
+        if (!exitReason && (candleTime.includes('T15:15') || candleTime.includes('T15:30'))) {
+          exitReason = 'FORCED_INTRADAY_SQUARE_OFF';
+          exitPrice = optClose;
+        }
+
+        // Check opposite crossover exit
+        if (!exitReason && signal !== 'NONE' && signal !== currentTrade.signalType) {
+          exitReason = 'OPPOSITE_CROSSOVER';
+          exitPrice = optClose;
+        }
+
+        if (exitReason) {
+          const pnlPoints = Number((exitPrice - entryOptPrice).toFixed(2));
+          const pnlPercent = Number(((pnlPoints / entryOptPrice) * 100).toFixed(2));
+          const netPnl = Number((pnlPoints * lotSize - 40).toFixed(2));
+
           trades.push({
             id: `trade-${trades.length + 1}`,
             instrument: inst,
-            signalType: 'BEARISH',
+            signalType: currentTrade.signalType!,
+            strikePrice: currentTrade.strikePrice,
+            optionType: currentTrade.optionType,
+            weeklyExpiry: currentTrade.weeklyExpiry,
+            spotAtEntry: currentTrade.spotAtEntry,
+            stopLoss: currentTrade.stopLoss,
+            targetPrice: currentTrade.targetPrice,
             entryTimestamp: currentTrade.entryTimestamp!,
-            entryPrice: currentTrade.entryPrice!,
+            entryPrice: entryOptPrice,
             exitTimestamp: curr.timestamp,
             exitPrice,
-            pnlPoints: Number(pnlPoints.toFixed(2)),
-            pnlPercent: Number(pnlPercent.toFixed(2)),
+            pnlPoints,
+            pnlPercent,
+            netPnl,
             barsHeld: currentTrade.barsHeld || 1,
             maxFavorableExcursionPoints: Number((currentTrade.maxFavorableExcursionPoints || 0).toFixed(2)),
             maxAdverseExcursionPoints: Number((currentTrade.maxAdverseExcursionPoints || 0).toFixed(2)),
-            exitReason: 'OPPOSITE_CROSSOVER'
+            exitReason
           });
           currentTrade = null;
         }
+      }
 
-        // Open new Bullish trade
+      // 2. Open new trade upon confirmed crossover if no position is currently active
+      if (signal === 'BULLISH') {
+        bullishCount++;
         if (!currentTrade) {
+          const optionType: 'CE' = 'CE';
+          const strikePrice = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
+          const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst, new Date(curr.timestamp));
+          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close);
+          const stopLoss = Number((entryPrice - 30).toFixed(2));
+          const targetPrice = Number((entryPrice + 100).toFixed(2));
+
           currentTrade = {
             instrument: inst,
             signalType: 'BULLISH',
+            strikePrice,
+            optionType,
+            weeklyExpiry,
+            spotAtEntry: curr.close,
+            stopLoss,
+            targetPrice,
             entryTimestamp: curr.timestamp,
-            entryPrice: curr.close,
+            entryPrice,
             barsHeld: 0,
             maxFavorableExcursionPoints: 0,
             maxAdverseExcursionPoints: 0
@@ -1050,36 +1234,25 @@ export class Ema15mEngine {
         }
       } else if (signal === 'BEARISH') {
         bearishCount++;
-        // Close existing Bullish trade if open
-        if (currentTrade && currentTrade.signalType === 'BULLISH') {
-          const exitPrice = curr.close;
-          const pnlPoints = exitPrice - currentTrade.entryPrice!;
-          const pnlPercent = (pnlPoints / currentTrade.entryPrice!) * 100;
-          trades.push({
-            id: `trade-${trades.length + 1}`,
-            instrument: inst,
-            signalType: 'BULLISH',
-            entryTimestamp: currentTrade.entryTimestamp!,
-            entryPrice: currentTrade.entryPrice!,
-            exitTimestamp: curr.timestamp,
-            exitPrice,
-            pnlPoints: Number(pnlPoints.toFixed(2)),
-            pnlPercent: Number(pnlPercent.toFixed(2)),
-            barsHeld: currentTrade.barsHeld || 1,
-            maxFavorableExcursionPoints: Number((currentTrade.maxFavorableExcursionPoints || 0).toFixed(2)),
-            maxAdverseExcursionPoints: Number((currentTrade.maxAdverseExcursionPoints || 0).toFixed(2)),
-            exitReason: 'OPPOSITE_CROSSOVER'
-          });
-          currentTrade = null;
-        }
-
-        // Open new Bearish trade
         if (!currentTrade) {
+          const optionType: 'PE' = 'PE';
+          const strikePrice = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
+          const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst, new Date(curr.timestamp));
+          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close);
+          const stopLoss = Number((entryPrice + 30).toFixed(2));
+          const targetPrice = Number((entryPrice - 100).toFixed(2));
+
           currentTrade = {
             instrument: inst,
             signalType: 'BEARISH',
+            strikePrice,
+            optionType,
+            weeklyExpiry,
+            spotAtEntry: curr.close,
+            stopLoss,
+            targetPrice,
             entryTimestamp: curr.timestamp,
-            entryPrice: curr.close,
+            entryPrice,
             barsHeld: 0,
             maxFavorableExcursionPoints: 0,
             maxAdverseExcursionPoints: 0
@@ -1089,24 +1262,37 @@ export class Ema15mEngine {
     }
 
     // Close last trade if open at end of period
-    if (currentTrade && candles.length > 0) {
+    if (currentTrade && candles.length > 0 && currentTrade.entryPrice) {
       const lastCandle = candles[candles.length - 1];
-      const exitPrice = lastCandle.close;
-      const pnlPoints = currentTrade.signalType === 'BULLISH'
-        ? exitPrice - currentTrade.entryPrice!
-        : currentTrade.entryPrice! - exitPrice;
-      const pnlPercent = (pnlPoints / currentTrade.entryPrice!) * 100;
+      const optClose = this.getEstimatedOptionPrice(
+        inst,
+        currentTrade.strikePrice!,
+        currentTrade.optionType!,
+        currentTrade.weeklyExpiry!,
+        lastCandle.close
+      );
+      const exitPrice = optClose;
+      const pnlPoints = Number((exitPrice - currentTrade.entryPrice).toFixed(2));
+      const pnlPercent = Number(((pnlPoints / currentTrade.entryPrice) * 100).toFixed(2));
+      const netPnl = Number((pnlPoints * lotSize - 40).toFixed(2));
 
       trades.push({
         id: `trade-${trades.length + 1}`,
         instrument: inst,
         signalType: currentTrade.signalType!,
+        strikePrice: currentTrade.strikePrice,
+        optionType: currentTrade.optionType,
+        weeklyExpiry: currentTrade.weeklyExpiry,
+        spotAtEntry: currentTrade.spotAtEntry,
+        stopLoss: currentTrade.stopLoss,
+        targetPrice: currentTrade.targetPrice,
         entryTimestamp: currentTrade.entryTimestamp!,
-        entryPrice: currentTrade.entryPrice!,
+        entryPrice: currentTrade.entryPrice,
         exitTimestamp: lastCandle.timestamp,
         exitPrice,
-        pnlPoints: Number(pnlPoints.toFixed(2)),
-        pnlPercent: Number(pnlPercent.toFixed(2)),
+        pnlPoints,
+        pnlPercent,
+        netPnl,
         barsHeld: currentTrade.barsHeld || 1,
         maxFavorableExcursionPoints: Number((currentTrade.maxFavorableExcursionPoints || 0).toFixed(2)),
         maxAdverseExcursionPoints: Number((currentTrade.maxAdverseExcursionPoints || 0).toFixed(2)),
@@ -1217,11 +1403,13 @@ export class Ema15mEngine {
   public triggerMockCrossover(inst: Ema15mInstrument, targetType: 'BULLISH' | 'BEARISH'): { candle: Ema15mCandle; signal?: Ema15mSignal } {
     const history = this.candleCache.get(inst) || [];
     const lastClosed = history[history.length - 1];
-    const basePrice = lastClosed ? lastClosed.close : (inst === 'SENSEX' ? 76950 : inst === 'BANKNIFTY' ? 57400 : 24100);
+    const cfg = getInstrumentConfig(inst);
+    const fallbackBasePrice = cfg && cfg.baseSpotPrice > 0 ? cfg.baseSpotPrice : (inst === 'SENSEX' ? 76950 : inst === 'BANKNIFTY' ? 57400 : 24100);
+    const basePrice = lastClosed ? lastClosed.close : fallbackBasePrice;
 
     // If target is BULLISH, push price strongly upward to flip 23 EMA > 50 EMA
     // If target is BEARISH, push price strongly downward to flip 23 EMA < 50 EMA
-    const jump = inst === 'SENSEX' ? 350 : inst === 'BANKNIFTY' ? 250 : 120;
+    const jump = inst === 'SENSEX' ? 350 : inst === 'BANKNIFTY' ? 250 : Math.max(50, Math.round(basePrice * 0.005));
     const newClose = targetType === 'BULLISH' ? basePrice + jump : basePrice - jump;
 
     const mockSlotTime = new Date().toISOString();
@@ -1248,26 +1436,141 @@ export class Ema15mEngine {
 
   /**
    * Batch update live mark-to-market P&L on all OPEN paper positions for this instrument
-   * using a single atomic SQLite transaction
+   * using a single atomic SQLite transaction. Evaluates option pricing and SL/Target boundaries.
    */
-  public updateOpenPaperTrades(instrument: string, currentPrice: number): void {
+  public updateOpenPaperTrades(instrument: string, currentSpotPrice: number): void {
     const openTrades = dbEngine.getOpenEmaPaperTrades(instrument);
     if (!openTrades || openTrades.length === 0) return;
 
-    const toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number }> = [];
+    const toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number; trailingStopLoss?: number; isTrailingActive?: boolean }> = [];
     const toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }> = [];
 
     for (const trade of openTrades) {
       const entryPrice = Number(trade.entryPrice);
       const qty = Number(trade.quantity);
-      const isLong = trade.direction === 'LONG';
-      const unrealizedPnl = Number((isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty).toFixed(2));
 
-      toUpdate.push({
-        id: trade.id,
-        currentPrice,
-        unrealizedPnl
-      });
+      let currentOptionPrice = entryPrice;
+
+      if (trade.optionType && trade.strikePrice && trade.expiryDate) {
+        currentOptionPrice = this.getEstimatedOptionPrice(
+          trade.instrument,
+          trade.strikePrice,
+          trade.optionType,
+          trade.expiryDate,
+          currentSpotPrice
+        );
+      } else {
+        // Fallback for spot index trades
+        const isLong = trade.direction === 'LONG';
+        const unrealizedPnl = Number((isLong ? (currentSpotPrice - entryPrice) * qty : (entryPrice - currentSpotPrice) * qty).toFixed(2));
+        toUpdate.push({ id: trade.id, currentPrice: currentSpotPrice, unrealizedPnl });
+        continue;
+      }
+
+      // Option Long trade P&L: (currentOptionPrice - entryPrice) * quantity
+      const grossPnl = Number(((currentOptionPrice - entryPrice) * qty).toFixed(2));
+      const netPnl = Number((grossPnl - 40).toFixed(2));
+      const unrealizedPnl = grossPnl;
+
+      // Settings check for Profit Lock & Trailing SL
+      const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
+      const trailingEnabled = settings.trailingSlEnabled !== false;
+      const profitLockPts = settings.profitLockPoints ?? 70;
+      const trailDistancePts = settings.trailDistancePoints ?? 30;
+
+      // Check Stop-Loss, Target, and Trailing SL criteria
+      let shouldExit = false;
+      let exitReason = '';
+      let updatedTrailingSl = trade.trailingStopLoss;
+      let updatedIsTrailing = trade.isTrailingActive;
+
+      if (trailingEnabled) {
+        // Trailing Stop-Loss & Profit Lock Mode:
+        // Once +100 target is reached, lock at least +70 points profit and trail upwards!
+        const targetThreshold = trade.targetPrice || (entryPrice + 100);
+        const hasReachedTarget = currentOptionPrice >= targetThreshold;
+
+        if (hasReachedTarget || trade.isTrailingActive) {
+          updatedIsTrailing = true;
+          // Profit Lock: Guarantee at least profitLockPts (+70 pts) once target is touched
+          const minLockPrice = Number((entryPrice + profitLockPts).toFixed(2));
+          const dynamicTrailPrice = Number((currentOptionPrice - trailDistancePts).toFixed(2));
+          updatedTrailingSl = Math.max(updatedTrailingSl || minLockPrice, dynamicTrailPrice);
+
+          // Check if price fell back to or below trailing stop
+          if (currentOptionPrice <= updatedTrailingSl) {
+            shouldExit = true;
+            exitReason = 'TRAILING_SL_HIT';
+          }
+        } else {
+          // Target not yet reached: enforce initial Stop-Loss (-30 points)
+          if (trade.stopLoss !== undefined && currentOptionPrice <= trade.stopLoss) {
+            shouldExit = true;
+            exitReason = 'SL_HIT';
+          }
+        }
+      } else {
+        // Standard Fixed Target (+100) & Fixed SL (-30) Mode
+        if (trade.stopLoss !== undefined && trade.targetPrice !== undefined) {
+          if (trade.optionType === 'CE') {
+            if (currentOptionPrice <= trade.stopLoss) {
+              shouldExit = true;
+              exitReason = 'SL_HIT';
+            } else if (currentOptionPrice >= trade.targetPrice) {
+              shouldExit = true;
+              exitReason = 'TARGET_HIT';
+            }
+          } else {
+            if (trade.targetPrice < entryPrice) {
+              if (currentOptionPrice <= trade.targetPrice) {
+                shouldExit = true;
+                exitReason = 'TARGET_HIT';
+              } else if (currentOptionPrice >= trade.stopLoss) {
+                shouldExit = true;
+                exitReason = 'SL_HIT';
+              }
+            } else {
+              if (currentOptionPrice >= trade.targetPrice) {
+                shouldExit = true;
+                exitReason = 'TARGET_HIT';
+              } else if (currentOptionPrice <= trade.stopLoss) {
+                shouldExit = true;
+                exitReason = 'SL_HIT';
+              }
+            }
+          }
+        }
+      }
+
+      if (shouldExit) {
+        toClose.push({
+          id: trade.id,
+          exitPrice: currentOptionPrice,
+          exitReason,
+          grossPnl,
+          netPnl,
+          exitTimestamp: new Date().toISOString()
+        });
+        console.log(`[EMA 15M STRATEGY] 🎯 ${exitReason} on ${trade.instrument} ${trade.strikePrice} ${trade.optionType}: Exited @ ₹${currentOptionPrice} (Entry: ₹${entryPrice} | Net P&L: ₹${netPnl})`);
+        try {
+          tradeReviewEngine.recordFromEmaTrade(
+            trade,
+            currentOptionPrice,
+            grossPnl,
+            netPnl,
+            exitReason,
+            new Date().toISOString()
+          );
+        } catch {}
+      } else {
+        toUpdate.push({
+          id: trade.id,
+          currentPrice: currentOptionPrice,
+          unrealizedPnl,
+          trailingStopLoss: updatedTrailingSl,
+          isTrailingActive: updatedIsTrailing
+        });
+      }
     }
 
     dbEngine.batchUpdateEmaPaperTrades({ toUpdate, toClose });
