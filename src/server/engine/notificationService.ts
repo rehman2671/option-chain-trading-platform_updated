@@ -125,7 +125,7 @@ export class NotificationService {
 
     const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
     const strikeSection = signal.selectedStrike && signal.optionType
-      ? `🎯 <b>Directional ATM Strike:</b> ${signal.selectedStrike} ${signal.optionType} (${signal.signalType === 'BULLISH' ? 'Nearest ≥ Spot' : 'Nearest ≤ Spot'}\n📅 <b>Weekly Expiry:</b> ${signal.weeklyExpiry || 'Upcoming Weekly'}\n📦 <b>Quantity:</b> 1 Lot (MIS / Intraday)\n`
+      ? `🎯 <b>Directional ATM Strike:</b> ${signal.selectedStrike} ${signal.optionType} (${signal.signalType === 'BULLISH' ? 'Nearest ≥ Spot' : 'Nearest ≤ Spot'})\n📅 <b>Weekly Expiry:</b> ${signal.weeklyExpiry || 'Upcoming Weekly'}\n📦 <b>Quantity:</b> 1 Lot (MIS / Intraday)\n`
       : '';
 
     const autoTradeNotice = settings.autoPaperTradingEnabled !== false
@@ -137,7 +137,7 @@ ${headerEmoji} <b>15-MINUTE EMA CROSSOVER ALERT</b> ${headerEmoji}
 
 📊 <b>Instrument:</b> ${signal.instrument}
 ⚡ <b>Signal:</b> ${signalLabel}
-💰 <b>NIFTY Spot Close:</b> ₹${signal.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+💰 <b>${signal.instrument} Spot Close:</b> ₹${signal.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 
 ${strikeSection}
 📈 <b>23 EMA:</b> ${signal.ema23.toFixed(2)}
@@ -246,7 +246,7 @@ ${autoTradeNotice}
           <td class="val"><strong>${signal.instrument}</strong></td>
         </tr>
         <tr>
-          <td class="label">NIFTY Spot Close Price</td>
+          <td class="label">${signal.instrument} Spot Close Price</td>
           <td class="val" style="color: ${accentColor}; font-size: 16px;">₹${signal.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
         </tr>
         ${signal.selectedStrike && signal.optionType ? `

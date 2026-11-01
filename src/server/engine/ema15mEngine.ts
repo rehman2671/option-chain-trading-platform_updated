@@ -300,7 +300,7 @@ export class Ema15mEngine {
   ): number {
     try {
       const ltp = dbEngine.getHistoricalOptionLtp(instrument, expiry, strikePrice, optionType, new Date().toISOString());
-      if (ltp !== null && ltp > 0) {
+      if (ltp !== null && ltp >= 15) {
         return Number(ltp.toFixed(2));
       }
     } catch {}
@@ -497,19 +497,11 @@ export class Ema15mEngine {
       // Determine option entry price (actual average fill price)
       const optionEntryPrice = this.getEstimatedOptionPrice(signal.instrument, strikePrice, optionType, weeklyExpiry, signal.price);
 
-      // Stop-loss & Target according to specifications
-      // Bullish CE: SL = Entry - 30, Target = Entry + 100
-      // Bearish PE: SL = Entry + 30, Target = Entry - 100
-      let stopLoss: number;
-      let targetPrice: number;
-
-      if (optionType === 'CE') {
-        stopLoss = Number((optionEntryPrice - 30).toFixed(2));
-        targetPrice = Number((optionEntryPrice + 100).toFixed(2));
-      } else {
-        stopLoss = Number((optionEntryPrice + 30).toFixed(2));
-        targetPrice = Number((optionEntryPrice - 100).toFixed(2));
-      }
+      // Directional Option Buying (Long CE on Bullish crossover, Long PE on Bearish crossover):
+      // Premium Target: Entry + 100 points
+      // Premium Stop Loss: max(5, Entry - 30 points)
+      const stopLoss = Number(Math.max(5, optionEntryPrice - 30).toFixed(2));
+      const targetPrice = Number((optionEntryPrice + 100).toFixed(2));
 
       // Create new 1-lot MIS Position
       const tradeId = `ema-pt-${signal.instrument.toLowerCase()}-${optionType.toLowerCase()}-${strikePrice}-${Date.now()}`;
@@ -1407,10 +1399,16 @@ export class Ema15mEngine {
     const fallbackBasePrice = cfg && cfg.baseSpotPrice > 0 ? cfg.baseSpotPrice : (inst === 'SENSEX' ? 76950 : inst === 'BANKNIFTY' ? 57400 : 24100);
     const basePrice = lastClosed ? lastClosed.close : fallbackBasePrice;
 
-    // If target is BULLISH, push price strongly upward to flip 23 EMA > 50 EMA
-    // If target is BEARISH, push price strongly downward to flip 23 EMA < 50 EMA
-    const jump = inst === 'SENSEX' ? 350 : inst === 'BANKNIFTY' ? 250 : Math.max(50, Math.round(basePrice * 0.005));
-    const newClose = targetType === 'BULLISH' ? basePrice + jump : basePrice - jump;
+    const lastEma23 = lastClosed?.ema23 ?? basePrice;
+    const lastEma50 = lastClosed?.ema50 ?? basePrice;
+    const currentDiff = lastEma23 - lastEma50;
+    
+    // Difference response sensitivity: (k23 - k50) ~ 0.0441
+    const minRequiredJump = Math.ceil(Math.abs(currentDiff) / 0.04) + 80;
+    const jump = Math.max(minRequiredJump, inst === 'SENSEX' ? 600 : inst === 'BANKNIFTY' ? 450 : 300);
+    const newClose = targetType === 'BULLISH'
+      ? Math.max(basePrice, lastEma50) + jump
+      : Math.min(basePrice, lastEma50) - jump;
 
     const mockSlotTime = new Date().toISOString();
     const mockCandle: Ema15mCandle = {
@@ -1512,32 +1510,12 @@ export class Ema15mEngine {
       } else {
         // Standard Fixed Target (+100) & Fixed SL (-30) Mode
         if (trade.stopLoss !== undefined && trade.targetPrice !== undefined) {
-          if (trade.optionType === 'CE') {
-            if (currentOptionPrice <= trade.stopLoss) {
-              shouldExit = true;
-              exitReason = 'SL_HIT';
-            } else if (currentOptionPrice >= trade.targetPrice) {
-              shouldExit = true;
-              exitReason = 'TARGET_HIT';
-            }
-          } else {
-            if (trade.targetPrice < entryPrice) {
-              if (currentOptionPrice <= trade.targetPrice) {
-                shouldExit = true;
-                exitReason = 'TARGET_HIT';
-              } else if (currentOptionPrice >= trade.stopLoss) {
-                shouldExit = true;
-                exitReason = 'SL_HIT';
-              }
-            } else {
-              if (currentOptionPrice >= trade.targetPrice) {
-                shouldExit = true;
-                exitReason = 'TARGET_HIT';
-              } else if (currentOptionPrice <= trade.stopLoss) {
-                shouldExit = true;
-                exitReason = 'SL_HIT';
-              }
-            }
+          if (currentOptionPrice <= trade.stopLoss) {
+            shouldExit = true;
+            exitReason = 'SL_HIT';
+          } else if (currentOptionPrice >= trade.targetPrice) {
+            shouldExit = true;
+            exitReason = 'TARGET_HIT';
           }
         }
       }
