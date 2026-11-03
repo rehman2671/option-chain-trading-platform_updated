@@ -1589,6 +1589,63 @@ async function startServer() {
     }
   });
 
+  // 14. Toggle Live Upstox Broker Execution
+  app.post('/api/ema15m/live-trading/toggle', (req, res) => {
+    try {
+      const user = getUserFromRequest(req);
+      const userId = user ? user.id : 'GLOBAL';
+      const settings = dbEngine.getEmaNotificationSettings(userId);
+      const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !settings.liveBrokerExecutionEnabled;
+      settings.liveBrokerExecutionEnabled = enabled;
+      dbEngine.saveEmaNotificationSettings(settings, userId);
+      if (userId !== 'GLOBAL') {
+        const globalSettings = dbEngine.getEmaNotificationSettings('GLOBAL');
+        globalSettings.liveBrokerExecutionEnabled = enabled;
+        dbEngine.saveEmaNotificationSettings(globalSettings, 'GLOBAL');
+      }
+      dbEngine.logEmaExecution({
+        id: `exec-toggle-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        level: enabled ? 'WARN' : 'INFO',
+        stage: 'SAFETY_CHECK',
+        instrument: 'ALL',
+        message: enabled
+          ? '⚠️ LIVE BROKER AUTO-TRADING ARMED: Real orders will execute on Upstox upon confirmed 15m candle close crossovers.'
+          : '🛡️ LIVE BROKER AUTO-TRADING DISARMED: Switched to Simulated Paper Trading mode.'
+      });
+      const updated = dbEngine.getEmaNotificationSettings(userId);
+      res.json({
+        success: true,
+        liveBrokerExecutionEnabled: updated.liveBrokerExecutionEnabled,
+        settings: updated
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 15. Fetch EMA Execution Audit Logs
+  app.get('/api/ema15m/execution-logs', (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 100;
+      const instrument = req.query.instrument as string | undefined;
+      const logs = dbEngine.getEmaExecutionLogs(limit, instrument);
+      res.json({ success: true, logs });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 16. Clear EMA Execution Audit Logs
+  app.post('/api/ema15m/execution-logs/clear', (req, res) => {
+    try {
+      dbEngine.clearEmaExecutionLogs();
+      res.json({ success: true, message: 'Execution logs cleared' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   // -------------------------------------------------------------
   // VITE DEVELOPMENT MIDDLEWARE / PRODUCTION STATIC FALLBACK

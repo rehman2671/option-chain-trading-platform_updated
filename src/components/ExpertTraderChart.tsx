@@ -107,6 +107,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartCanvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
   // Custom Date Picker Modal state
@@ -574,17 +575,32 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
     setMousePos(null);
   };
 
-  // Mouse Wheel Zoom: scroll up = zoom in, scroll down = zoom out
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    if (e.deltaY < 0) {
-      // Zoom In
-      setVisibleCount(prev => Math.max(15, Math.round(prev * 0.85)));
-    } else if (e.deltaY > 0) {
-      // Zoom Out
-      setVisibleCount(prev => Math.min(displayCandles.length, Math.round(prev * 1.18)));
-    }
-  };
+  // Non-passive native Wheel Zoom listener to safely prevent page scroll without browser passive listener error
+  const displayCandlesLengthRef = useRef<number>(displayCandles.length);
+  displayCandlesLengthRef.current = displayCandles.length;
+
+  useEffect(() => {
+    const el = chartCanvasRef.current;
+    if (!el) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+      if (e.deltaY < 0) {
+        // Zoom In
+        setVisibleCount(prev => Math.max(15, Math.round(prev * 0.85)));
+      } else if (e.deltaY > 0) {
+        // Zoom Out
+        setVisibleCount(prev => Math.min(displayCandlesLengthRef.current, Math.round(prev * 1.18)));
+      }
+    };
+
+    el.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handleNativeWheel);
+    };
+  }, []);
 
   // Zoom In / Out Handlers
   const handleZoomIn = () => {
@@ -986,7 +1002,7 @@ export const ExpertTraderChart: React.FC<ExpertTraderChartProps> = ({
 
       {/* 4. MAIN SVG CHART CANVAS */}
       <div
-        onWheel={handleWheel}
+        ref={chartCanvasRef}
         className={`relative select-none bg-slate-950 overflow-hidden ${
           isDragging ? 'cursor-grabbing' : 'cursor-crosshair'
         }`}

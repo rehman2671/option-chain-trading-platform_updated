@@ -721,6 +721,9 @@ export interface EmaNotificationSettings {
   browserEnabled: boolean;
   soundEnabled: boolean;
   autoPaperTradingEnabled?: boolean;
+  liveBrokerExecutionEnabled?: boolean; // Real money execution on Upstox
+  maxDailyLossLimit?: number; // Circuit breaker in INR (e.g. 5000)
+  upstoxProductType?: 'MIS' | 'NRML'; // Default MIS
   trailingSlEnabled?: boolean;
   profitLockPoints?: number; // e.g. 70 points
   trailDistancePoints?: number; // e.g. 30 points
@@ -730,6 +733,16 @@ export interface EmaNotificationSettings {
   soundVolume?: number; // 0 to 1
   forceSquareOffTime?: string; // e.g. "15:15"
   updatedAt?: string;
+}
+
+export interface EmaExecutionLog {
+  id: string;
+  timestamp: string;
+  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
+  stage: 'SIGNAL' | 'SAFETY_CHECK' | 'PRE_TRADE' | 'BROKER_SUBMIT' | 'BROKER_RESPONSE' | 'PAPER_TRADE' | 'EXIT' | 'SQUARE_OFF';
+  instrument: string;
+  message: string;
+  details?: Record<string, any>;
 }
 
 export interface EmaNotificationLog {

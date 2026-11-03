@@ -43,8 +43,8 @@ describe('BacktestEngine Historical Replay & Real Data Validation', () => {
     // This period has 1,500 real 15m candles in SQLite
     const result = backtestEngine.runBacktest({
       strategy,
-      periodStart: '2026-08-17T00:00:00.000Z',
-      periodEnd: '2026-09-11T23:59:59.000Z'
+      periodStart: '2026-10-01T00:00:00.000Z',
+      periodEnd: '2026-10-25T23:59:59.000Z'
     });
 
     assert.strictEqual(result.status, 'COMPLETED');

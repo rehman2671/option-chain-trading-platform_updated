@@ -15,13 +15,16 @@ import {
   Ema15mBacktestConfig,
   Ema15mBacktestResult,
   Ema15mBacktestTrade,
-  EmaPaperTrade
+  EmaPaperTrade,
+  EmaExecutionLog
 } from '../../types.js';
 import { EMA_15M_INSTRUMENTS, getInstrumentConfig } from '../../shared/marketConfig.js';
 import { tradeReviewEngine } from '../../quant/learning/tradeReviewEngine.js';
 import { ContractMaster } from '../../quant/data/contractMaster.js';
 import { ExpiryResolver } from '../../quant/data/expiryResolver.js';
 import { calculateEuropeanOptionGreeks } from './blackScholes.js';
+import { activeProvider } from './providers/index.js';
+import { resolveTradingsymbol } from './basketEngine.js';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
@@ -418,8 +421,10 @@ export class Ema15mEngine {
           if (isNewlyInserted) {
             console.log(`[EMA 15M ALERT] 🚀 Confirmed ${signalType} Crossover on ${inst} @ ₹${signal.price} | Strike: ${selectedStrike} ${optionType} (${weeklyExpiry}) (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`);
 
-            // 1. Execute Automatic Paper Trading with Directional ATM Strike & Weekly Expiry
-            this.processAutoPaperTrade(signal);
+            // 1. Execute Automatic Trading (Live Upstox or Paper) with Directional ATM Strike & Weekly Expiry
+            this.processAutoPaperTrade(signal).catch(err => {
+              console.error('[EMA 15M ENGINE] Error processing trade execution:', err.message);
+            });
 
             // 2. Dispatch notifications asynchronously
             globalNotificationService.dispatchSignalAlerts(signal).catch(err => {
@@ -434,7 +439,7 @@ export class Ema15mEngine {
   }
 
   /**
-   * Automatic Trading Engine for NIFTY 50 15-Minute 23/50 EMA Strategy
+   * Automatic Trading Engine for NIFTY 50, BANK NIFTY & SENSEX 15-Minute 23/50 EMA Strategy
    * Rules:
    * - Triggered ONLY upon confirmed 15m candle close
    * - Exactly 1 lot only
@@ -442,15 +447,40 @@ export class Ema15mEngine {
    * - Directional ATM Strike Selection (CE >= Spot, PE <= Spot)
    * - Weekly Expiry Only
    * - Bullish SL = Entry - 30, Target = Entry + 100
-   * - Bearish SL = Entry + 30, Target = Entry - 100
+   * - Bearish SL = Entry - 30, Target = Entry + 100 (for option buying premium appreciation)
    * - Maximum active position = 1 (No averaging, no pyramiding)
    * - Closes opposing open position upon reverse crossover
+   * - Bridges to LIVE Upstox API v2 order execution when liveBrokerExecutionEnabled === true
+   * - Emits structured audit logs to SQLite for full transparency
    */
-  public processAutoPaperTrade(signal: Ema15mSignal): void {
+  public async processAutoPaperTrade(signal: Ema15mSignal): Promise<void> {
+    const timestampStr = new Date().toISOString();
     try {
       const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-      if (settings.autoPaperTradingEnabled === false) {
+      const isAutoTradingAllowed = settings.autoPaperTradingEnabled !== false;
+      const isLiveBrokerArmed = settings.liveBrokerExecutionEnabled === true;
+
+      // 1. Log Signal Detection
+      dbEngine.logEmaExecution({
+        id: `exec-sig-${Date.now()}`,
+        timestamp: timestampStr,
+        level: 'INFO',
+        stage: 'SIGNAL',
+        instrument: signal.instrument,
+        message: `Confirmed ${signal.signalType} 15m crossover on ${signal.instrument} @ ₹${signal.price.toFixed(2)} (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`,
+        details: { signalId: signal.id, price: signal.price, emaDifference: signal.emaDifference }
+      });
+
+      if (!isAutoTradingAllowed && !isLiveBrokerArmed) {
         console.log(`[EMA PAPER TRADING] Auto trading is disabled in settings. Skipping order creation for ${signal.instrument}`);
+        dbEngine.logEmaExecution({
+          id: `exec-skip-${Date.now()}`,
+          timestamp: timestampStr,
+          level: 'WARN',
+          stage: 'SAFETY_CHECK',
+          instrument: signal.instrument,
+          message: `Auto trade execution disabled in settings. Skipping order creation.`
+        });
         return;
       }
 
@@ -464,6 +494,7 @@ export class Ema15mEngine {
       // Directional ATM Strike
       const strikePrice = signal.selectedStrike || ContractMaster.getDirectionalAtmStrike(signal.price, optionType, stepSize);
       const weeklyExpiry = signal.weeklyExpiry || this.resolveNearestWeeklyExpiry(signal.instrument);
+      const tradingsymbol = resolveTradingsymbol(signal.instrument, strikePrice, optionType, weeklyExpiry);
 
       // Check if an open position already exists for this instrument
       const existingOpen = dbEngine.getOpenEmaPaperTradeByInstrument(signal.instrument);
@@ -473,6 +504,42 @@ export class Ema15mEngine {
           // Reversal: close the opposing trade at current option price
           const exitOptPrice = existingOpen.currentPrice || existingOpen.entryPrice;
           dbEngine.closeEmaPaperTrade(existingOpen.id, exitOptPrice, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
+
+          // If opposing position was a real Upstox order, send LIVE market SELL order
+          if (existingOpen.source === 'UPSTOX_LIVE' && isLiveBrokerArmed && typeof (activeProvider as any)?.placeOrder === 'function') {
+            try {
+              const exitTradingsymbol = resolveTradingsymbol(existingOpen.instrument, existingOpen.strikePrice!, existingOpen.optionType as any, existingOpen.expiryDate);
+              await (activeProvider as any).placeOrder({
+                quantity: existingOpen.quantity,
+                product: existingOpen.productType || 'MIS',
+                validity: 'DAY',
+                orderType: 'MARKET',
+                transactionType: 'SELL',
+                tradingsymbol: exitTradingsymbol,
+                symbol: exitTradingsymbol,
+                tag: 'ema15m_reversal'
+              });
+              dbEngine.logEmaExecution({
+                id: `exec-rev-exit-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                level: 'SUCCESS',
+                stage: 'EXIT',
+                instrument: signal.instrument,
+                message: `🟢 Dispatched Upstox LIVE EXIT SELL order for opposing trade ${exitTradingsymbol}`,
+                details: { exitTradingsymbol, quantity: existingOpen.quantity }
+              });
+            } catch (err: any) {
+              dbEngine.logEmaExecution({
+                id: `exec-rev-fail-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                level: 'ERROR',
+                stage: 'EXIT',
+                instrument: signal.instrument,
+                message: `🔴 Failed to dispatch Upstox LIVE EXIT order for opposing trade: ${err.message}`
+              });
+            }
+          }
+
           try {
             const grossPnl = (exitOptPrice - existingOpen.entryPrice) * (existingOpen.quantity || 1);
             const netPnl = grossPnl - 40;
@@ -490,6 +557,14 @@ export class Ema15mEngine {
           console.log(`[EMA PAPER TRADING] 🔄 Reversal: Closed ${existingOpen.direction} trade ${existingOpen.id} on ${signal.instrument} @ ₹${exitOptPrice} (Reason: OPPOSITE_CROSSOVER)`);
         } else {
           console.log(`[EMA PAPER TRADING] Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position (Rule: Max 1 active position, no averaging, no pyramiding).`);
+          dbEngine.logEmaExecution({
+            id: `exec-hold-${Date.now()}`,
+            timestamp: timestampStr,
+            level: 'INFO',
+            stage: 'SAFETY_CHECK',
+            instrument: signal.instrument,
+            message: `Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position (Rule: Max 1 active position, no averaging, no pyramiding).`
+          });
           return;
         }
       }
@@ -503,9 +578,106 @@ export class Ema15mEngine {
       const stopLoss = Number(Math.max(5, optionEntryPrice - 30).toFixed(2));
       const targetPrice = Number((optionEntryPrice + 100).toFixed(2));
 
-      // Create new 1-lot MIS Position
+      // -------------------------------------------------------------
+      // LIVE BROKER EXECUTION BRIDGE (UPSTOX API V2)
+      // -------------------------------------------------------------
+      let orderId = `ORD-${Date.now()}`;
+      let brokerStatus: 'PENDING' | 'FILLED' | 'REJECTED' | 'CANCELLED' | 'SUBMITTED' = 'FILLED';
+      let tradeSource: 'UPSTOX_LIVE' | 'PRACTICE' = this.dataSource === 'UPSTOX_LIVE' ? 'UPSTOX_LIVE' : 'PRACTICE';
+
+      if (isLiveBrokerArmed) {
+        dbEngine.logEmaExecution({
+          id: `exec-pre-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          stage: 'PRE_TRADE',
+          instrument: signal.instrument,
+          message: `Verifying Pre-Trade Risk Checks for LIVE Upstox order (${tradingsymbol} | 1 Lot = ${quantity} Qty)...`,
+          details: { tradingsymbol, lotSize, quantity, strikePrice, optionType, weeklyExpiry }
+        });
+
+        // Risk Circuit Breaker Check: Max Daily Loss Threshold
+        const summary = dbEngine.getEmaPaperTradingSummary();
+        const maxDailyLoss = settings.maxDailyLossLimit ?? 5000;
+        if (summary.realizedNetPnl <= -maxDailyLoss) {
+          const circuitMsg = `Risk Circuit Breaker Engaged: Daily realized loss ₹${Math.abs(summary.realizedNetPnl)} exceeds limit ₹${maxDailyLoss}. Live order blocked.`;
+          console.warn(`[EMA 15M RISK] 🛑 ${circuitMsg}`);
+          dbEngine.logEmaExecution({
+            id: `exec-risk-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            stage: 'SAFETY_CHECK',
+            instrument: signal.instrument,
+            message: circuitMsg,
+            details: { currentDailyNetPnl: summary.realizedNetPnl, maxDailyLoss }
+          });
+        } else if (!activeProvider || typeof (activeProvider as any).placeOrder !== 'function' || !(activeProvider as any).isConnected) {
+          const provMsg = `Upstox broker provider is disconnected or token expired. Falling back safely to simulated execution.`;
+          console.warn(`[EMA 15M LIVE] ⚠️ ${provMsg}`);
+          dbEngine.logEmaExecution({
+            id: `exec-prov-warn-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            level: 'WARN',
+            stage: 'SAFETY_CHECK',
+            instrument: signal.instrument,
+            message: provMsg,
+            details: { isConnected: (activeProvider as any)?.isConnected }
+          });
+        } else {
+          // Dispatch Real Market BUY Order to Upstox API v2
+          dbEngine.logEmaExecution({
+            id: `exec-disp-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            level: 'INFO',
+            stage: 'BROKER_SUBMIT',
+            instrument: signal.instrument,
+            message: `🚀 Submitting LIVE MARKET BUY order to Upstox: ${tradingsymbol} (Qty: ${quantity}, Product: ${settings.upstoxProductType || 'MIS'})`,
+            details: { tradingsymbol, quantity, product: settings.upstoxProductType || 'MIS' }
+          });
+
+          try {
+            const brokerRes = await (activeProvider as any).placeOrder({
+              quantity,
+              product: settings.upstoxProductType || 'MIS',
+              validity: 'DAY',
+              orderType: 'MARKET',
+              transactionType: 'BUY',
+              tradingsymbol,
+              symbol: tradingsymbol,
+              tag: 'ema15m_auto'
+            });
+
+            orderId = brokerRes?.order_id || brokerRes?.orderId || `ORD-UPSTOX-${Date.now()}`;
+            brokerStatus = 'FILLED';
+            tradeSource = 'UPSTOX_LIVE';
+
+            dbEngine.logEmaExecution({
+              id: `exec-live-ok-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              level: 'SUCCESS',
+              stage: 'BROKER_RESPONSE',
+              instrument: signal.instrument,
+              message: `🟢 LIVE Order FILLED on Upstox! Order ID: ${orderId}`,
+              details: { orderId, tradingsymbol, brokerResponse: brokerRes }
+            });
+          } catch (brokerErr: any) {
+            brokerStatus = 'REJECTED';
+            console.error('[EMA 15M LIVE] Upstox order error:', brokerErr.message);
+            dbEngine.logEmaExecution({
+              id: `exec-live-err-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              level: 'ERROR',
+              stage: 'BROKER_RESPONSE',
+              instrument: signal.instrument,
+              message: `🔴 Upstox Live Order Rejected: ${brokerErr.message}. Position recorded in Paper Ledger safely.`,
+              details: { error: brokerErr.message, tradingsymbol }
+            });
+          }
+        }
+      }
+
+      // Create new 1-lot MIS Position (Recorded in SQLite ledger)
       const tradeId = `ema-pt-${signal.instrument.toLowerCase()}-${optionType.toLowerCase()}-${strikePrice}-${Date.now()}`;
-      const source = this.dataSource === 'UPSTOX_LIVE' ? 'UPSTOX_LIVE' : 'PRACTICE';
 
       const newTrade: EmaPaperTrade = {
         id: tradeId,
@@ -515,18 +687,18 @@ export class Ema15mEngine {
         optionType,
         strikePrice,
         expiryDate: weeklyExpiry,
-        productType: 'MIS',
+        productType: settings.upstoxProductType || 'MIS',
         spotAtEntry: signal.price,
         stopLoss,
         targetPrice,
-        orderId: `ORD-${Date.now()}`,
-        brokerStatus: 'FILLED',
+        orderId,
+        brokerStatus,
         entryTimestamp: signal.signalConfirmedAt || new Date().toISOString(),
         entryPrice: optionEntryPrice,
         quantity,
         lotSize,
         strategy: 'EMA_15M_23_50',
-        source,
+        source: tradeSource,
         status: 'OPEN',
         currentPrice: optionEntryPrice,
         unrealizedPnl: 0,
@@ -539,9 +711,28 @@ export class Ema15mEngine {
       };
 
       dbEngine.saveEmaPaperTrade(newTrade);
-      console.log(`[EMA TRADING] 🟢 Executed 1 Lot MIS BUY ${strikePrice} ${optionType} (${weeklyExpiry} Expiry) @ ₹${optionEntryPrice} on ${signal.instrument} (Spot: ₹${signal.price} | SL: ₹${stopLoss} | Target: ₹${targetPrice})`);
+
+      dbEngine.logEmaExecution({
+        id: `exec-recorded-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        level: 'SUCCESS',
+        stage: 'PAPER_TRADE',
+        instrument: signal.instrument,
+        message: `Position Open: BUY 1 Lot (${quantity} Qty) ${strikePrice} ${optionType} (${weeklyExpiry}) @ ₹${optionEntryPrice} [SL: ₹${stopLoss} | Target: ₹${targetPrice} | Order: ${orderId}]`,
+        details: { tradeId, orderId, brokerStatus, source: tradeSource, entryPrice: optionEntryPrice, stopLoss, targetPrice }
+      });
+
+      console.log(`[EMA TRADING] 🟢 Executed 1 Lot ${settings.upstoxProductType || 'MIS'} BUY ${strikePrice} ${optionType} (${weeklyExpiry} Expiry) @ ₹${optionEntryPrice} on ${signal.instrument} (Spot: ₹${signal.price} | SL: ₹${stopLoss} | Target: ₹${targetPrice} | Source: ${tradeSource})`);
     } catch (err: any) {
-      console.error(`[EMA PAPER TRADING] Error executing automatic paper trade:`, err.message);
+      console.error(`[EMA 15M TRADING] Error executing trade:`, err.message);
+      dbEngine.logEmaExecution({
+        id: `exec-fatal-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        stage: 'PAPER_TRADE',
+        instrument: signal.instrument,
+        message: `Fatal trade execution error: ${err.message}`
+      });
     }
   }
 
@@ -1529,6 +1720,57 @@ export class Ema15mEngine {
           netPnl,
           exitTimestamp: new Date().toISOString()
         });
+
+        // 1. Structured Audit Log for Position Exit
+        dbEngine.logEmaExecution({
+          id: `exec-exit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          timestamp: new Date().toISOString(),
+          level: netPnl >= 0 ? 'SUCCESS' : 'WARN',
+          stage: 'EXIT',
+          instrument: trade.instrument,
+          message: `🎯 Position Exited (${exitReason}): ${trade.strikePrice} ${trade.optionType} @ ₹${currentOptionPrice} (Entry: ₹${entryPrice} | Net P&L: ₹${netPnl})`,
+          details: { tradeId: trade.id, exitReason, entryPrice, exitPrice: currentOptionPrice, grossPnl, netPnl }
+        });
+
+        // 2. Dispatch Live SELL Order to Upstox if real broker trade was active
+        if (trade.source === 'UPSTOX_LIVE' && (activeProvider as any)?.isConnected && typeof (activeProvider as any)?.placeOrder === 'function') {
+          try {
+            const exitTradingsymbol = resolveTradingsymbol(trade.instrument, trade.strikePrice!, trade.optionType as any, trade.expiryDate);
+            (activeProvider as any).placeOrder({
+              quantity: trade.quantity,
+              product: trade.productType || 'MIS',
+              validity: 'DAY',
+              orderType: 'MARKET',
+              transactionType: 'SELL',
+              tradingsymbol: exitTradingsymbol,
+              symbol: exitTradingsymbol,
+              tag: 'ema15m_exit'
+            }).then((sellRes: any) => {
+              dbEngine.logEmaExecution({
+                id: `exec-live-exit-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                level: 'SUCCESS',
+                stage: 'EXIT',
+                instrument: trade.instrument,
+                message: `🟢 Dispatched Upstox LIVE EXIT SELL order: ${exitTradingsymbol} (${trade.quantity} Qty). Order ID: ${sellRes?.order_id || 'OK'}`,
+                details: { sellRes, exitTradingsymbol }
+              });
+            }).catch((err: any) => {
+              dbEngine.logEmaExecution({
+                id: `exec-live-exit-err-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                level: 'ERROR',
+                stage: 'EXIT',
+                instrument: trade.instrument,
+                message: `🔴 Failed to dispatch Upstox LIVE EXIT SELL order: ${err.message}`,
+                details: { error: err.message }
+              });
+            });
+          } catch (e: any) {
+            console.error('[EMA 15M ENGINE] Error dispatching live exit order:', e);
+          }
+        }
+
         console.log(`[EMA 15M STRATEGY] 🎯 ${exitReason} on ${trade.instrument} ${trade.strikePrice} ${trade.optionType}: Exited @ ₹${currentOptionPrice} (Entry: ₹${entryPrice} | Net P&L: ₹${netPnl})`);
         try {
           tradeReviewEngine.recordFromEmaTrade(

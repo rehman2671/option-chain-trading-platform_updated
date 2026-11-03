@@ -29,7 +29,11 @@ import {
   Eye,
   EyeOff,
   Info,
-  Mail
+  Mail,
+  Terminal,
+  ShieldAlert,
+  Trash2,
+  CheckCircle2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import {
@@ -40,7 +44,8 @@ import {
   EmaNotificationSettings,
   Ema15mBacktestResult,
   EmaPaperTrade,
-  EmaPaperTradingSummary
+  EmaPaperTradingSummary,
+  EmaExecutionLog
 } from '../types.js';
 import { ExpertTraderChart } from './ExpertTraderChart.js';
 import { usePollingInterval } from '../lib/usePollingInterval.js';
@@ -68,8 +73,13 @@ export const Ema15mDashboardView: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  // Active view tab inside EMA dashboard (CHART, PAPER_TRADES, HISTORY, BACKTEST)
-  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'PAPER_TRADES' | 'HISTORY' | 'BACKTEST'>('CHART');
+  // Active view tab inside EMA dashboard (CHART, PAPER_TRADES, EXECUTION_LOGS, HISTORY, BACKTEST)
+  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'PAPER_TRADES' | 'EXECUTION_LOGS' | 'HISTORY' | 'BACKTEST'>('CHART');
+  const [executionLogs, setExecutionLogs] = useState<EmaExecutionLog[]>([]);
+  const [logFilterStage, setLogFilterStage] = useState<string>('ALL');
+  const [logFilterLevel, setLogFilterLevel] = useState<string>('ALL');
+  const [isClearingLogs, setIsClearingLogs] = useState<boolean>(false);
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
 
   // Notification Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -79,6 +89,10 @@ export const Ema15mDashboardView: React.FC = () => {
     emailEnabled: false,
     browserEnabled: true,
     soundEnabled: true,
+    autoPaperTradingEnabled: true,
+    liveBrokerExecutionEnabled: false,
+    maxDailyLossLimit: 5000,
+    upstoxProductType: 'MIS',
     telegramChatId: '',
     telegramBotToken: '',
     emailAddress: '',
@@ -153,12 +167,13 @@ export const Ema15mDashboardView: React.FC = () => {
         ? `&startDate=${customStartDate}&endDate=${customEndDate}`
         : `&range=${selectedRange}`;
 
-      const [statusRes, candlesRes, signalsRes, tradesRes, summaryRes] = await Promise.all([
+      const [statusRes, candlesRes, signalsRes, tradesRes, summaryRes, logsRes] = await Promise.all([
         fetch('/api/ema15m/status'),
         fetch(`/api/ema15m/candles?symbol=${selectedSymbol}&limit=${candleLimit}&timeframe=${timeframe}${rangeParams}`),
         fetch('/api/ema15m/signals?limit=50'),
         fetch('/api/ema15m/paper-trades?limit=100'),
-        fetch('/api/ema15m/paper-summary')
+        fetch('/api/ema15m/paper-summary'),
+        fetch('/api/ema15m/execution-logs?limit=100')
       ]);
 
       if (statusRes.ok) {
@@ -207,6 +222,11 @@ export const Ema15mDashboardView: React.FC = () => {
         const summaryData = await summaryRes.json();
         setPaperSummary(summaryData);
       }
+
+      if (logsRes && logsRes.ok) {
+        const logsData = await logsRes.json();
+        setExecutionLogs(logsData.logs || []);
+      }
     } catch (err) {
       console.warn('[EMA DASHBOARD] Error polling data:', err);
     } finally {
@@ -250,6 +270,47 @@ export const Ema15mDashboardView: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to toggle auto trading:', err);
+    }
+  };
+
+  // Toggle Live Upstox Broker Real-Money Execution
+  const handleToggleLiveTrading = async () => {
+    const nextState = !settings.liveBrokerExecutionEnabled;
+    if (nextState) {
+      const confirmed = window.confirm(
+        '⚠️ CAUTION: Enable REAL-MONEY Live Order Execution on Upstox?\n\n' +
+        'When enabled, 1-Lot MIS orders will be placed via Upstox API v2 directly upon 15m candle close crossovers.\n\n' +
+        'Risk controls (circuit breaker) will guard capital. Proceed?'
+      );
+      if (!confirmed) return;
+    }
+
+    try {
+      const res = await fetch('/api/ema15m/live-trading/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextState })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSettings(prev => ({ ...prev, liveBrokerExecutionEnabled: data.liveBrokerExecutionEnabled }));
+        await fetchData();
+      }
+    } catch (err) {
+      console.error('Failed to toggle live trading:', err);
+    }
+  };
+
+  // Clear Execution Audit Logs
+  const handleClearLogs = async () => {
+    setIsClearingLogs(true);
+    try {
+      await fetch('/api/ema15m/execution-logs/clear', { method: 'POST' });
+      setExecutionLogs([]);
+    } catch (err) {
+      console.error('Failed to clear execution logs:', err);
+    } finally {
+      setIsClearingLogs(false);
     }
   };
 
@@ -532,6 +593,20 @@ export const Ema15mDashboardView: React.FC = () => {
             <span>Auto Paper Trade: {settings.autoPaperTradingEnabled !== false ? 'ON' : 'OFF'}</span>
           </button>
 
+          {/* Live Upstox Broker Order Toggle */}
+          <button
+            onClick={handleToggleLiveTrading}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold font-mono flex items-center space-x-1.5 border transition shadow-sm ${
+              settings.liveBrokerExecutionEnabled
+                ? 'bg-rose-500/20 border-rose-500/60 text-rose-300 hover:bg-rose-500/30 ring-1 ring-rose-500/30'
+                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Toggle Live Real-Money Upstox Order Execution upon confirmed 15m candle close crossovers"
+          >
+            <ShieldAlert className={`w-3.5 h-3.5 ${settings.liveBrokerExecutionEnabled ? 'text-rose-400 animate-pulse' : 'text-slate-400'}`} />
+            <span>Upstox Live Trade: {settings.liveBrokerExecutionEnabled ? 'ARMED (REAL)' : 'OFF (PAPER)'}</span>
+          </button>
+
           {/* Market Status Pill */}
           <div className="flex items-center space-x-1.5 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-mono">
             <div className={`w-2 h-2 rounded-full ${marketHours?.isMarketOpen ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`}></div>
@@ -737,6 +812,21 @@ export const Ema15mDashboardView: React.FC = () => {
               <span className="bg-emerald-500 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full">
                 {openPaperTrades.length} Open
               </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('EXECUTION_LOGS')}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeSubTab === 'EXECUTION_LOGS'
+                ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Terminal className="w-4 h-4 text-amber-400" />
+            <span>Execution Logs ({executionLogs.length})</span>
+            {settings.liveBrokerExecutionEnabled && (
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
             )}
           </button>
 
@@ -1059,6 +1149,150 @@ export const Ema15mDashboardView: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* 4.75 Tab: Structured Execution Audit Logs */}
+      {activeSubTab === 'EXECUTION_LOGS' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex items-center space-x-3">
+              <Terminal className="w-5 h-5 text-amber-400" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-100">15m EMA Auto-Execution Audit Logs</h2>
+                <p className="text-[11px] text-slate-400">Chronological telemetry of signal confirmations, safety checks, Upstox API v2 orders, and exits</p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              {/* Level Filter */}
+              <select
+                value={logFilterLevel}
+                onChange={(e) => setLogFilterLevel(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200"
+              >
+                <option value="ALL">All Levels</option>
+                <option value="INFO">INFO</option>
+                <option value="SUCCESS">SUCCESS</option>
+                <option value="WARN">WARN</option>
+                <option value="ERROR">ERROR</option>
+              </select>
+
+              {/* Stage Filter */}
+              <select
+                value={logFilterStage}
+                onChange={(e) => setLogFilterStage(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200"
+              >
+                <option value="ALL">All Stages</option>
+                <option value="SIGNAL">SIGNAL</option>
+                <option value="SAFETY_CHECK">SAFETY CHECK</option>
+                <option value="PRE_TRADE">PRE-TRADE</option>
+                <option value="BROKER_SUBMIT">BROKER SUBMIT</option>
+                <option value="BROKER_RESPONSE">BROKER RESPONSE</option>
+                <option value="PAPER_TRADE">PAPER TRADE</option>
+                <option value="EXIT">EXIT</option>
+                <option value="SQUARE_OFF">SQUARE-OFF</option>
+              </select>
+
+              {/* Clear Logs Button */}
+              <button
+                onClick={handleClearLogs}
+                disabled={isClearingLogs || executionLogs.length === 0}
+                className="flex items-center space-x-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 text-xs rounded-lg transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Mode Status Banner */}
+          <div className={`p-3 rounded-xl border flex items-center justify-between text-xs font-mono ${
+            settings.liveBrokerExecutionEnabled
+              ? 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+              : 'bg-cyan-950/40 border-cyan-800/60 text-cyan-300'
+          }`}>
+            <div className="flex items-center space-x-2">
+              {settings.liveBrokerExecutionEnabled ? (
+                <>
+                  <ShieldAlert className="w-4 h-4 text-rose-400 animate-pulse" />
+                  <span className="font-bold">LIVE BROKER EXECUTION ARMED:</span>
+                  <span>Confirmed 15m crossovers dispatch real BUY orders to Upstox API v2</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-cyan-400" />
+                  <span className="font-bold">SIMULATED PAPER TRADING ACTIVE:</span>
+                  <span>Orders are safely validated, recorded in virtual ledger, and tracked with real LTP</span>
+                </>
+              )}
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Total Log Entries: <span className="text-slate-100 font-bold">{executionLogs.length}</span>
+            </div>
+          </div>
+
+          {/* Logs Terminal Feed */}
+          {executionLogs.length > 0 ? (
+            <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-800/60 font-mono text-xs max-h-[600px] overflow-y-auto">
+              {executionLogs
+                .filter(l => logFilterLevel === 'ALL' || l.level === logFilterLevel)
+                .filter(l => logFilterStage === 'ALL' || l.stage === logFilterStage)
+                .map((log) => {
+                  const isExpanded = expandedLogId === log.id;
+                  const levelColor =
+                    log.level === 'SUCCESS' ? 'text-emerald-400 bg-emerald-950/60 border-emerald-500/30' :
+                    log.level === 'WARN' ? 'text-amber-400 bg-amber-950/60 border-amber-500/30' :
+                    log.level === 'ERROR' ? 'text-rose-400 bg-rose-950/60 border-rose-500/30' :
+                    'text-cyan-400 bg-cyan-950/60 border-cyan-500/30';
+
+                  return (
+                    <div key={log.id} className="p-3 hover:bg-slate-900/60 transition space-y-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${levelColor}`}>
+                            {log.level}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-semibold">
+                            {log.stage}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-slate-900 text-cyan-300 font-bold border border-slate-700">
+                            {log.instrument}
+                          </span>
+                          <span className="text-slate-200 font-medium">{log.message}</span>
+                        </div>
+                        <span className="text-[11px] text-slate-400">
+                          {new Date(log.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} IST
+                        </span>
+                      </div>
+
+                      {log.details && (
+                        <div>
+                          <button
+                            onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                            className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center space-x-1"
+                          >
+                            <span>{isExpanded ? '▾ Hide Payload' : '▸ View Payload Details'}</span>
+                          </button>
+                          {isExpanded && (
+                            <pre className="mt-1.5 p-2.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-300 overflow-x-auto">
+                              {JSON.stringify(log.details, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="py-16 text-center text-slate-500 text-xs font-mono space-y-2">
+              <Terminal className="w-8 h-8 text-slate-600 mx-auto" />
+              <div>No execution logs recorded yet.</div>
+              <div className="text-[11px] text-slate-400">Logs will stream here automatically upon 15m candle close crossovers or mock triggers.</div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1468,6 +1702,60 @@ export const Ema15mDashboardView: React.FC = () => {
                     className="w-4 h-4 rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
                   />
                 </div>
+              </div>
+
+              {/* Live Upstox Broker Order Execution Section */}
+              <div className="bg-slate-950 border border-rose-900/40 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-bold text-rose-300 flex items-center space-x-1.5">
+                      <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Live Upstox Broker Execution</span>
+                      <span className="px-1.5 py-0.2 rounded bg-rose-950 border border-rose-500/40 text-[9px] text-rose-300 font-mono font-bold">REAL MONEY</span>
+                    </span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Execute real 1-lot MIS market orders directly via Upstox API v2 upon 15m candle close confirmation
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.liveBrokerExecutionEnabled === true}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const ok = window.confirm('⚠️ Enable REAL-MONEY live trading on your Upstox account? Real orders will be dispatched upon 15m crossover.');
+                        if (!ok) return;
+                      }
+                      setSettings({ ...settings, liveBrokerExecutionEnabled: e.target.checked });
+                    }}
+                    className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                  />
+                </div>
+
+                {settings.liveBrokerExecutionEnabled && (
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-1">Max Daily Loss Limit (₹)</label>
+                      <input
+                        type="number"
+                        value={settings.maxDailyLossLimit ?? 5000}
+                        onChange={(e) => setSettings({ ...settings, maxDailyLossLimit: Number(e.target.value) })}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-100 font-mono"
+                        placeholder="5000"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block mb-1">Product Type</label>
+                      <select
+                        value={settings.upstoxProductType || 'MIS'}
+                        onChange={(e) => setSettings({ ...settings, upstoxProductType: e.target.value as any })}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-100 font-mono"
+                      >
+                        <option value="MIS">MIS (Intraday)</option>
+                        <option value="NRML">NRML (Normal)</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Profit Lock & Trailing Stop-Loss Section */}

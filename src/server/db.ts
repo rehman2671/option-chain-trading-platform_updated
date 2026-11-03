@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcrypt';
-import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary } from '../types.js';
+import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
@@ -2135,6 +2135,46 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 016 - Fixed Users, RBAC & MFA.');
     }
+
+    // Migration 017: EMA Live Broker Execution & Structured Audit Logs
+    if (!appliedVersions.has(17)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_execution_logs (
+          id TEXT PRIMARY KEY,
+          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+          level TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          instrument TEXT NOT NULL,
+          message TEXT NOT NULL,
+          details_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ema_exec_logs_time ON ema_execution_logs(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_ema_exec_logs_inst ON ema_execution_logs(instrument, timestamp DESC);
+      `);
+
+      try {
+        const settingsCols = new Set(
+          (this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[]).map(c => c.name)
+        );
+        if (!settingsCols.has('live_broker_execution_enabled')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN live_broker_execution_enabled INTEGER DEFAULT 0;`);
+        }
+        if (!settingsCols.has('max_daily_loss_limit')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN max_daily_loss_limit REAL DEFAULT 5000;`);
+        }
+        if (!settingsCols.has('upstox_product_type')) {
+          this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN upstox_product_type TEXT DEFAULT 'MIS';`);
+        }
+      } catch (colErr: any) {
+        console.warn('[DB] Migration 017 column check notice:', colErr.message);
+      }
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (17, '15m EMA Live Broker Execution Bridge & Structured Audit Logs');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 017 - EMA Live Broker Execution & Structured Logs.');
+    }
   }
 
   /**
@@ -3205,6 +3245,9 @@ class DatabaseEngine {
       browserEnabled: true,
       soundEnabled: true,
       autoPaperTradingEnabled: true,
+      liveBrokerExecutionEnabled: false,
+      maxDailyLossLimit: 5000,
+      upstoxProductType: 'MIS',
       trailingSlEnabled: true,
       profitLockPoints: 70,
       trailDistancePoints: 30,
@@ -3230,6 +3273,9 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
+        liveBrokerExecutionEnabled: row.live_broker_execution_enabled === 1,
+        maxDailyLossLimit: row.max_daily_loss_limit !== null && row.max_daily_loss_limit !== undefined ? Number(row.max_daily_loss_limit) : 5000,
+        upstoxProductType: (row.upstox_product_type as any) || 'MIS',
         trailingSlEnabled: row.trailing_sl_enabled !== undefined ? row.trailing_sl_enabled === 1 : true,
         profitLockPoints: row.profit_lock_points !== null && row.profit_lock_points !== undefined ? Number(row.profit_lock_points) : 70,
         trailDistancePoints: row.trail_distance_points !== null && row.trail_distance_points !== undefined ? Number(row.trail_distance_points) : 30,
@@ -3251,14 +3297,17 @@ class DatabaseEngine {
       const uId = userId || settings.userId || 'GLOBAL';
       this.db.prepare(`
         INSERT INTO ema_notification_settings (
-          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, trailing_sl_enabled, profit_lock_points, trail_distance_points, telegram_chat_id, telegram_bot_token, email_address, sound_volume, force_square_off_time, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, live_broker_execution_enabled, max_daily_loss_limit, upstox_product_type, trailing_sl_enabled, profit_lock_points, trail_distance_points, telegram_chat_id, telegram_bot_token, email_address, sound_volume, force_square_off_time, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
           telegram_enabled = excluded.telegram_enabled,
           email_enabled = excluded.email_enabled,
           browser_enabled = excluded.browser_enabled,
           sound_enabled = excluded.sound_enabled,
           auto_paper_trading_enabled = excluded.auto_paper_trading_enabled,
+          live_broker_execution_enabled = excluded.live_broker_execution_enabled,
+          max_daily_loss_limit = excluded.max_daily_loss_limit,
+          upstox_product_type = excluded.upstox_product_type,
           trailing_sl_enabled = excluded.trailing_sl_enabled,
           profit_lock_points = excluded.profit_lock_points,
           trail_distance_points = excluded.trail_distance_points,
@@ -3275,6 +3324,9 @@ class DatabaseEngine {
         settings.browserEnabled ? 1 : 0,
         settings.soundEnabled ? 1 : 0,
         settings.autoPaperTradingEnabled !== false ? 1 : 0,
+        settings.liveBrokerExecutionEnabled ? 1 : 0,
+        settings.maxDailyLossLimit ?? 5000,
+        settings.upstoxProductType || 'MIS',
         settings.trailingSlEnabled !== false ? 1 : 0,
         settings.profitLockPoints ?? 70,
         settings.trailDistancePoints ?? 30,
@@ -3286,6 +3338,64 @@ class DatabaseEngine {
       );
     } catch (err) {
       console.error('[DB] Error saving notification settings:', err);
+    }
+  }
+
+  public logEmaExecution(log: EmaExecutionLog): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_execution_logs (id, timestamp, level, stage, instrument, message, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        log.id || `exec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        log.timestamp || new Date().toISOString(),
+        log.level,
+        log.stage,
+        log.instrument,
+        log.message,
+        log.details ? JSON.stringify(log.details) : null
+      );
+    } catch (err: any) {
+      console.error('[DB] Error logging EMA execution event:', err.message);
+    }
+  }
+
+  public getEmaExecutionLogs(limit: number = 100, instrument?: string): EmaExecutionLog[] {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.min(Math.max(1, limit), 500);
+      let query = `SELECT * FROM ema_execution_logs`;
+      const params: any[] = [];
+      if (instrument && instrument !== 'ALL') {
+        query += ` WHERE instrument = ?`;
+        params.push(instrument);
+      }
+      query += ` ORDER BY timestamp DESC LIMIT ?`;
+      params.push(safeLimit);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        timestamp: r.timestamp,
+        level: r.level as any,
+        stage: r.stage as any,
+        instrument: r.instrument,
+        message: r.message,
+        details: r.details_json ? JSON.parse(r.details_json) : undefined
+      }));
+    } catch (err) {
+      console.error('[DB] Error fetching EMA execution logs:', err);
+      return [];
+    }
+  }
+
+  public clearEmaExecutionLogs(): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`DELETE FROM ema_execution_logs`).run();
+    } catch (err) {
+      console.error('[DB] Error clearing EMA execution logs:', err);
     }
   }
 
