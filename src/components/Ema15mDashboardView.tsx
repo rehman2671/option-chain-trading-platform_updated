@@ -45,7 +45,10 @@ import {
   Ema15mBacktestResult,
   EmaPaperTrade,
   EmaPaperTradingSummary,
-  EmaExecutionLog
+  EmaExecutionLog,
+  EmaLivePosition,
+  EmaLiveOrderAttempt,
+  EmaLiveTradingSummary
 } from '../types.js';
 import { ExpertTraderChart } from './ExpertTraderChart.js';
 import { usePollingInterval } from '../lib/usePollingInterval.js';
@@ -61,11 +64,17 @@ export const Ema15mDashboardView: React.FC = () => {
   const [signals, setSignals] = useState<Ema15mSignal[]>([]);
   const [paperTrades, setPaperTrades] = useState<EmaPaperTrade[]>([]);
   const [paperSummary, setPaperSummary] = useState<EmaPaperTradingSummary | null>(null);
+  const [livePositions, setLivePositions] = useState<EmaLivePosition[]>([]);
+  const [liveAttempts, setLiveAttempts] = useState<EmaLiveOrderAttempt[]>([]);
+  const [liveSummary, setLiveSummary] = useState<EmaLiveTradingSummary | null>(null);
   const [isClosingTradeId, setIsClosingTradeId] = useState<string | null>(null);
+  const [isClosingLiveId, setIsClosingLiveId] = useState<string | null>(null);
   const [signalFilterSymbol, setSignalFilterSymbol] = useState<string>('ALL');
   const [signalFilterType, setSignalFilterType] = useState<string>('ALL');
   const [paperTradeFilterSymbol, setPaperTradeFilterSymbol] = useState<string>('ALL');
   const [paperTradeFilterStatus, setPaperTradeFilterStatus] = useState<string>('ALL');
+  const [liveFilterSymbol, setLiveFilterSymbol] = useState<string>('ALL');
+  const [liveFilterStatus, setLiveFilterStatus] = useState<string>('ALL');
   const [candleLimit, setCandleLimit] = useState<number>(2000);
   const [selectedRange, setSelectedRange] = useState<string>('5D');
   const [customStartDate, setCustomStartDate] = useState<string>('');
@@ -73,8 +82,8 @@ export const Ema15mDashboardView: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  // Active view tab inside EMA dashboard (CHART, PAPER_TRADES, EXECUTION_LOGS, HISTORY, BACKTEST)
-  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'PAPER_TRADES' | 'EXECUTION_LOGS' | 'HISTORY' | 'BACKTEST'>('CHART');
+  // Active view tab inside EMA dashboard (CHART, PAPER_TRADES, LIVE_EXECUTION, EXECUTION_LOGS, HISTORY, BACKTEST)
+  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'PAPER_TRADES' | 'LIVE_EXECUTION' | 'EXECUTION_LOGS' | 'HISTORY' | 'BACKTEST'>('CHART');
   const [executionLogs, setExecutionLogs] = useState<EmaExecutionLog[]>([]);
   const [logFilterStage, setLogFilterStage] = useState<string>('ALL');
   const [logFilterLevel, setLogFilterLevel] = useState<string>('ALL');
@@ -167,13 +176,16 @@ export const Ema15mDashboardView: React.FC = () => {
         ? `&startDate=${customStartDate}&endDate=${customEndDate}`
         : `&range=${selectedRange}`;
 
-      const [statusRes, candlesRes, signalsRes, tradesRes, summaryRes, logsRes] = await Promise.all([
+      const [statusRes, candlesRes, signalsRes, tradesRes, summaryRes, logsRes, livePosRes, liveAttRes, liveSumRes] = await Promise.all([
         fetch('/api/ema15m/status'),
         fetch(`/api/ema15m/candles?symbol=${selectedSymbol}&limit=${candleLimit}&timeframe=${timeframe}${rangeParams}`),
         fetch('/api/ema15m/signals?limit=50'),
         fetch('/api/ema15m/paper-trades?limit=100'),
         fetch('/api/ema15m/paper-summary'),
-        fetch('/api/ema15m/execution-logs?limit=100')
+        fetch('/api/ema15m/execution-logs?limit=100'),
+        fetch('/api/ema15m/live-positions'),
+        fetch('/api/ema15m/live-attempts?limit=50'),
+        fetch('/api/ema15m/live-summary')
       ]);
 
       if (statusRes.ok) {
@@ -227,11 +239,45 @@ export const Ema15mDashboardView: React.FC = () => {
         const logsData = await logsRes.json();
         setExecutionLogs(logsData.logs || []);
       }
+
+      if (livePosRes && livePosRes.ok) {
+        const livePosData = await livePosRes.json();
+        setLivePositions(livePosData.positions || []);
+      }
+
+      if (liveAttRes && liveAttRes.ok) {
+        const liveAttData = await liveAttRes.json();
+        setLiveAttempts(liveAttData.attempts || []);
+      }
+
+      if (liveSumRes && liveSumRes.ok) {
+        const liveSumData = await liveSumRes.json();
+        setLiveSummary(liveSumData.summary || null);
+      }
     } catch (err) {
       console.warn('[EMA DASHBOARD] Error polling data:', err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+    }
+  };
+
+  // Close / Square Off Live Upstox Position (Executes real broker exit)
+  const handleCloseLivePosition = async (id: string) => {
+    setIsClosingLiveId(id);
+    try {
+      const res = await fetch('/api/ema15m/live-positions/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, reason: 'MANUAL_USER_EXIT' })
+      });
+      if (res.ok) {
+        await fetchData();
+      }
+    } catch (err) {
+      console.error('Failed to close live position:', err);
+    } finally {
+      setIsClosingLiveId(null);
     }
   };
 
@@ -449,6 +495,20 @@ export const Ema15mDashboardView: React.FC = () => {
   const openPaperTrades = useMemo(() => {
     return paperTrades.filter(t => t.status === 'OPEN');
   }, [paperTrades]);
+
+  // Open Live Broker Positions
+  const openLivePositions = useMemo(() => {
+    return livePositions.filter(p => p.status === 'OPEN' || p.status === 'EXIT_REQUESTED' || p.status === 'EXIT_PENDING');
+  }, [livePositions]);
+
+  // Filtered live positions
+  const filteredLivePositions = useMemo(() => {
+    return livePositions.filter(p => {
+      const matchesSymbol = liveFilterSymbol === 'ALL' || p.instrument === liveFilterSymbol;
+      const matchesStatus = liveFilterStatus === 'ALL' || p.status === liveFilterStatus;
+      return matchesSymbol && matchesStatus;
+    });
+  }, [livePositions, liveFilterSymbol, liveFilterStatus]);
 
   // Selected Instrument Status Object
   const currentInstStatus = useMemo(() => {
@@ -807,10 +867,35 @@ export const Ema15mDashboardView: React.FC = () => {
             }`}
           >
             <TrendingUp className="w-4 h-4 text-emerald-400" />
-            <span>Auto Paper Trades ({paperTrades.length})</span>
+            <span>Paper Trading Simulation ({paperTrades.length})</span>
             {openPaperTrades.length > 0 && (
               <span className="bg-emerald-500 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded-full">
                 {openPaperTrades.length} Open
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('LIVE_EXECUTION')}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeSubTab === 'LIVE_EXECUTION'
+                ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <ShieldAlert className="w-4 h-4 text-rose-400" />
+            <span>Upstox Live Execution ({livePositions.length})</span>
+            {openLivePositions.length > 0 ? (
+              <span className="bg-rose-500 text-white font-black text-[10px] px-1.5 py-0.5 rounded-full animate-pulse">
+                {openLivePositions.length} Live Open
+              </span>
+            ) : settings.liveBrokerExecutionEnabled ? (
+              <span className="bg-emerald-500/20 text-emerald-300 font-mono text-[9px] px-1.5 py-0.5 rounded border border-emerald-500/30">
+                ARMED
+              </span>
+            ) : (
+              <span className="bg-slate-800 text-slate-400 font-mono text-[9px] px-1.5 py-0.5 rounded">
+                DISARMED
               </span>
             )}
           </button>
@@ -962,7 +1047,7 @@ export const Ema15mDashboardView: React.FC = () => {
                           )}
                         </div>
                         <span className="text-[10px] font-mono text-slate-400">
-                          {trade.dataSource === 'UPSTOX_LIVE' ? '🟢 UPSTOX' : '🔷 PRACTICE'}
+                          {trade.source === 'UPSTOX_LIVE' ? '🟢 UPSTOX' : '🔷 PRACTICE'}
                         </span>
                       </div>
 
@@ -1013,7 +1098,7 @@ export const Ema15mDashboardView: React.FC = () => {
                       {/* Timestamp & Manual Square Off Button */}
                       <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[11px] font-mono">
                         <span className="text-slate-500 text-[10px]">
-                          {new Date(trade.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (MIS Intraday)
+                          {new Date(trade.entryTimestamp || (trade as any).entryTime || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (MIS Intraday)
                         </span>
 
                         <button
@@ -1135,7 +1220,7 @@ export const Ema15mDashboardView: React.FC = () => {
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-right text-slate-400 text-[11px]">
-                            {new Date(t.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            {new Date(t.entryTimestamp || (t as any).entryTime || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </td>
                         </tr>
                       );
@@ -1146,6 +1231,301 @@ export const Ema15mDashboardView: React.FC = () => {
             ) : (
               <div className="py-12 text-center text-slate-500 text-xs font-mono">
                 No paper trades matching current filter.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 4.6 Tab: Upstox Live Broker Real-Money Execution */}
+      {activeSubTab === 'LIVE_EXECUTION' && (
+        <div className="space-y-5">
+          {/* Top Operational Status Banner */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div className="flex items-center space-x-3">
+                <div className={`w-3.5 h-3.5 rounded-full ${settings.liveBrokerExecutionEnabled ? 'bg-rose-500 animate-ping' : 'bg-slate-600'}`}></div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h2 className="text-base font-black text-slate-100">Upstox API v2 Live Broker Execution</h2>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                      settings.liveBrokerExecutionEnabled
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      {settings.liveBrokerExecutionEnabled ? '🔴 LIVE REAL MONEY ARMED' : '⚪ DISARMED'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Dual Pipeline Execution: Runs in parallel with paper trading. Broker rejections never affect paper simulation.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={handleToggleLiveTrading}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition border shadow-lg ${
+                    settings.liveBrokerExecutionEnabled
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-rose-600/30'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 shadow-emerald-600/30'
+                  }`}
+                >
+                  <ShieldAlert className="w-4 h-4" />
+                  <span>{settings.liveBrokerExecutionEnabled ? 'Disarm Live Broker Execution' : 'Arm Live Real-Money Trading'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Metrics KPI Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Live Realized P&L</div>
+                <div className={`text-base font-black mt-1 ${(liveSummary?.realizedNetPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(liveSummary?.realizedNetPnl || 0) >= 0 ? '+' : ''}₹{(liveSummary?.realizedNetPnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Gross: ₹{(liveSummary?.realizedGrossPnl || 0).toFixed(2)}
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Open Live Positions</div>
+                <div className="text-base font-black mt-1 text-slate-100">
+                  {openLivePositions.length} Active
+                </div>
+                <div className={`text-[10px] mt-0.5 font-bold ${(liveSummary?.unrealizedPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  Unrealized MTM: {(liveSummary?.unrealizedPnl || 0) >= 0 ? '+' : ''}₹{(liveSummary?.unrealizedPnl || 0).toFixed(2)}
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Order Attempts</div>
+                <div className="text-base font-bold mt-1 text-slate-200">
+                  {liveSummary?.totalAttempts || liveAttempts.length} Total
+                </div>
+                <div className="text-[10px] text-amber-400 mt-0.5">
+                  {liveSummary?.rejectedAttempts || liveAttempts.filter(a => a.orderStatus === 'REJECTED' || a.orderStatus === 'PRE_TRADE_REJECTED').length} Rejections Logged
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Session Safety Limit</div>
+                <div className="text-base font-bold mt-1 text-cyan-300">
+                  ₹{(settings.maxDailyLossLimit || 5000).toLocaleString('en-IN')}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Circuit Breaker & Killswitch
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Active Live Upstox Positions Section */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2">
+                <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></div>
+                <h2 className="text-sm font-bold text-slate-100">Active Live Broker Positions ({openLivePositions.length})</h2>
+              </div>
+              <span className="text-xs text-rose-300/80 font-mono">
+                Real Margin Deployed on Upstox
+              </span>
+            </div>
+
+            {openLivePositions.length === 0 ? (
+              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-6 text-center text-xs text-slate-400 font-mono space-y-1">
+                <p className="text-slate-300 font-semibold">No Active Live Broker Positions</p>
+                <p className="text-[11px] text-slate-500">
+                  {settings.liveBrokerExecutionEnabled
+                    ? 'Engine is ARMED. Upon the next confirmed 15m candle close crossover, a 1-lot real MIS order will be placed to Upstox.'
+                    : 'Live broker trading is currently DISARMED. Enable the toggle above to route real orders to Upstox.'}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {openLivePositions.map((pos) => {
+                  const isProfitable = pos.unrealizedPnl >= 0;
+                  const isClosing = isClosingLiveId === pos.id;
+
+                  return (
+                    <div
+                      key={pos.id}
+                      className="bg-slate-950 border border-rose-900/40 rounded-xl p-4 space-y-3 relative overflow-hidden shadow-lg shadow-rose-950/10"
+                    >
+                      {/* Live Card Header */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-mono text-xs font-bold text-slate-100">
+                            {pos.strikePrice} {pos.optionType}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold border font-mono bg-rose-500/10 text-rose-400 border-rose-500/30">
+                            REAL LIVE MIS
+                          </span>
+                          <span className="text-[10px] font-mono bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded">
+                            {pos.expiryDate}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                          {pos.quantity} Qty
+                        </span>
+                      </div>
+
+                      {/* Prices & MTM Grid */}
+                      <div className="grid grid-cols-3 gap-2 bg-slate-900/80 border border-slate-800/60 rounded-lg p-2.5 font-mono text-xs">
+                        <div>
+                          <div className="text-[10px] text-slate-500">Entry Fill</div>
+                          <div className="font-bold text-slate-200 mt-0.5">₹{pos.entryPrice.toFixed(2)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-500">Live LTP</div>
+                          <div className="font-bold text-slate-200 mt-0.5">₹{pos.currentPrice.toFixed(2)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-500">SL (-30 pts)</div>
+                          <div className="font-bold text-rose-400 mt-0.5">₹{pos.stopLoss.toFixed(1)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-emerald-400">Target (+100)</div>
+                          <div className="font-bold text-emerald-400 mt-0.5">₹{pos.targetPrice.toFixed(1)}</div>
+                        </div>
+                        <div className="col-span-2">
+                          <div className="text-[10px] text-slate-500">Live MTM P&L</div>
+                          <div className={`font-black text-sm mt-0.5 ${isProfitable ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {isProfitable ? '+' : ''}₹{pos.unrealizedPnl.toFixed(2)}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Footer & Manual Square Off */}
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[11px] font-mono">
+                        <span className="text-slate-500 text-[10px]">
+                          Order: {pos.entryBrokerOrderId || 'FILLED'}
+                        </span>
+
+                        <button
+                          onClick={() => handleCloseLivePosition(pos.id)}
+                          disabled={isClosing}
+                          className="bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition shadow-md shadow-rose-600/20"
+                        >
+                          {isClosing ? 'Submitting Exit...' : 'Square Off Live'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Broker Order Attempts & Rejections Ledger */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-100">Live Upstox Order Attempts & Rejection Ledger</h2>
+                <p className="text-[11px] text-slate-400">Full audit trail of all real broker API orders, partial fills, and margin rejections</p>
+              </div>
+
+              {/* Filter Controls */}
+              <div className="flex items-center space-x-3 text-xs font-mono">
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-slate-400">Instrument:</span>
+                  <select
+                    value={liveFilterSymbol}
+                    onChange={(e) => setLiveFilterSymbol(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-slate-200"
+                  >
+                    <option value="ALL">All Instruments</option>
+                    <option value="NIFTY">NIFTY</option>
+                    <option value="BANKNIFTY">BANKNIFTY</option>
+                    <option value="SENSEX">SENSEX</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  <span className="text-slate-400">Status:</span>
+                  <select
+                    value={liveFilterStatus}
+                    onChange={(e) => setLiveFilterStatus(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-slate-200"
+                  >
+                    <option value="ALL">All Status</option>
+                    <option value="OPEN">Open Only</option>
+                    <option value="CLOSED">Closed Only</option>
+                    <option value="REJECTED">Rejected Only</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {liveAttempts.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse font-mono">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                      <th className="py-2.5 px-3">Contract / Symbol</th>
+                      <th className="py-2.5 px-3">Order Status</th>
+                      <th className="py-2.5 px-3 text-right">Req / Filled Qty</th>
+                      <th className="py-2.5 px-3 text-right">Fill Price</th>
+                      <th className="py-2.5 px-3">Broker Order ID</th>
+                      <th className="py-2.5 px-3">Rejection / Status Details</th>
+                      <th className="py-2.5 px-3 text-right">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                    {liveAttempts.map((attempt) => {
+                      const isRejected = attempt.orderStatus === 'REJECTED' || attempt.orderStatus === 'PRE_TRADE_REJECTED';
+                      const isFilled = attempt.orderStatus === 'FILLED';
+
+                      return (
+                        <tr key={attempt.id} className="hover:bg-slate-800/40 transition">
+                          <td className="py-2.5 px-3">
+                            <div className="font-bold text-slate-100">{attempt.tradingsymbol || `${attempt.strike} ${attempt.optionType}`}</div>
+                            <div className="text-[10px] text-slate-400">{attempt.instrument} • {attempt.expiry}</div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              isFilled
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                : isRejected
+                                ? 'bg-rose-500/10 text-rose-400 border-rose-500/30 font-black'
+                                : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                            }`}>
+                              {attempt.orderStatus}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-slate-200">
+                            {attempt.filledQuantity} / {attempt.requestedQuantity}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-slate-200">
+                            {attempt.averageFillPrice ? `₹${attempt.averageFillPrice.toFixed(2)}` : '--'}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-[11px] text-cyan-300">
+                            {attempt.brokerOrderId || '--'}
+                          </td>
+                          <td className="py-2.5 px-3 text-[11px]">
+                            {attempt.rejectionReason ? (
+                              <span className="text-rose-400 font-bold bg-rose-950/40 px-2 py-0.5 rounded border border-rose-500/30">
+                                ⚠️ {attempt.rejectionReason}
+                              </span>
+                            ) : isFilled ? (
+                              <span className="text-emerald-400 font-semibold">Position Created in SQLite</span>
+                            ) : (
+                              <span className="text-slate-400">Processing broker fill</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-slate-400 text-[11px]">
+                            {new Date(attempt.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="py-12 text-center text-slate-500 text-xs font-mono">
+                No live broker order attempts recorded yet.
               </div>
             )}
           </div>

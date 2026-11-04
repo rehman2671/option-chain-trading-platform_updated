@@ -31,6 +31,7 @@ import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
 import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
+import { liveExecutionService } from './src/server/engine/ema15m/liveExecutionService.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -1370,7 +1371,7 @@ async function startServer() {
   });
 
   // 2b. Force Sync Real Market Candles from Live Exchanges
-  app.post('/api/ema15m/sync', async (req, res) => {
+  app.post('/api/ema15m/sync', requireAuth as any, async (req, res) => {
     try {
       const symbol = (req.body?.symbol || req.query?.symbol || 'NIFTY').toUpperCase() as Ema15mInstrument;
       const candles = await globalEma15mEngine.syncRealMarketData(symbol, 600);
@@ -1414,22 +1415,29 @@ async function startServer() {
     }
   });
 
-  // 5. Get Notification Settings
+  // 5. Get Notification Settings (Sanitizes telegramBotToken for non-admin viewers)
   app.get('/api/ema15m/settings', (req, res) => {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : 'GLOBAL';
       const settings = dbEngine.getEmaNotificationSettings(userId);
-      res.json(settings);
+      const isPrivileged = user && user.role === 'SUPERADMIN';
+      const sanitized = {
+        ...settings,
+        telegramBotToken: settings.telegramBotToken
+          ? (isPrivileged ? settings.telegramBotToken : '••••••••••••')
+          : ''
+      };
+      res.json(sanitized);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // 6. Save Notification Settings
-  app.post('/api/ema15m/settings', (req, res) => {
+  // 6. Save Notification Settings (Strictly requires authenticated user)
+  app.post('/api/ema15m/settings', requireAuth as any, (req, res) => {
     try {
-      const user = getUserFromRequest(req);
+      const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = req.body;
       dbEngine.saveEmaNotificationSettings(settings, userId);
@@ -1444,7 +1452,7 @@ async function startServer() {
   });
 
   // 7. Send Test Alert (Telegram or Email)
-  app.post('/api/ema15m/test-notification', async (req, res) => {
+  app.post('/api/ema15m/test-notification', requireAuth as any, async (req, res) => {
     try {
       const { channel, target, botToken } = req.body;
       if (!channel || (channel !== 'TELEGRAM' && channel !== 'EMAIL')) {
@@ -1457,8 +1465,8 @@ async function startServer() {
     }
   });
 
-  // 8. Trigger Mock Crossover for Testing / Verification
-  app.post('/api/ema15m/mock-crossover', (req, res) => {
+  // 8. Trigger Mock Crossover for Testing / Verification (Isolated from live execution)
+  app.post('/api/ema15m/mock-crossover', requireAuth as any, (req, res) => {
     try {
       const { symbol, targetType } = req.body;
       const inst = (symbol || 'NIFTY').toUpperCase() as Ema15mInstrument;
@@ -1521,8 +1529,8 @@ async function startServer() {
     }
   });
 
-  // 12. Manually Square Off / Close an EMA Paper Trade
-  app.post('/api/ema15m/paper-trades/close', (req, res) => {
+  // 12. Manually Square Off / Close an EMA Paper Trade (Pure simulation, NEVER touches broker)
+  app.post('/api/ema15m/paper-trades/close', requireAuth as any, (req, res) => {
     try {
       const { id, exitPrice, reason } = req.body;
       if (!id) {
@@ -1538,10 +1546,7 @@ async function startServer() {
       const closed = dbEngine.closeEmaPaperTrade(id, closePrice, reason || 'MANUAL_SQUARE_OFF');
       if (closed) {
         try {
-          const isLong = (trade.direction || '').toUpperCase() === 'LONG';
-          const grossPnl = isLong
-            ? (closePrice - trade.entryPrice) * (trade.quantity || 1)
-            : (trade.entryPrice - closePrice) * (trade.quantity || 1);
+          const grossPnl = (closePrice - trade.entryPrice) * (trade.quantity || 1);
           const netPnl = grossPnl - 40;
           tradeReviewEngine.recordFromEmaTrade(
             trade,
@@ -1565,12 +1570,12 @@ async function startServer() {
   });
 
   // 13. Toggle EMA Automatic Paper Trading Setting
-  app.post('/api/ema15m/paper-trades/toggle', (req, res) => {
+  app.post('/api/ema15m/paper-trades/toggle', requireAuth as any, (req, res) => {
     try {
-      const user = getUserFromRequest(req);
+      const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = dbEngine.getEmaNotificationSettings(userId);
-      const enabled = req.body?.enabled !== undefined ? req.body.enabled : !settings.autoPaperTradingEnabled;
+      const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !settings.autoPaperTradingEnabled;
       settings.autoPaperTradingEnabled = enabled;
       dbEngine.saveEmaNotificationSettings(settings, userId);
       if (userId !== 'GLOBAL') {
@@ -1589,10 +1594,10 @@ async function startServer() {
     }
   });
 
-  // 14. Toggle Live Upstox Broker Execution
-  app.post('/api/ema15m/live-trading/toggle', (req, res) => {
+  // 14. Toggle Live Upstox Broker Execution (Independent pipeline - does not turn off paper trading)
+  app.post('/api/ema15m/live-trading/toggle', requireAuth as any, (req, res) => {
     try {
-      const user = getUserFromRequest(req);
+      const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = dbEngine.getEmaNotificationSettings(userId);
       const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !settings.liveBrokerExecutionEnabled;
@@ -1611,7 +1616,7 @@ async function startServer() {
         instrument: 'ALL',
         message: enabled
           ? '⚠️ LIVE BROKER AUTO-TRADING ARMED: Real orders will execute on Upstox upon confirmed 15m candle close crossovers.'
-          : '🛡️ LIVE BROKER AUTO-TRADING DISARMED: Switched to Simulated Paper Trading mode.'
+          : '🛡️ LIVE BROKER AUTO-TRADING DISARMED: Real orders suppressed. Paper trading operates independently.'
       });
       const updated = dbEngine.getEmaNotificationSettings(userId);
       res.json({
@@ -1637,10 +1642,75 @@ async function startServer() {
   });
 
   // 16. Clear EMA Execution Audit Logs
-  app.post('/api/ema15m/execution-logs/clear', (req, res) => {
+  app.post('/api/ema15m/execution-logs/clear', requireAuth as any, (req, res) => {
     try {
       dbEngine.clearEmaExecutionLogs();
       res.json({ success: true, message: 'Execution logs cleared' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // DUAL EXECUTION: UPSTOX LIVE BROKER ENDPOINTS
+  // -------------------------------------------------------------
+
+  // 17. Live Execution Summary
+  app.get('/api/ema15m/live-summary', (req, res) => {
+    try {
+      const summary = dbEngine.getEmaLiveTradingSummary();
+      res.json({ success: true, summary });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 18. Live Broker Positions
+  app.get('/api/ema15m/live-positions', (req, res) => {
+    try {
+      const instrument = req.query.instrument as string | undefined;
+      const status = req.query.status as string | undefined;
+      const positions = dbEngine.getEmaLivePositions(instrument, status);
+      res.json({ success: true, positions });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 19. Live Order Attempts (including rejections and 0 filled qty)
+  app.get('/api/ema15m/live-attempts', (req, res) => {
+    try {
+      const instrument = req.query.instrument as string | undefined;
+      const limit = Number(req.query.limit) || 100;
+      const attempts = dbEngine.getEmaLiveOrderAttempts(instrument, limit);
+      res.json({ success: true, attempts });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 20. Manual Square-Off for Live Upstox Position (Executes real broker exit order)
+  app.post('/api/ema15m/live-positions/close', requireAuth as any, async (req, res) => {
+    try {
+      const { id, reason } = req.body;
+      if (!id) {
+        return res.status(400).json({ error: 'Position ID is required' });
+      }
+      const exitResult = await liveExecutionService.requestLiveExit(id, reason || 'MANUAL_USER_EXIT');
+      res.json({ success: true, ...exitResult });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 21. Structured Execution Events
+  app.get('/api/ema15m/execution-events', (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 100;
+      const stage = req.query.stage as string | undefined;
+      const instrument = req.query.instrument as string | undefined;
+      const events = dbEngine.getEmaExecutionEvents(limit, stage, instrument);
+      res.json({ success: true, events });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

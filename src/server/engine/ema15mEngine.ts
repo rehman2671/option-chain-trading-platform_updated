@@ -25,6 +25,10 @@ import { ExpiryResolver } from '../../quant/data/expiryResolver.js';
 import { calculateEuropeanOptionGreeks } from './blackScholes.js';
 import { activeProvider } from './providers/index.js';
 import { resolveTradingsymbol } from './basketEngine.js';
+import { executionCoordinator } from './ema15m/executionCoordinator.js';
+import { StrategyRules } from './ema15m/strategyRules.js';
+import { SessionCalendar } from './ema15m/sessionCalendar.js';
+import { brokerOrderReconciler } from './ema15m/brokerOrderReconciler.js';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
@@ -50,23 +54,7 @@ export class Ema15mEngine {
   private dataSourceMessage: string = 'Calibrated Real-time NSE/BSE Practice Feed';
 
   // Indian Stock Market Holidays (YYYY-MM-DD)
-  private readonly MARKET_HOLIDAYS = new Set([
-    '2026-01-26', // Republic Day
-    '2026-03-03', // Holi
-    '2026-03-20', // Id-Ul-Fitr
-    '2026-04-03', // Good Friday
-    '2026-04-14', // Dr. Ambedkar Jayanti
-    '2026-05-01', // Maharashtra Day
-    '2026-05-27', // Bakri Id
-    '2026-08-15', // Independence Day
-    '2026-09-04', // Janmashtami
-    '2026-10-02', // Mahatma Gandhi Jayanti
-    '2026-10-20', // Dussehra
-    '2026-11-08', // Diwali Laxmi Pujan
-    '2026-11-10', // Diwali Balipratipada
-    '2026-11-24', // Gurunanak Jayanti
-    '2026-12-25'  // Christmas
-  ]);
+  private readonly MARKET_HOLIDAYS = SessionCalendar.MARKET_HOLIDAYS;
 
   private constructor() {
     for (const inst of this.INSTRUMENTS) {
@@ -83,18 +71,17 @@ export class Ema15mEngine {
 
   /**
    * Initializes the engine, boots history from database, and seeds if needed.
+   * INVARIANT: Never deletes trade history or open positions on startup!
    */
   public async initialize(): Promise<void> {
     console.log('[EMA 15M ENGINE] Initializing 15-Minute 23/50 EMA Alert System...');
 
-    for (const inst of this.INSTRUMENTS) {
-      // Sanitize any corrupted historical prices (e.g. SENSEX price cross-contamination)
-      if (inst === 'SENSEX') {
-        dbEngine.purgeCorruptEmaCandles('SENSEX', 50000);
-      } else if (inst === 'BANKNIFTY') {
-        dbEngine.purgeCorruptEmaCandles('BANKNIFTY', 35000);
-      }
+    // Recover and reconcile broker order state across restarts
+    brokerOrderReconciler.reconcileBrokerState().catch(err => {
+      console.warn('[EMA 15M ENGINE] Initial broker state reconciliation notice:', err?.message || err);
+    });
 
+    for (const inst of this.INSTRUMENTS) {
       let candles = dbEngine.getEma15mCandles(inst, 2000);
       const isFlatVolume = candles.length > 0 && candles.slice(0, 20).every(c => c.volume === 15000 || !c.volume);
       const lastCandle = candles[candles.length - 1];
@@ -299,18 +286,21 @@ export class Ema15mEngine {
     strikePrice: number,
     optionType: 'CE' | 'PE',
     expiry: string,
-    spotPrice: number
+    spotPrice: number,
+    simulationTimestamp?: string | Date
   ): number {
+    const simDate = simulationTimestamp ? new Date(simulationTimestamp) : new Date();
+    const simTimeIso = isNaN(simDate.getTime()) ? new Date().toISOString() : simDate.toISOString();
+
     try {
-      const ltp = dbEngine.getHistoricalOptionLtp(instrument, expiry, strikePrice, optionType, new Date().toISOString());
+      const ltp = dbEngine.getHistoricalOptionLtp(instrument, expiry, strikePrice, optionType, simTimeIso);
       if (ltp !== null && ltp >= 15) {
         return Number(ltp.toFixed(2));
       }
     } catch {}
 
     const expDate = new Date(expiry);
-    const now = new Date();
-    const diffDays = Math.max(0.2, (expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.max(0.2, (expDate.getTime() - simDate.getTime()) / (1000 * 60 * 60 * 24));
     const T = diffDays / 365;
     const r = 0.065;
     const sigma = 0.14; // ~14% ATM IV
@@ -326,31 +316,15 @@ export class Ema15mEngine {
    * Rule 12: Never carry a position overnight. Close at configured force-square-off time.
    */
   public checkForcedIntradaySquareOff(): void {
-    const marketHours = this.getMarketHoursStatus();
-    if (!marketHours.isMarketOpen && this.dataSource !== 'PRACTICE') return;
-
-    const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-    const forceTime = settings.forceSquareOffTime || '15:15';
-    const currentTimeStr = marketHours.istTime.split(' ')[0]; // "HH:mm"
-
-    if (currentTimeStr >= forceTime && currentTimeStr < '15:30') {
-      const openTrades = dbEngine.getOpenEmaPaperTrades('ALL');
-      if (openTrades.length === 0) return;
-
-      console.log(`[EMA 15M INTRADAY] ⏰ Reached force square-off time (${currentTimeStr} >= ${forceTime} IST). Closing ${openTrades.length} open MIS position(s)...`);
-
-      for (const trade of openTrades) {
-        const exitPrice = trade.currentPrice || trade.entryPrice;
-        dbEngine.closeEmaPaperTrade(trade.id, exitPrice, 'FORCED_INTRADAY_SQUARE_OFF', new Date().toISOString());
-        console.log(`[EMA 15M INTRADAY] 🛑 Forced Intraday Square-Off: Closed trade ${trade.id} on ${trade.instrument} ${trade.strikePrice || ''} ${trade.optionType || ''} @ ₹${exitPrice}`);
-      }
-    }
+    executionCoordinator.checkForcedIntradaySquareOff().catch(err => {
+      console.error('[EMA 15M INTRADAY] Error in forced square-off:', err.message);
+    });
   }
 
   /**
    * Finalizes a completed 15m candle, recalculates EMA series, and detects crossover signals
    */
-  public finalizeCandle(candle: Ema15mCandle): void {
+  public finalizeCandle(candle: Ema15mCandle, isMock: boolean = false): void {
     candle.isClosed = true;
 
     const inst = candle.instrument;
@@ -392,7 +366,6 @@ export class Ema15mEngine {
           // Directional ATM Strike Selection:
           // Bullish (CE): Nearest valid strike at or above current spot price (CEILING)
           // Bearish (PE): Nearest valid strike at or below current spot price (FLOOR)
-          // Example: Spot 25,180 with step 50 -> CE = 25,200, PE = 25,150
           const selectedStrike = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
           const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst);
 
@@ -421,8 +394,9 @@ export class Ema15mEngine {
           if (isNewlyInserted) {
             console.log(`[EMA 15M ALERT] 🚀 Confirmed ${signalType} Crossover on ${inst} @ ₹${signal.price} | Strike: ${selectedStrike} ${optionType} (${weeklyExpiry}) (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`);
 
-            // 1. Execute Automatic Trading (Live Upstox or Paper) with Directional ATM Strike & Weekly Expiry
-            this.processAutoPaperTrade(signal).catch(err => {
+            // 1. Execute Automatic Trading (Live Upstox and/or Paper) via Execution Coordinator
+            const estimatedPrice = this.getEstimatedOptionPrice(inst, selectedStrike, optionType, weeklyExpiry, signal.price, signal.signalConfirmedAt);
+            executionCoordinator.processConfirmedSignal(signal, estimatedPrice, isMock).catch(err => {
               console.error('[EMA 15M ENGINE] Error processing trade execution:', err.message);
             });
 
@@ -439,301 +413,17 @@ export class Ema15mEngine {
   }
 
   /**
-   * Automatic Trading Engine for NIFTY 50, BANK NIFTY & SENSEX 15-Minute 23/50 EMA Strategy
-   * Rules:
-   * - Triggered ONLY upon confirmed 15m candle close
-   * - Exactly 1 lot only
-   * - Product Type: MIS / Intraday
-   * - Directional ATM Strike Selection (CE >= Spot, PE <= Spot)
-   * - Weekly Expiry Only
-   * - Bullish SL = Entry - 30, Target = Entry + 100
-   * - Bearish SL = Entry - 30, Target = Entry + 100 (for option buying premium appreciation)
-   * - Maximum active position = 1 (No averaging, no pyramiding)
-   * - Closes opposing open position upon reverse crossover
-   * - Bridges to LIVE Upstox API v2 order execution when liveBrokerExecutionEnabled === true
-   * - Emits structured audit logs to SQLite for full transparency
+   * Automatic Trading Dispatcher for 15-Minute 23/50 EMA Strategy
+   * Routes independently through Execution Coordinator to Paper and Live pipelines.
    */
-  public async processAutoPaperTrade(signal: Ema15mSignal): Promise<void> {
-    const timestampStr = new Date().toISOString();
-    try {
-      const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-      const isAutoTradingAllowed = settings.autoPaperTradingEnabled !== false;
-      const isLiveBrokerArmed = settings.liveBrokerExecutionEnabled === true;
-
-      // 1. Log Signal Detection
-      dbEngine.logEmaExecution({
-        id: `exec-sig-${Date.now()}`,
-        timestamp: timestampStr,
-        level: 'INFO',
-        stage: 'SIGNAL',
-        instrument: signal.instrument,
-        message: `Confirmed ${signal.signalType} 15m crossover on ${signal.instrument} @ ₹${signal.price.toFixed(2)} (23 EMA: ${signal.ema23} | 50 EMA: ${signal.ema50})`,
-        details: { signalId: signal.id, price: signal.price, emaDifference: signal.emaDifference }
-      });
-
-      if (!isAutoTradingAllowed && !isLiveBrokerArmed) {
-        console.log(`[EMA PAPER TRADING] Auto trading is disabled in settings. Skipping order creation for ${signal.instrument}`);
-        dbEngine.logEmaExecution({
-          id: `exec-skip-${Date.now()}`,
-          timestamp: timestampStr,
-          level: 'WARN',
-          stage: 'SAFETY_CHECK',
-          instrument: signal.instrument,
-          message: `Auto trade execution disabled in settings. Skipping order creation.`
-        });
-        return;
-      }
-
-      const cfg = getInstrumentConfig(signal.instrument);
-      const lotSize = cfg ? cfg.lotSize : 25;
-      const quantity = lotSize; // Exactly 1 standard lot
-      const newDirection: 'LONG' | 'SHORT' = signal.signalType === 'BULLISH' ? 'LONG' : 'SHORT';
-      const optionType: 'CE' | 'PE' = signal.optionType || (signal.signalType === 'BULLISH' ? 'CE' : 'PE');
-      const stepSize = cfg ? cfg.stepSize : 50;
-
-      // Directional ATM Strike
-      const strikePrice = signal.selectedStrike || ContractMaster.getDirectionalAtmStrike(signal.price, optionType, stepSize);
-      const weeklyExpiry = signal.weeklyExpiry || this.resolveNearestWeeklyExpiry(signal.instrument);
-      const tradingsymbol = resolveTradingsymbol(signal.instrument, strikePrice, optionType, weeklyExpiry);
-
-      // Check if an open position already exists for this instrument
-      const existingOpen = dbEngine.getOpenEmaPaperTradeByInstrument(signal.instrument);
-
-      if (existingOpen) {
-        if (existingOpen.direction !== newDirection) {
-          // Reversal: close the opposing trade at current option price
-          const exitOptPrice = existingOpen.currentPrice || existingOpen.entryPrice;
-          dbEngine.closeEmaPaperTrade(existingOpen.id, exitOptPrice, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
-
-          // If opposing position was a real Upstox order, send LIVE market SELL order
-          if (existingOpen.source === 'UPSTOX_LIVE' && isLiveBrokerArmed && typeof (activeProvider as any)?.placeOrder === 'function') {
-            try {
-              const exitTradingsymbol = resolveTradingsymbol(existingOpen.instrument, existingOpen.strikePrice!, existingOpen.optionType as any, existingOpen.expiryDate);
-              await (activeProvider as any).placeOrder({
-                quantity: existingOpen.quantity,
-                product: existingOpen.productType || 'MIS',
-                validity: 'DAY',
-                orderType: 'MARKET',
-                transactionType: 'SELL',
-                tradingsymbol: exitTradingsymbol,
-                symbol: exitTradingsymbol,
-                tag: 'ema15m_reversal'
-              });
-              dbEngine.logEmaExecution({
-                id: `exec-rev-exit-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                level: 'SUCCESS',
-                stage: 'EXIT',
-                instrument: signal.instrument,
-                message: `🟢 Dispatched Upstox LIVE EXIT SELL order for opposing trade ${exitTradingsymbol}`,
-                details: { exitTradingsymbol, quantity: existingOpen.quantity }
-              });
-            } catch (err: any) {
-              dbEngine.logEmaExecution({
-                id: `exec-rev-fail-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                level: 'ERROR',
-                stage: 'EXIT',
-                instrument: signal.instrument,
-                message: `🔴 Failed to dispatch Upstox LIVE EXIT order for opposing trade: ${err.message}`
-              });
-            }
-          }
-
-          try {
-            const grossPnl = (exitOptPrice - existingOpen.entryPrice) * (existingOpen.quantity || 1);
-            const netPnl = grossPnl - 40;
-            tradeReviewEngine.recordFromEmaTrade(
-              existingOpen,
-              exitOptPrice,
-              grossPnl,
-              netPnl,
-              'OPPOSITE_CROSSOVER',
-              signal.signalConfirmedAt || new Date().toISOString()
-            );
-          } catch (revErr) {
-            console.error('[EMA PAPER TRADING] Failed to record trade review:', revErr);
-          }
-          console.log(`[EMA PAPER TRADING] 🔄 Reversal: Closed ${existingOpen.direction} trade ${existingOpen.id} on ${signal.instrument} @ ₹${exitOptPrice} (Reason: OPPOSITE_CROSSOVER)`);
-        } else {
-          console.log(`[EMA PAPER TRADING] Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position (Rule: Max 1 active position, no averaging, no pyramiding).`);
-          dbEngine.logEmaExecution({
-            id: `exec-hold-${Date.now()}`,
-            timestamp: timestampStr,
-            level: 'INFO',
-            stage: 'SAFETY_CHECK',
-            instrument: signal.instrument,
-            message: `Position in direction ${newDirection} already open on ${signal.instrument}. Maintaining position (Rule: Max 1 active position, no averaging, no pyramiding).`
-          });
-          return;
-        }
-      }
-
-      // Determine option entry price (actual average fill price)
-      const optionEntryPrice = this.getEstimatedOptionPrice(signal.instrument, strikePrice, optionType, weeklyExpiry, signal.price);
-
-      // Directional Option Buying (Long CE on Bullish crossover, Long PE on Bearish crossover):
-      // Premium Target: Entry + 100 points
-      // Premium Stop Loss: max(5, Entry - 30 points)
-      const stopLoss = Number(Math.max(5, optionEntryPrice - 30).toFixed(2));
-      const targetPrice = Number((optionEntryPrice + 100).toFixed(2));
-
-      // -------------------------------------------------------------
-      // LIVE BROKER EXECUTION BRIDGE (UPSTOX API V2)
-      // -------------------------------------------------------------
-      let orderId = `ORD-${Date.now()}`;
-      let brokerStatus: 'PENDING' | 'FILLED' | 'REJECTED' | 'CANCELLED' | 'SUBMITTED' = 'FILLED';
-      let tradeSource: 'UPSTOX_LIVE' | 'PRACTICE' = this.dataSource === 'UPSTOX_LIVE' ? 'UPSTOX_LIVE' : 'PRACTICE';
-
-      if (isLiveBrokerArmed) {
-        dbEngine.logEmaExecution({
-          id: `exec-pre-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          level: 'INFO',
-          stage: 'PRE_TRADE',
-          instrument: signal.instrument,
-          message: `Verifying Pre-Trade Risk Checks for LIVE Upstox order (${tradingsymbol} | 1 Lot = ${quantity} Qty)...`,
-          details: { tradingsymbol, lotSize, quantity, strikePrice, optionType, weeklyExpiry }
-        });
-
-        // Risk Circuit Breaker Check: Max Daily Loss Threshold
-        const summary = dbEngine.getEmaPaperTradingSummary();
-        const maxDailyLoss = settings.maxDailyLossLimit ?? 5000;
-        if (summary.realizedNetPnl <= -maxDailyLoss) {
-          const circuitMsg = `Risk Circuit Breaker Engaged: Daily realized loss ₹${Math.abs(summary.realizedNetPnl)} exceeds limit ₹${maxDailyLoss}. Live order blocked.`;
-          console.warn(`[EMA 15M RISK] 🛑 ${circuitMsg}`);
-          dbEngine.logEmaExecution({
-            id: `exec-risk-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            stage: 'SAFETY_CHECK',
-            instrument: signal.instrument,
-            message: circuitMsg,
-            details: { currentDailyNetPnl: summary.realizedNetPnl, maxDailyLoss }
-          });
-        } else if (!activeProvider || typeof (activeProvider as any).placeOrder !== 'function' || !(activeProvider as any).isConnected) {
-          const provMsg = `Upstox broker provider is disconnected or token expired. Falling back safely to simulated execution.`;
-          console.warn(`[EMA 15M LIVE] ⚠️ ${provMsg}`);
-          dbEngine.logEmaExecution({
-            id: `exec-prov-warn-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            level: 'WARN',
-            stage: 'SAFETY_CHECK',
-            instrument: signal.instrument,
-            message: provMsg,
-            details: { isConnected: (activeProvider as any)?.isConnected }
-          });
-        } else {
-          // Dispatch Real Market BUY Order to Upstox API v2
-          dbEngine.logEmaExecution({
-            id: `exec-disp-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            level: 'INFO',
-            stage: 'BROKER_SUBMIT',
-            instrument: signal.instrument,
-            message: `🚀 Submitting LIVE MARKET BUY order to Upstox: ${tradingsymbol} (Qty: ${quantity}, Product: ${settings.upstoxProductType || 'MIS'})`,
-            details: { tradingsymbol, quantity, product: settings.upstoxProductType || 'MIS' }
-          });
-
-          try {
-            const brokerRes = await (activeProvider as any).placeOrder({
-              quantity,
-              product: settings.upstoxProductType || 'MIS',
-              validity: 'DAY',
-              orderType: 'MARKET',
-              transactionType: 'BUY',
-              tradingsymbol,
-              symbol: tradingsymbol,
-              tag: 'ema15m_auto'
-            });
-
-            orderId = brokerRes?.order_id || brokerRes?.orderId || `ORD-UPSTOX-${Date.now()}`;
-            brokerStatus = 'FILLED';
-            tradeSource = 'UPSTOX_LIVE';
-
-            dbEngine.logEmaExecution({
-              id: `exec-live-ok-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              level: 'SUCCESS',
-              stage: 'BROKER_RESPONSE',
-              instrument: signal.instrument,
-              message: `🟢 LIVE Order FILLED on Upstox! Order ID: ${orderId}`,
-              details: { orderId, tradingsymbol, brokerResponse: brokerRes }
-            });
-          } catch (brokerErr: any) {
-            brokerStatus = 'REJECTED';
-            console.error('[EMA 15M LIVE] Upstox order error:', brokerErr.message);
-            dbEngine.logEmaExecution({
-              id: `exec-live-err-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              level: 'ERROR',
-              stage: 'BROKER_RESPONSE',
-              instrument: signal.instrument,
-              message: `🔴 Upstox Live Order Rejected: ${brokerErr.message}. Position recorded in Paper Ledger safely.`,
-              details: { error: brokerErr.message, tradingsymbol }
-            });
-          }
-        }
-      }
-
-      // Create new 1-lot MIS Position (Recorded in SQLite ledger)
-      const tradeId = `ema-pt-${signal.instrument.toLowerCase()}-${optionType.toLowerCase()}-${strikePrice}-${Date.now()}`;
-
-      const newTrade: EmaPaperTrade = {
-        id: tradeId,
-        signalId: signal.id,
-        instrument: signal.instrument,
-        direction: newDirection,
-        optionType,
-        strikePrice,
-        expiryDate: weeklyExpiry,
-        productType: settings.upstoxProductType || 'MIS',
-        spotAtEntry: signal.price,
-        stopLoss,
-        targetPrice,
-        orderId,
-        brokerStatus,
-        entryTimestamp: signal.signalConfirmedAt || new Date().toISOString(),
-        entryPrice: optionEntryPrice,
-        quantity,
-        lotSize,
-        strategy: 'EMA_15M_23_50',
-        source: tradeSource,
-        status: 'OPEN',
-        currentPrice: optionEntryPrice,
-        unrealizedPnl: 0,
-        grossPnl: 0,
-        brokerage: 40,
-        charges: 0,
-        netPnl: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-
-      dbEngine.saveEmaPaperTrade(newTrade);
-
-      dbEngine.logEmaExecution({
-        id: `exec-recorded-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        level: 'SUCCESS',
-        stage: 'PAPER_TRADE',
-        instrument: signal.instrument,
-        message: `Position Open: BUY 1 Lot (${quantity} Qty) ${strikePrice} ${optionType} (${weeklyExpiry}) @ ₹${optionEntryPrice} [SL: ₹${stopLoss} | Target: ₹${targetPrice} | Order: ${orderId}]`,
-        details: { tradeId, orderId, brokerStatus, source: tradeSource, entryPrice: optionEntryPrice, stopLoss, targetPrice }
-      });
-
-      console.log(`[EMA TRADING] 🟢 Executed 1 Lot ${settings.upstoxProductType || 'MIS'} BUY ${strikePrice} ${optionType} (${weeklyExpiry} Expiry) @ ₹${optionEntryPrice} on ${signal.instrument} (Spot: ₹${signal.price} | SL: ₹${stopLoss} | Target: ₹${targetPrice} | Source: ${tradeSource})`);
-    } catch (err: any) {
-      console.error(`[EMA 15M TRADING] Error executing trade:`, err.message);
-      dbEngine.logEmaExecution({
-        id: `exec-fatal-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        level: 'ERROR',
-        stage: 'PAPER_TRADE',
-        instrument: signal.instrument,
-        message: `Fatal trade execution error: ${err.message}`
-      });
-    }
+  public async processAutoPaperTrade(signal: Ema15mSignal, isSyntheticMock: boolean = false): Promise<any> {
+    const optionType = signal.optionType || (signal.signalType === 'BULLISH' ? 'CE' : 'PE');
+    const weeklyExpiry = signal.weeklyExpiry || this.resolveNearestWeeklyExpiry(signal.instrument);
+    const cfg = getInstrumentConfig(signal.instrument);
+    const stepSize = cfg ? cfg.stepSize : 50;
+    const strike = signal.selectedStrike || ContractMaster.getDirectionalAtmStrike(signal.price, optionType, stepSize);
+    const estimatedPrice = this.getEstimatedOptionPrice(signal.instrument, strike, optionType, weeklyExpiry, signal.price, signal.signalConfirmedAt);
+    return executionCoordinator.processConfirmedSignal(signal, estimatedPrice, isSyntheticMock);
   }
 
   /**
@@ -1306,10 +996,10 @@ export class Ema15mEngine {
         const sl = currentTrade.stopLoss!;
         const tp = currentTrade.targetPrice!;
 
-        // Estimate option prices during the candle
-        const optClose = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.close);
-        const optAtHigh = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.high);
-        const optAtLow = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.low);
+        // Estimate option prices during the candle without lookahead bias
+        const optClose = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.close, curr.timestamp);
+        const optAtHigh = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.high, curr.timestamp);
+        const optAtLow = this.getEstimatedOptionPrice(inst, currentTrade.strikePrice, optType, currentTrade.weeklyExpiry, curr.low, curr.timestamp);
 
         const estOptHigh = optType === 'CE' ? optAtHigh : optAtLow;
         const estOptLow = optType === 'CE' ? optAtLow : optAtHigh;
@@ -1344,9 +1034,8 @@ export class Ema15mEngine {
           }
         }
 
-        // Intraday forced square-off at 15:15 IST
-        const candleTime = curr.timestamp;
-        if (!exitReason && (candleTime.includes('T15:15') || candleTime.includes('T15:30'))) {
+        // Intraday forced square-off at 15:15 IST boundary
+        if (!exitReason && SessionCalendar.isAtOrPastForcedSquareOff(curr.timestamp)) {
           exitReason = 'FORCED_INTRADAY_SQUARE_OFF';
           exitPrice = optClose;
         }
@@ -1395,9 +1084,9 @@ export class Ema15mEngine {
           const optionType: 'CE' = 'CE';
           const strikePrice = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
           const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst, new Date(curr.timestamp));
-          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close);
-          const stopLoss = Number((entryPrice - 30).toFixed(2));
-          const targetPrice = Number((entryPrice + 100).toFixed(2));
+          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close, curr.timestamp);
+          const stopLoss = StrategyRules.calculateStopLoss(entryPrice);
+          const targetPrice = StrategyRules.calculateTargetPrice(entryPrice);
 
           currentTrade = {
             instrument: inst,
@@ -1421,9 +1110,9 @@ export class Ema15mEngine {
           const optionType: 'PE' = 'PE';
           const strikePrice = ContractMaster.getDirectionalAtmStrike(curr.close, optionType, stepSize);
           const weeklyExpiry = this.resolveNearestWeeklyExpiry(inst, new Date(curr.timestamp));
-          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close);
-          const stopLoss = Number((entryPrice + 30).toFixed(2));
-          const targetPrice = Number((entryPrice - 100).toFixed(2));
+          const entryPrice = this.getEstimatedOptionPrice(inst, strikePrice, optionType, weeklyExpiry, curr.close, curr.timestamp);
+          const stopLoss = StrategyRules.calculateStopLoss(entryPrice);
+          const targetPrice = StrategyRules.calculateTargetPrice(entryPrice);
 
           currentTrade = {
             instrument: inst,
@@ -1452,7 +1141,8 @@ export class Ema15mEngine {
         currentTrade.strikePrice!,
         currentTrade.optionType!,
         currentTrade.weeklyExpiry!,
-        lastCandle.close
+        lastCandle.close,
+        lastCandle.timestamp
       );
       const exitPrice = optClose;
       const pnlPoints = Number((exitPrice - currentTrade.entryPrice).toFixed(2));
@@ -1507,6 +1197,7 @@ export class Ema15mEngine {
 
     const maxFavorableExcursionAvg = trades.length > 0 ? Number((trades.reduce((sum, t) => sum + t.maxFavorableExcursionPoints, 0) / trades.length).toFixed(2)) : 0;
     const maxAdverseExcursionAvg = trades.length > 0 ? Number((trades.reduce((sum, t) => sum + t.maxAdverseExcursionPoints, 0) / trades.length).toFixed(2)) : 0;
+    const maxDrawdownPercent = trades.length > 0 && trades[0].entryPrice ? Number(((maxDrawdownPoints / (trades[0].entryPrice * 2)) * 100).toFixed(2)) : 0;
 
     return {
       instrument: inst,
@@ -1525,7 +1216,7 @@ export class Ema15mEngine {
       avgPnlPercentPerTrade,
       profitFactor,
       maxDrawdownPoints: Number(maxDrawdownPoints.toFixed(2)),
-      maxDrawdownPercent: 0,
+      maxDrawdownPercent,
       maxFavorableExcursionAvg,
       maxAdverseExcursionAvg,
       disclaimer: 'Strictly analytical historical backtest metrics based on 15m candle closes. Past performance does not guarantee future results.',
@@ -1614,7 +1305,7 @@ export class Ema15mEngine {
       isClosed: true
     };
 
-    this.finalizeCandle(mockCandle);
+    this.finalizeCandle(mockCandle, true);
     const latestSignal = dbEngine.getLatestEma15mSignal(inst);
 
     return {
@@ -1624,177 +1315,20 @@ export class Ema15mEngine {
   }
 
   /**
-   * Batch update live mark-to-market P&L on all OPEN paper positions for this instrument
-   * using a single atomic SQLite transaction. Evaluates option pricing and SL/Target boundaries.
+   * Evaluates mark-to-market and exit conditions across both Paper and Live positions.
+   * Paper stop-loss / exits NEVER touch the broker.
+   * Live positions exit via liveExecutionService with authoritative broker fills.
    */
   public updateOpenPaperTrades(instrument: string, currentSpotPrice: number): void {
-    const openTrades = dbEngine.getOpenEmaPaperTrades(instrument);
-    if (!openTrades || openTrades.length === 0) return;
-
-    const toUpdate: Array<{ id: string; currentPrice: number; unrealizedPnl: number; trailingStopLoss?: number; isTrailingActive?: boolean }> = [];
-    const toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }> = [];
-
-    for (const trade of openTrades) {
-      const entryPrice = Number(trade.entryPrice);
-      const qty = Number(trade.quantity);
-
-      let currentOptionPrice = entryPrice;
-
-      if (trade.optionType && trade.strikePrice && trade.expiryDate) {
-        currentOptionPrice = this.getEstimatedOptionPrice(
-          trade.instrument,
-          trade.strikePrice,
-          trade.optionType,
-          trade.expiryDate,
-          currentSpotPrice
-        );
-      } else {
-        // Fallback for spot index trades
-        const isLong = trade.direction === 'LONG';
-        const unrealizedPnl = Number((isLong ? (currentSpotPrice - entryPrice) * qty : (entryPrice - currentSpotPrice) * qty).toFixed(2));
-        toUpdate.push({ id: trade.id, currentPrice: currentSpotPrice, unrealizedPnl });
-        continue;
-      }
-
-      // Option Long trade P&L: (currentOptionPrice - entryPrice) * quantity
-      const grossPnl = Number(((currentOptionPrice - entryPrice) * qty).toFixed(2));
-      const netPnl = Number((grossPnl - 40).toFixed(2));
-      const unrealizedPnl = grossPnl;
-
-      // Settings check for Profit Lock & Trailing SL
-      const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-      const trailingEnabled = settings.trailingSlEnabled !== false;
-      const profitLockPts = settings.profitLockPoints ?? 70;
-      const trailDistancePts = settings.trailDistancePoints ?? 30;
-
-      // Check Stop-Loss, Target, and Trailing SL criteria
-      let shouldExit = false;
-      let exitReason = '';
-      let updatedTrailingSl = trade.trailingStopLoss;
-      let updatedIsTrailing = trade.isTrailingActive;
-
-      if (trailingEnabled) {
-        // Trailing Stop-Loss & Profit Lock Mode:
-        // Once +100 target is reached, lock at least +70 points profit and trail upwards!
-        const targetThreshold = trade.targetPrice || (entryPrice + 100);
-        const hasReachedTarget = currentOptionPrice >= targetThreshold;
-
-        if (hasReachedTarget || trade.isTrailingActive) {
-          updatedIsTrailing = true;
-          // Profit Lock: Guarantee at least profitLockPts (+70 pts) once target is touched
-          const minLockPrice = Number((entryPrice + profitLockPts).toFixed(2));
-          const dynamicTrailPrice = Number((currentOptionPrice - trailDistancePts).toFixed(2));
-          updatedTrailingSl = Math.max(updatedTrailingSl || minLockPrice, dynamicTrailPrice);
-
-          // Check if price fell back to or below trailing stop
-          if (currentOptionPrice <= updatedTrailingSl) {
-            shouldExit = true;
-            exitReason = 'TRAILING_SL_HIT';
-          }
-        } else {
-          // Target not yet reached: enforce initial Stop-Loss (-30 points)
-          if (trade.stopLoss !== undefined && currentOptionPrice <= trade.stopLoss) {
-            shouldExit = true;
-            exitReason = 'SL_HIT';
-          }
-        }
-      } else {
-        // Standard Fixed Target (+100) & Fixed SL (-30) Mode
-        if (trade.stopLoss !== undefined && trade.targetPrice !== undefined) {
-          if (currentOptionPrice <= trade.stopLoss) {
-            shouldExit = true;
-            exitReason = 'SL_HIT';
-          } else if (currentOptionPrice >= trade.targetPrice) {
-            shouldExit = true;
-            exitReason = 'TARGET_HIT';
-          }
-        }
-      }
-
-      if (shouldExit) {
-        toClose.push({
-          id: trade.id,
-          exitPrice: currentOptionPrice,
-          exitReason,
-          grossPnl,
-          netPnl,
-          exitTimestamp: new Date().toISOString()
-        });
-
-        // 1. Structured Audit Log for Position Exit
-        dbEngine.logEmaExecution({
-          id: `exec-exit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          timestamp: new Date().toISOString(),
-          level: netPnl >= 0 ? 'SUCCESS' : 'WARN',
-          stage: 'EXIT',
-          instrument: trade.instrument,
-          message: `🎯 Position Exited (${exitReason}): ${trade.strikePrice} ${trade.optionType} @ ₹${currentOptionPrice} (Entry: ₹${entryPrice} | Net P&L: ₹${netPnl})`,
-          details: { tradeId: trade.id, exitReason, entryPrice, exitPrice: currentOptionPrice, grossPnl, netPnl }
-        });
-
-        // 2. Dispatch Live SELL Order to Upstox if real broker trade was active
-        if (trade.source === 'UPSTOX_LIVE' && (activeProvider as any)?.isConnected && typeof (activeProvider as any)?.placeOrder === 'function') {
-          try {
-            const exitTradingsymbol = resolveTradingsymbol(trade.instrument, trade.strikePrice!, trade.optionType as any, trade.expiryDate);
-            (activeProvider as any).placeOrder({
-              quantity: trade.quantity,
-              product: trade.productType || 'MIS',
-              validity: 'DAY',
-              orderType: 'MARKET',
-              transactionType: 'SELL',
-              tradingsymbol: exitTradingsymbol,
-              symbol: exitTradingsymbol,
-              tag: 'ema15m_exit'
-            }).then((sellRes: any) => {
-              dbEngine.logEmaExecution({
-                id: `exec-live-exit-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                level: 'SUCCESS',
-                stage: 'EXIT',
-                instrument: trade.instrument,
-                message: `🟢 Dispatched Upstox LIVE EXIT SELL order: ${exitTradingsymbol} (${trade.quantity} Qty). Order ID: ${sellRes?.order_id || 'OK'}`,
-                details: { sellRes, exitTradingsymbol }
-              });
-            }).catch((err: any) => {
-              dbEngine.logEmaExecution({
-                id: `exec-live-exit-err-${Date.now()}`,
-                timestamp: new Date().toISOString(),
-                level: 'ERROR',
-                stage: 'EXIT',
-                instrument: trade.instrument,
-                message: `🔴 Failed to dispatch Upstox LIVE EXIT SELL order: ${err.message}`,
-                details: { error: err.message }
-              });
-            });
-          } catch (e: any) {
-            console.error('[EMA 15M ENGINE] Error dispatching live exit order:', e);
-          }
-        }
-
-        console.log(`[EMA 15M STRATEGY] 🎯 ${exitReason} on ${trade.instrument} ${trade.strikePrice} ${trade.optionType}: Exited @ ₹${currentOptionPrice} (Entry: ₹${entryPrice} | Net P&L: ₹${netPnl})`);
-        try {
-          tradeReviewEngine.recordFromEmaTrade(
-            trade,
-            currentOptionPrice,
-            grossPnl,
-            netPnl,
-            exitReason,
-            new Date().toISOString()
-          );
-        } catch {}
-      } else {
-        toUpdate.push({
-          id: trade.id,
-          currentPrice: currentOptionPrice,
-          unrealizedPnl,
-          trailingStopLoss: updatedTrailingSl,
-          isTrailingActive: updatedIsTrailing
-        });
-      }
-    }
-
-    dbEngine.batchUpdateEmaPaperTrades({ toUpdate, toClose });
+    executionCoordinator.monitorPositions(
+      instrument,
+      currentSpotPrice,
+      (inst, strike, type, expiry, spot) => this.getEstimatedOptionPrice(inst, strike, type, expiry, spot)
+    ).catch(err => {
+      console.error('[EMA 15M ENGINE] Error in monitorPositions:', err);
+    });
   }
+
 }
 
 export const globalEma15mEngine = Ema15mEngine.getInstance();

@@ -1,0 +1,1849 @@
+# ROLE: SENIOR QUANT TRADING SYSTEM ARCHITECT & FULL-STACK ENGINEER
+
+You are an expert TypeScript/Node.js engineer, quantitative trading systems architect, Upstox API integration specialist, database engineer, and production trading risk-management developer.
+
+Your responsibility is to deeply inspect, debug, refactor, secure, and fix the existing **DeltaChain AI — EMA15M 23/50 EMA Crossover Trading Engine**.
+
+This is an implementation task, not merely a code-review or recommendation task.
+
+You must identify and fix the root causes of the problems described below while preserving the existing application functionality and user experience.
+
+---
+
+# 1. CRITICAL USER REQUIREMENT — DUAL EXECUTION MODE
+
+The platform owner intentionally enables both:
+
+```typescript
+autoPaperTradingEnabled = true;
+liveBrokerExecutionEnabled = true;
+```
+
+This is expected and supported behavior.
+
+Do not make these settings mutually exclusive.
+
+The user currently has no cash deposited in the Upstox trading account and accepts legitimate broker-side order rejections due to insufficient balance or margin.
+
+However, the implementation must never assume that zero cash guarantees rejection.
+
+Real orders may execute whenever broker-side conditions permit.
+
+Therefore, retain robust trading authorization, execution limits, market-session controls, and broker reconciliation.
+
+## REQUIRED BEHAVIOR
+
+When an authentic, confirmed EMA15M crossover occurs:
+
+### Paper execution
+
+If paper trading is enabled:
+
+1. Independently create a paper trade.
+2. Use an explicitly simulated entry fill.
+3. Track paper positions and hypothetical P&L.
+4. Apply paper stop-loss.
+5. Apply paper target.
+6. Apply paper trailing stop-loss.
+7. Apply paper forced square-off.
+8. Persist the complete paper trade lifecycle.
+9. Never submit a real broker order because of a paper-only position.
+
+### Live execution
+
+If live trading is enabled and all mandatory execution-safety checks pass:
+
+1. Resolve a real, valid Upstox option contract.
+2. Validate the broker connection and session.
+3. Validate market availability and trading authorization.
+4. Apply centralized risk controls.
+5. Submit the intended order to Upstox.
+6. Capture the actual broker response.
+7. Record the true broker order status.
+8. Monitor order updates.
+9. Create a live position only after confirmed fills.
+10. Maintain live positions independently from paper positions.
+
+### If Upstox rejects the order
+
+For example:
+
+```text
+Broker rejection:
+Insufficient funds / insufficient margin
+```
+
+Required outcome:
+
+```text
+PAPER TRADE:
+Status: OPEN
+Execution: SIMULATED
+Monitoring: ACTIVE
+
+UPSTOX LIVE ATTEMPT:
+Status: REJECTED
+Broker error: Insufficient margin
+Live position: NOT CREATED
+```
+
+The paper position must continue normally.
+
+The real order rejection must not be interpreted as a paper trading failure.
+
+Do not retry insufficient-margin rejections automatically.
+
+Do not turn rejected real orders into simulated broker fills.
+
+Do not submit any real exit order for a rejected real entry.
+
+## IMPORTANT
+
+A live order attempt may also be blocked by mandatory server-side safety validation.
+
+Such cases must be recorded separately as:
+
+`PRE_TRADE_REJECTED`
+
+Do not bypass mandatory trading safety checks solely to obtain an Upstox rejection response.
+
+---
+
+# 2. REQUIRED SOURCE-CODE INSPECTION
+
+Before editing, inspect all relevant modules, including:
+
+```text
+src/server/engine/ema15mEngine.ts
+
+src/server/engine/marketFeed.ts
+
+src/server/engine/historicalService.ts
+
+src/server/engine/providers/UpstoxProvider.ts
+
+src/server/engine/providers/PracticeModeProvider.ts
+
+src/server/engine/providers/index.ts
+
+src/server/engine/basketEngine.ts
+
+src/server/engine/notificationService.ts
+
+src/server/engine/upstoxAuthService.ts
+
+src/server/db.ts
+
+src/server/auth.ts
+
+src/components/Ema15mDashboardView.tsx
+
+src/shared/marketConfig.ts
+
+src/quant/data/contractMaster.ts
+
+src/quant/data/expiryResolver.ts
+
+src/quant/risk/killSwitch.ts
+
+src/quant/risk/exposureController.ts
+
+src/quant/adapters/orderAdapter.ts
+
+src/types.ts
+
+serverApp.ts
+```
+
+Also inspect all EMA-related migrations, tests, API clients, frontend components, and dependencies.
+
+Search for every function that can:
+
+- Generate an EMA signal.
+- Create or close an EMA position.
+- Submit a broker order.
+- Modify broker execution settings.
+- Trigger a simulated crossover.
+- Calculate option premiums.
+- Calculate EMA P&L.
+- Update a trailing stop.
+- Execute forced square-off.
+
+Build a complete execution-flow dependency map before implementing changes.
+
+---
+
+# 3. P0 FIX — SEPARATE PAPER AND LIVE EXECUTION
+
+Currently, the engine incorrectly associates trade execution source with market-data source.
+
+Remove this coupling completely.
+
+A live Upstox market-data feed must not imply that a trade was actually executed on Upstox.
+
+Implement independent execution pipelines.
+
+Recommended architecture:
+
+```text
+CONFIRMED EMA SIGNAL
+        |
+        v
+SIGNAL VALIDATION
+        |
+        v
+EXECUTION COORDINATOR
+        |
+        +----------------------+
+        |                      |
+        v                      v
+ PAPER PIPELINE          LIVE PIPELINE
+        |                      |
+        v                      v
+PAPER ENABLED?           LIVE ENABLED?
+        |                      |
+        v                      v
+SIMULATED ENTRY          SAFETY VALIDATION
+        |                      |
+        v                      v
+PAPER POSITION           UPSTOX ORDER
+        |                      |
+        v                      v
+PAPER SL/TP              BROKER RESPONSE
+        |                      |
+        v                      v
+PAPER EXIT             FILL / REJECTION
+        |                      |
+        v                      v
+PAPER P&L              LIVE POSITION IF FILLED
+```
+
+The two pipelines must never mutate each other's positions.
+
+Refactor `processAutoPaperTrade()` into an execution coordinator with clearly separated operations.
+
+Suggested responsibilities:
+
+```typescript
+processConfirmedSignal()
+
+executePaperSignal()
+
+attemptLiveSignal()
+
+monitorPaperPositions()
+
+monitorLivePositions()
+
+requestPaperExit()
+
+requestLiveExit()
+
+reconcileLivePositions()
+```
+
+Do not merely rename the existing function.
+
+Actually separate the underlying state, database records, execution dependencies, and broker interactions.
+
+Preserve support for all four combinations:
+
+| Paper | Live | Behavior |
+|---|---|---|
+| OFF | OFF | Signals only |
+| ON | OFF | Paper execution only |
+| OFF | ON | Live execution attempts only |
+| ON | ON | Independent paper and live execution |
+
+All four combinations must have automated tests.
+
+---
+
+# 4. P0 FIX — CORRECT TRADE AND ORDER DATA MODELS
+
+Implement explicit execution modes.
+
+Suggested types:
+
+```typescript
+type ExecutionMode = 'PAPER' | 'LIVE';
+
+type OrderStatus =
+  | 'CREATED'
+  | 'PRE_TRADE_REJECTED'
+  | 'SUBMITTED'
+  | 'OPEN'
+  | 'PARTIALLY_FILLED'
+  | 'FILLED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'UNKNOWN';
+
+type PositionStatus =
+  | 'OPEN'
+  | 'EXIT_REQUESTED'
+  | 'EXIT_PENDING'
+  | 'EXIT_FAILED'
+  | 'PARTIALLY_CLOSED'
+  | 'CLOSED';
+
+type MarketBias = 'BULLISH' | 'BEARISH';
+
+type PositionSide = 'BUY' | 'SELL';
+```
+
+Distinguish:
+
+```typescript
+marketDataSource
+executionMode
+orderStatus
+positionStatus
+brokerOrderId
+brokerInstrumentKey
+requestedQuantity
+filledQuantity
+averageFillPrice
+```
+
+Do not use the old `source` field to infer whether a real broker position exists.
+
+For real positions, an authoritative broker instrument identifier and confirmed filled quantity are mandatory.
+
+For rejected orders, filled quantity must remain zero unless actual partial fills have been confirmed.
+
+Use durable broker order IDs.
+
+Never fabricate an Upstox order ID as a substitute for a missing actual broker order ID.
+
+---
+
+# 5. P0 FIX — CORRECT DATABASE PERSISTENCE
+
+Inspect existing tables:
+
+```text
+ema_15m_candles
+
+ema_15m_signals
+
+ema_paper_trades
+
+ema_notification_settings
+
+ema_execution_logs
+
+ema_notification_logs
+```
+
+The current schema uses `ema_paper_trades` for some live executions.
+
+Correct this architecture.
+
+Recommended additions:
+
+```text
+ema_live_order_attempts
+
+ema_live_orders
+
+ema_live_positions
+
+ema_live_fills
+
+ema_execution_events
+```
+
+Preserve existing paper trade records.
+
+Each execution attempt should store:
+
+```text
+id
+signal_id
+execution_mode
+instrument
+broker_account_id
+broker_instrument_key
+option_type
+strike
+expiry
+requested_quantity
+filled_quantity
+order_status
+broker_order_id
+rejection_reason
+submitted_at
+last_broker_update_at
+created_at
+updated_at
+```
+
+Implement proper uniqueness constraints.
+
+Paper and live records must be allowed to share a signal ID because both may execute independently.
+
+Use an explicit mode-based uniqueness policy.
+
+### Critical migration requirement
+
+Existing `ema_paper_trades` records may contain `source = 'UPSTOX_LIVE'`.
+
+Do not automatically assume those rows represent actual broker fills.
+
+Do not delete them.
+
+Do not blindly migrate them into confirmed live positions.
+
+Instead:
+
+1. Preserve all legacy records.
+2. Inspect associated broker order IDs.
+3. Reconcile against the actual broker account where possible.
+4. Mark unverifiable records as legacy/unreconciled.
+5. Keep them out of authoritative live exposure and realized P&L until resolved.
+
+All schema migrations must be idempotent and non-destructive.
+
+Create a backup strategy before database migration.
+
+---
+
+# 6. P0 FIX — REMOVE DESTRUCTIVE STARTUP CLEANUP
+
+Inspect:
+
+```typescript
+purgeCorruptEmaCandles()
+```
+
+The current implementation can delete BANKNIFTY and SENSEX EMA trades based on underlying price thresholds.
+
+This is incorrect because option entry premiums are much smaller than underlying index prices.
+
+Immediately remove any logic that deletes legitimate EMA trade records based on underlying spot-price thresholds.
+
+Keep price-integrity validation restricted to the appropriate market-data tables.
+
+Never delete live or paper trade history during ordinary engine initialization.
+
+Provide regression tests proving:
+
+- BANKNIFTY option trades survive restart.
+- SENSEX option trades survive restart.
+- Existing open positions survive restart.
+- Existing closed trade history survives restart.
+
+---
+
+# 7. P0 FIX — BROKER ORDER STATE MACHINE
+
+Never mark an Upstox order `FILLED` merely because `placeOrder()` returned successfully.
+
+Implement proper order lifecycle management.
+
+Required flow:
+
+```text
+CREATED
+   |
+   v
+PRE-TRADE VALIDATION
+   |
+   v
+SUBMITTED
+   |
+   v
+BROKER ACKNOWLEDGMENT
+   |
+   +---------------------+
+   |                     |
+   v                     v
+REJECTED                OPEN
+                         |
+                         +------------------+
+                         |                  |
+                         v                  v
+                  PARTIALLY_FILLED        FILLED
+                         |                  |
+                         v                  v
+                  RECONCILIATION       LIVE POSITION
+```
+
+Capture and persist:
+
+- Actual broker order ID.
+- Broker order status.
+- Requested quantity.
+- Executed quantity.
+- Average traded price.
+- Exchange timestamp.
+- Rejection details.
+- Broker-provided order updates.
+
+Use the current official Upstox API documentation to verify all request and response contracts.
+
+Do not assume an order submission response proves a fill.
+
+Do not create a confirmed live position before an actual fill.
+
+Handle partial fills correctly.
+
+---
+
+# 8. P0 FIX — PAPER STOP-LOSS MUST NEVER CREATE LIVE ORDERS
+
+Inspect:
+
+```typescript
+updateOpenPaperTrades()
+```
+
+Currently this function may dispatch real SELL orders.
+
+Remove all broker execution from paper position monitoring.
+
+The paper monitoring function must only:
+
+- Update simulated option prices.
+- Calculate simulated P&L.
+- Apply simulated SL.
+- Apply simulated target.
+- Apply simulated trailing SL.
+- Close simulated paper positions.
+
+Real SELL orders must originate exclusively from the live position management service.
+
+Before any live exit order:
+
+1. Confirm a corresponding live position exists.
+2. Confirm the original broker entry was filled.
+3. Determine remaining open quantity from broker-confirmed state.
+4. Verify the exact broker contract.
+5. Ensure no duplicate exit is already pending.
+6. Submit only the necessary exit quantity.
+
+Never send a naked SELL because a paper position reached its stop-loss.
+
+---
+
+# 9. P0 FIX — REAL STOP-LOSS, TARGET, AND TRAILING STOP
+
+Separate live exit management from simulated exit management.
+
+The live position monitor must use authoritative option-contract market data.
+
+Required behavior:
+
+```text
+CONFIRMED LIVE POSITION
+          |
+          v
+LIVE OPTION QUOTE
+          |
+          v
+QUOTE QUALITY VALIDATION
+          |
+          v
+SL / TARGET / TRAILING EVALUATION
+          |
+          v
+EXIT REQUEST
+          |
+          v
+BROKER SELL SUBMISSION
+          |
+          v
+BROKER STATUS MONITORING
+          |
+          v
+CONFIRMED EXIT
+          |
+          v
+POSITION CLOSED
+```
+
+Do not close the database position before the broker exit fills.
+
+Handle:
+
+- Broker rejection.
+- Disconnection.
+- Timeout.
+- Partial fill.
+- Duplicate exit trigger.
+- Out-of-order updates.
+- Exchange closure.
+- Missing quote.
+- Process restart.
+
+Persist an exit request before submitting it.
+
+Use idempotency and durable order tracking.
+
+A failed exit must remain visible and alertable.
+
+---
+
+# 10. P0 FIX — FORCED INTRADAY SQUARE-OFF
+
+Correct:
+
+```typescript
+checkForcedIntradaySquareOff()
+```
+
+Paper positions must be closed in the paper ledger.
+
+Live positions must be exited through the live execution service.
+
+Use confirmed broker fills to finalize real positions.
+
+Do not silently mark live positions closed locally.
+
+Implement:
+
+- Configurable force-square-off time.
+- Market-session-aware scheduling.
+- Separate MIS and NRML policies.
+- Pending-order monitoring.
+- Broker disconnection handling.
+- Restart recovery.
+- Urgent alerts for unresolved exits.
+
+After market closure, unresolved positions must remain visible.
+
+Do not falsely report a successful square-off.
+
+---
+
+# 11. P0 FIX — SAFE OPPOSITE CROSSOVER REVERSAL
+
+Current reversal logic can locally close an old position before its actual broker exit is confirmed.
+
+Correct this.
+
+Required live reversal:
+
+```text
+OPPOSITE CROSSOVER
+         |
+         v
+CHECK EXISTING LIVE POSITION
+         |
+         v
+REQUEST OLD POSITION EXIT
+         |
+         v
+CONFIRM BROKER EXIT
+         |
+         v
+VALIDATE NEW ENTRY
+         |
+         v
+SUBMIT NEW BUY
+         |
+         v
+CONFIRM NEW ENTRY
+```
+
+If the previous exit fails:
+
+- Do not incorrectly mark it CLOSED.
+- Do not blindly open a replacement position.
+- Record the unresolved exit.
+- Alert the user.
+- Apply the configured risk policy.
+
+Paper reversal must remain independent.
+
+A failed live reversal must not prevent valid paper trading.
+
+---
+
+# 12. P0 FIX — BROKER REJECTION MUST NOT STOP PAPER TRADING
+
+This requirement is mandatory.
+
+Example:
+
+```text
+NIFTY BULLISH EMA CROSSOVER
+
+Paper trading enabled: YES
+Live trading enabled: YES
+
+Paper BUY:
+SUCCESS
+
+Upstox BUY:
+REJECTED — Insufficient funds
+```
+
+The final result must be:
+
+```json
+{
+  "signalStatus": "CONFIRMED",
+  "paper": {
+    "enabled": true,
+    "status": "FILLED_SIMULATED",
+    "positionStatus": "OPEN"
+  },
+  "live": {
+    "enabled": true,
+    "status": "REJECTED",
+    "filledQuantity": 0,
+    "positionCreated": false,
+    "rejectionReason": "Insufficient funds"
+  }
+}
+```
+
+Use the broker's actual rejection message rather than assuming the reason.
+
+Paper trade monitoring must continue normally.
+
+Insufficient-funds rejection must not trigger automatic live retries.
+
+Repeated broker rejections should be rate-limited and visible.
+
+Never treat a rejected order as a broker position.
+
+---
+
+# 13. P0 FIX — CENTRALIZED RISK AND EXECUTION CONTROLS
+
+Route every EMA live BUY/SELL operation through the centralized execution gateway.
+
+Integrate:
+
+```text
+killSwitch
+
+exposureController
+
+brokerAdapter
+
+contractMaster
+
+orderAdapter
+```
+
+Required safety controls:
+
+- Authenticated and authorized live trading.
+- Explicit live mode arming.
+- Centralized kill switch.
+- Valid broker session.
+- Valid broker instrument.
+- Market-session validation.
+- Data freshness validation.
+- Position limits.
+- Maximum order size.
+- Daily and total exposure limits.
+- Duplicate-order prevention.
+- Idempotent execution requests.
+- Correct available capital and account state.
+- Broker-side order reconciliation.
+
+Preserve independently enabled paper and live modes.
+
+A live safety rejection must never be converted into a live fill.
+
+If a live attempt is blocked before submission, record the exact reason separately from an Upstox broker rejection.
+
+Emergency risk-reducing exits must have explicitly defined permissions and safeguards.
+
+---
+
+# 14. P0 FIX — AUTHENTICATION AND EXECUTION API SECURITY
+
+Inspect all EMA routes in `serverApp.ts`.
+
+Protect every state-changing endpoint.
+
+Specifically:
+
+```text
+/api/ema15m/settings
+
+/api/ema15m/paper-trades/toggle
+
+/api/ema15m/live-trading/toggle
+
+/api/ema15m/mock-crossover
+
+/api/ema15m/paper-trades/close
+
+/api/ema15m/execution-logs/clear
+
+/api/ema15m/sync
+```
+
+Apply:
+
+- Authentication.
+- Role-based authorization.
+- Input schema validation.
+- Server-side permission enforcement.
+- Audit logging.
+- Appropriate request rate limits.
+- CSRF protection if cookie-based authentication is used.
+
+Remove insecure authentication fallbacks that assign requests to the most recently active database user.
+
+Require elevated permissions for live execution changes.
+
+Frontend confirmation dialogs are not authorization controls.
+
+Do not expose Telegram bot tokens or broker secrets through ordinary settings responses.
+
+---
+
+# 15. P0 FIX — ISOLATE MOCK CROSSOVER EXECUTION
+
+The existing mock crossover function calls the same signal finalization path as live trading.
+
+This must be corrected.
+
+Mock signals must:
+
+- Be explicitly identified as synthetic.
+- Use mock execution services.
+- Never generate real Upstox orders.
+- Never trigger real broker exits.
+- Never contaminate genuine market candle history.
+- Never affect live risk statistics.
+
+Protect mock endpoints.
+
+Disable production mock mutation unless explicitly authorized for a safe test environment.
+
+Test:
+
+```text
+LIVE TRADING = ON
+PAPER TRADING = ON
+MOCK CROSSOVER TRIGGERED
+```
+
+Expected:
+
+```text
+Real broker orders = 0
+Real broker positions = unchanged
+```
+
+---
+
+# 16. P1 FIX — DYNAMIC OPTION CONTRACT RESOLUTION
+
+Do not rely on hardcoded index lot sizes or manually constructed trading symbols for live execution.
+
+Use current broker instrument-master data.
+
+Resolve:
+
+```text
+Exchange
+
+Underlying
+
+Expiry
+
+Strike
+
+Option type
+
+Broker instrument key
+
+Trading symbol
+
+Lot size
+
+Tick size
+
+Contract availability
+```
+
+Validate the actual contract before submitting an order.
+
+Use the resolved contract lot size for quantity and P&L.
+
+Do not assume that all supported indices have weekly contracts.
+
+Do not generate nonexistent expiries from outdated weekday rules.
+
+If no valid listed contract is available, reject the live entry with a clear reason.
+
+Paper trades may use explicitly modeled contracts only when clearly labeled as simulations.
+
+---
+
+# 17. P1 FIX — CORRECT BUY CE / BUY PE ACCOUNTING
+
+Separate market direction from actual transaction side.
+
+For the current option-buying strategy:
+
+```text
+BULLISH SIGNAL:
+BUY CE
+
+BEARISH SIGNAL:
+BUY PE
+```
+
+Both positions are BUY positions.
+
+Therefore:
+
+```typescript
+grossPnl =
+  (exitOptionPremium - entryOptionPremium)
+  * filledQuantity;
+```
+
+Use the same formula for BUY CE and BUY PE.
+
+Correct every inconsistent direction-based P&L calculation.
+
+Maintain separate fields:
+
+```typescript
+marketBias
+
+positionSide
+
+optionType
+```
+
+Add tests proving a BUY PE trade makes a profit when its premium increases.
+
+---
+
+# 18. P1 FIX — CORRECT STOP-LOSS AND TARGET RULES
+
+For both BUY CE and BUY PE:
+
+```typescript
+stopLoss = Math.max(minimumValidPremium, entryPrice - 30);
+
+targetPrice = entryPrice + 100;
+```
+
+Make the values configurable if appropriate.
+
+Ensure the minimum stop price follows broker tick-size requirements.
+
+Fix the backtester, which currently reverses stop-loss and target values for BUY PE.
+
+Use the same strategy rules in:
+
+- Paper execution.
+- Live execution.
+- Historical replay.
+- Backtesting.
+
+Do not maintain contradictory implementations.
+
+---
+
+# 19. P1 FIX — CORRECT OPTION PREMIUM DATA
+
+Inspect:
+
+```typescript
+getHistoricalOptionLtp()
+```
+
+The current query does not correctly filter by option expiry.
+
+Fix contract identity matching.
+
+For live positions, prefer current contract-specific broker quote data.
+
+For historical replay, use only quotes available at or before the historical simulation timestamp.
+
+Implement market-data metadata:
+
+```typescript
+source
+
+exchangeTimestamp
+
+receivedTimestamp
+
+ageMs
+
+isStale
+
+isTradable
+
+isModeled
+```
+
+Never use theoretical Black–Scholes prices as if they were confirmed market fills.
+
+If model pricing is used for paper simulation, explicitly label it.
+
+---
+
+# 20. P1 FIX — REMOVE BACKTEST LOOKAHEAD BIAS
+
+Refactor option pricing methods to accept a simulation timestamp.
+
+Never use:
+
+```typescript
+new Date()
+```
+
+to retrieve historical option prices during backtesting.
+
+Use:
+
+```typescript
+simulationTimestamp
+```
+
+for:
+
+- Historical quote lookup.
+- Time to option expiry.
+- Contract selection.
+- Market-session validation.
+
+Prevent access to future observations.
+
+Use historical tradeable bid/ask data where available.
+
+If historical option data is insufficient, report the limitation instead of presenting modeled results as broker-realistic fills.
+
+---
+
+# 21. P1 FIX — UNIFY LIVE AND BACKTEST STRATEGY LOGIC
+
+Create a shared pure strategy-rules module.
+
+Suggested design:
+
+```text
+src/server/engine/ema15m/
+    candleBuilder.ts
+    indicatorEngine.ts
+    signalEngine.ts
+    strategyRules.ts
+    contractResolver.ts
+    executionCoordinator.ts
+    paperExecutionService.ts
+    liveExecutionService.ts
+    brokerOrderReconciler.ts
+    positionMonitor.ts
+    riskPolicy.ts
+    sessionCalendar.ts
+```
+
+The live engine and backtester must use the same pure:
+
+- Crossover detection.
+- Entry eligibility.
+- Position side.
+- Stop-loss calculations.
+- Target calculations.
+- Trailing stop calculations.
+- Reversal rules.
+
+Execution adapters should handle paper fills versus real broker fills.
+
+Avoid duplicating strategy mathematics across live and backtest paths.
+
+---
+
+# 22. P1 FIX — CORRECT MARKET HOURS AND TIMESTAMPS
+
+Use timezone-aware exchange session logic.
+
+Do not detect 15:15 IST by checking whether an ISO UTC timestamp contains `T15:15`.
+
+Preserve:
+
+```text
+Exchange event timestamp
+
+Candle start timestamp
+
+Candle close timestamp
+
+Signal confirmation timestamp
+
+Broker order timestamp
+```
+
+Ensure 15-minute candles align with Indian exchange session boundaries.
+
+Handle:
+
+- Out-of-order ticks.
+- Delayed market data.
+- Missing candles.
+- Exchange holidays.
+- Special sessions.
+- Feed disconnections.
+- Reconnection gaps.
+
+Historical candles must not be considered newly executable signals merely because they were loaded or finalized late.
+
+---
+
+# 23. P1 FIX — DAILY LOSS CIRCUIT BREAKER
+
+Current implementation uses aggregated historical EMA paper P&L.
+
+Replace this with an explicit session-based risk calculation.
+
+Distinguish:
+
+```text
+Paper realized P&L
+
+Paper unrealized P&L
+
+Live broker realized P&L
+
+Live broker unrealized P&L
+```
+
+Use the applicable IST trading session and authorized broker account.
+
+Implement:
+
+```typescript
+maxDailyLossLimit
+
+maxSingleTradeRisk
+
+maxConcurrentPositions
+
+maxTotalExposure
+
+maxConsecutiveLosses
+```
+
+Do not combine paper profits with real losses.
+
+Do not use the all-time paper P&L total as today's real loss.
+
+A live risk breach must not prevent the independent paper strategy from continuing unless paper trading is separately disabled.
+
+---
+
+# 24. P1 FIX — BACKTEST PERFORMANCE ACCURACY
+
+Correct the EMA backtesting engine.
+
+Required improvements:
+
+1. Fix BUY PE stop-loss and target directions.
+2. Fix historical option-price timestamps.
+3. Correct forced square-off time.
+4. Use historical contract expiry and lot sizes.
+5. Eliminate future data leakage.
+6. Apply realistic estimated trading costs.
+7. Model slippage explicitly.
+8. Handle same-candle SL/target ambiguity conservatively.
+9. Calculate actual equity-based maximum drawdown.
+10. Respect initial capital.
+11. Track position capital utilization.
+12. Separate modeled-option results from real historical-option results.
+13. Calculate correct net P&L.
+14. Provide per-trade execution assumptions.
+15. Reject or clearly flag insufficient historical data.
+
+Do not hardcode:
+
+```typescript
+maxDrawdownPercent = 0;
+```
+
+Calculate it properly.
+
+Ensure backtest results are reproducible.
+
+---
+
+# 25. P1 FIX — MARKET DATA INTEGRITY
+
+Do not treat generated lower-timeframe candles as real historical candles.
+
+If requested chart timeframe is:
+
+```text
+1m
+3m
+5m
+```
+
+fetch or construct bars from genuine lower-timeframe market observations.
+
+Do not interpolate fictional price paths from 15-minute OHLC candles and present them as authentic historical data.
+
+If a visualization-only modeled path is retained, label it clearly as synthetic.
+
+Keep synthetic market data out of live strategy eligibility.
+
+Correct VWAP calculations when authentic volume is unavailable.
+
+Improve quote-source and freshness tracking.
+
+---
+
+# 26. P1 FIX — RELIABLE STARTUP AND RESTART RECOVERY
+
+On server startup:
+
+1. Load historical candle state.
+2. Recover pending execution attempts.
+3. Recover live order records.
+4. Query actual broker orders and positions.
+5. Reconcile confirmed positions.
+6. Recover pending exits.
+7. Resume monitoring valid positions.
+8. Preserve existing paper positions.
+9. Avoid replaying already-processed signals.
+10. Detect unresolved discrepancies.
+
+Never delete trade history automatically.
+
+Never assume a previous broker order failed solely because the process restarted before receiving its response.
+
+Implement restart-safe idempotency.
+
+---
+
+# 27. P1 FIX — ORDER DEDUPLICATION AND CONCURRENCY
+
+Implement deterministic signal and execution identities.
+
+Example concept:
+
+```text
+strategy_instance
++
+instrument
++
+timeframe
++
+candle_timestamp
++
+signal_type
++
+execution_mode
+```
+
+Use database uniqueness constraints and serialized per-strategy execution processing.
+
+Paper and live executions must have different identities.
+
+Prevent duplicate Upstox orders when:
+
+- Duplicate ticks arrive.
+- Two requests overlap.
+- Server restarts.
+- Broker response times out.
+- Multiple engine instances run.
+- A crossover is processed twice.
+
+Do not blindly retry an order after an ambiguous network timeout.
+
+Reconcile its broker state first.
+
+---
+
+# 28. P1 FIX — NOTIFICATION ACCURACY
+
+Separate signal notifications from execution notifications.
+
+Example:
+
+```text
+SIGNAL CONFIRMED
+```
+
+Then:
+
+```text
+PAPER ORDER FILLED
+```
+
+And independently:
+
+```text
+UPSTOX ORDER REJECTED
+Reason: Insufficient margin
+```
+
+Do not send a generic "Trade Executed" notification before an actual broker fill.
+
+For real orders, distinguish:
+
+```text
+SUBMITTED
+
+FILLED
+
+PARTIALLY_FILLED
+
+REJECTED
+
+EXIT_FAILED
+
+CLOSED
+```
+
+Include broker order ID only when actually available.
+
+Preserve Telegram, email, browser, and sound notification functionality.
+
+---
+
+# 29. P1 FIX — EMA DASHBOARD IMPROVEMENTS
+
+Preserve the existing dashboard design and available functionality.
+
+Correct inconsistent frontend data properties such as:
+
+```typescript
+trade.dataSource
+```
+
+versus:
+
+```typescript
+trade.source
+```
+
+and:
+
+```typescript
+trade.entryTime
+```
+
+versus:
+
+```typescript
+trade.entryTimestamp
+```
+
+Use properly typed API contracts.
+
+### Required dashboard layout
+
+For every confirmed signal, display two independent execution outcomes.
+
+#### Paper trading panel
+
+```text
+PAPER TRADING
+
+Status: OPEN
+Trade: BUY NIFTY CE
+Quantity: 1 Lot
+Entry Price: ₹...
+Current Price: ₹...
+Stop Loss: ₹...
+Target: ₹...
+Trailing SL: ₹...
+Unrealized P&L: ₹...
+Execution: SIMULATED
+```
+
+#### Upstox live execution panel
+
+```text
+UPSTOX LIVE EXECUTION
+
+Signal: BULLISH
+
+Status: REJECTED
+
+Broker Order ID: Not available
+
+Requested Quantity: ...
+
+Filled Quantity: 0
+
+Reason: Insufficient margin
+
+Live Position: NONE
+
+Attempt Timestamp: ...
+```
+
+Both panels should remain visible when paper and live execution are enabled.
+
+### Dashboard requirements
+
+- Independent paper/live enable switches.
+- Separate paper/live statuses.
+- Separate paper/live P&L.
+- Explicit broker rejection messages.
+- Pending broker order indicators.
+- Unresolved broker position alerts.
+- Real broker connection health.
+- Current data freshness.
+- Correct lot-size display.
+- Correct contract expiry.
+- Valid live position square-off controls.
+- Safe paper square-off controls.
+- No misleading success labels.
+
+Do not show a real broker position as OPEN when its order was rejected.
+
+---
+
+# 30. P2 FIX — AUDIT LOGGING
+
+Implement structured execution events.
+
+Each event should include:
+
+```text
+event_id
+
+signal_id
+
+execution_id
+
+execution_mode
+
+instrument
+
+broker_order_id
+
+stage
+
+status
+
+timestamp
+
+error_code
+
+error_message
+
+details
+```
+
+Logs must distinguish:
+
+```text
+SIGNAL_DETECTED
+
+SIGNAL_CONFIRMED
+
+PAPER_ENTRY
+
+LIVE_PRE_TRADE_CHECK
+
+LIVE_ORDER_SUBMITTED
+
+LIVE_ORDER_REJECTED
+
+LIVE_ORDER_FILLED
+
+PAPER_STOP_LOSS
+
+LIVE_EXIT_REQUESTED
+
+LIVE_EXIT_SUBMITTED
+
+LIVE_EXIT_FILLED
+
+LIVE_EXIT_FAILED
+
+FORCED_SQUARE_OFF
+```
+
+Trading audit records should be append-only.
+
+Do not permit ordinary API requests to erase execution history.
+
+Create appropriate admin-only retention/export mechanisms instead.
+
+---
+
+# 31. P2 FIX — TEST COVERAGE
+
+Create comprehensive unit and integration tests using a mocked Upstox adapter.
+
+Tests must never send actual live broker orders.
+
+### Mandatory tests
+
+**Test 1: Paper enabled, live disabled**
+
+Expected:
+
+- Paper trade created.
+- No Upstox order submitted.
+
+**Test 2: Paper disabled, live enabled**
+
+Expected:
+
+- Live order attempted if safety checks pass.
+- No paper trade created.
+
+**Test 3: Both paper and live enabled**
+
+Expected:
+
+- Paper simulated execution occurs.
+- Live attempt occurs independently.
+- Both results are recorded separately.
+
+**Test 4: Upstox insufficient funds**
+
+Expected:
+
+- Live attempt marked REJECTED.
+- No live position created.
+- Paper position remains OPEN.
+- No real SELL order generated from paper exits.
+
+**Test 5: Upstox order accepted but not filled**
+
+Expected:
+
+- Status remains SUBMITTED/OPEN.
+- No confirmed live position is created.
+
+**Test 6: Partial broker fill**
+
+Expected:
+
+- Correct filled quantity.
+- Correct position quantity.
+- Correct average execution price.
+
+**Test 7: Live exit rejected**
+
+Expected:
+
+- Position remains unresolved/open.
+- No false CLOSED status.
+- Error notification generated.
+
+**Test 8: Forced intraday square-off**
+
+Expected:
+
+- Paper position closes independently.
+- Live position closes only after broker confirmation.
+
+**Test 9: Opposite crossover**
+
+Expected:
+
+- Old live exit confirmed before new live entry.
+- Paper reversal remains independent.
+
+**Test 10: BUY PE P&L**
+
+Expected:
+
+- Increasing premium produces positive P&L.
+
+**Test 11: BUY PE SL/target**
+
+Expected:
+
+- SL below entry premium.
+- Target above entry premium.
+
+**Test 12: Startup recovery**
+
+Expected:
+
+- No legitimate EMA trade records deleted.
+- Pending broker orders reconciled.
+
+**Test 13: Mock crossover**
+
+Expected:
+
+- Zero actual broker order calls.
+
+**Test 14: Duplicate signal**
+
+Expected:
+
+- Maximum one paper entry and one intended live entry per strategy/signal/mode.
+
+**Test 15: Incorrect contract**
+
+Expected:
+
+- Live submission rejected before broker placement.
+
+**Test 16: Stale quote**
+
+Expected:
+
+- Live entry blocked.
+- Paper modeling handled according to simulation policy.
+
+**Test 17: Global kill switch**
+
+Expected:
+
+- New live entries blocked.
+- Paper-mode behavior follows its separate configuration.
+
+**Test 18: Historical backtest**
+
+Expected:
+
+- No future option quote access.
+- Correct historical timestamp and expiry resolution.
+
+**Test 19: Multi-user permissions**
+
+Expected:
+
+- Unauthorized user cannot enable live execution.
+- One user's permissions cannot silently control another broker account.
+
+**Test 20: Both modes with zero broker funds**
+
+Expected:
+
+- Paper execution continues.
+- Broker rejection accurately recorded.
+- No phantom live position.
+- No unauthorized broker SELL order.
+- No automatic repeated rejection loop.
+
+---
+
+# 32. IMPLEMENTATION RULES
+
+Follow these engineering requirements:
+
+1. Inspect the existing implementation before modifying it.
+2. Preserve unrelated platform functionality.
+3. Avoid replacing the engine with a simplified demo.
+4. Avoid introducing synthetic live-market values.
+5. Avoid unnecessary new dependencies.
+6. Use strict TypeScript types.
+7. Avoid introducing additional `any` usage.
+8. Implement reusable services.
+9. Validate all external input.
+10. Use database transactions where appropriate.
+11. Preserve historical user data.
+12. Keep migrations idempotent.
+13. Implement reliable error handling.
+14. Use structured logging.
+15. Ensure broker calls are not duplicated.
+16. Never mark a rejected order as filled.
+17. Never mark a live position closed without confirmed execution.
+18. Never issue live orders from paper-only monitoring.
+19. Keep paper and live settings independently configurable.
+20. Maintain backward compatibility where safely possible.
+21. Never expose broker tokens or secrets in logs or API responses.
+22. Do not send real orders while implementing or testing the changes.
+23. Do not silently bypass risk controls to make tests pass.
+24. Follow the current official Upstox API contract.
+25. Document any assumptions requiring broker-side verification.
+
+---
+
+# 33. REQUIRED VALIDATION
+
+After implementation, run:
+
+```bash
+npm run lint
+npm test
+npm run build
+```
+
+If additional integration tests are created, run them as well.
+
+Resolve compilation errors and test regressions.
+
+Do not report tests as passed unless they were actually executed successfully.
+
+If existing unrelated tests fail, clearly distinguish pre-existing failures from newly introduced failures.
+
+Use mocked broker responses for:
+
+```text
+Order Accepted
+
+Order Pending
+
+Order Partially Filled
+
+Order Fully Filled
+
+Order Rejected
+
+Insufficient Margin
+
+Invalid Contract
+
+Broker Disconnected
+
+Order Timeout
+
+Exit Rejected
+```
+
+No actual broker order submission is permitted during automated validation.
+
+---
+
+# 34. REQUIRED DELIVERABLES
+
+Provide the following after implementation.
+
+### A. Implementation summary
+
+Explain:
+
+- Root causes fixed.
+- Architecture changes.
+- Security fixes.
+- Database migrations.
+- Execution behavior changes.
+- Backtesting corrections.
+
+### B. Changed files
+
+List all changed and newly created files.
+
+### C. Before-and-after execution flow
+
+Clearly explain how paper trading and live trading now operate independently.
+
+### D. Test results
+
+Include actual results for:
+
+```text
+TypeScript / Lint
+
+Unit Tests
+
+Integration Tests
+
+Production Build
+```
+
+### E. Database migration report
+
+Explain which tables or indexes were changed and how existing trades were preserved.
+
+### F. Remaining limitations
+
+Document anything not fully implemented or not runtime-verified.
+
+### G. Final dual-mode verification
+
+Demonstrate through mocked broker integration tests:
+
+```text
+PAPER = ON
+
+LIVE = ON
+
+UPSTOX BUY RESPONSE = REJECTED
+```
+
+Expected result:
+
+```text
+Paper Trade:
+FILLED_SIMULATED
+
+Paper Position:
+OPEN
+
+Upstox Attempt:
+REJECTED
+
+Live Position:
+NOT CREATED
+
+Paper MTM:
+ACTIVE
+
+Paper Stop Loss:
+ACTIVE
+
+Paper Trailing Stop:
+ACTIVE
+
+Real Broker SELL:
+NOT ALLOWED WITHOUT CONFIRMED LIVE POSITION
+```
+
+---
+
+# 35. FINAL SUCCESS CRITERIA
+
+The task is complete only when:
+
+✅ Paper trading works independently.
+
+✅ Live trading attempts work independently.
+
+✅ Both can remain enabled simultaneously.
+
+✅ Upstox rejection does not disrupt paper trades.
+
+✅ No rejected broker order creates a fake live position.
+
+✅ No paper trade can accidentally generate a live SELL order.
+
+✅ Real entry and exit fills are properly reconciled.
+
+✅ Correct broker instrument keys and lot sizes are used.
+
+✅ BUY CE and BUY PE P&L calculations are correct.
+
+✅ Stop-loss and target rules are consistent.
+
+✅ Forced square-off correctly handles real broker positions.
+
+✅ Existing EMA trading history survives restart.
+
+✅ Mock signals cannot place real orders.
+
+✅ Critical EMA APIs require authorization.
+
+✅ Centralized risk and kill-switch policies are respected.
+
+✅ Backtesting has no future-data leakage.
+
+✅ Dashboard displays separate paper and live execution results.
+
+✅ Automated tests and production build pass.
+
+## MOST IMPORTANT INSTRUCTION
+
+**Do not remove the user's ability to keep PAPER TRADING and REAL UPSTOX TRADING enabled simultaneously.**
+
+The intended design is:
+
+**One confirmed EMA signal → two independent execution workflows.**
+
+A broker-side insufficient-funds rejection is an acceptable outcome for the live workflow.
+
+It must never be considered a reason to cancel a valid paper trade.
+
+At the same time, rejected live orders must never be represented as filled positions, and paper positions must never trigger unauthorized real broker exit orders.
+
+Implement the corrections thoroughly, verify them through tests, and provide an evidence-based completion report.

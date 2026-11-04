@@ -54,7 +54,7 @@ export function clearAuthCookie(res: Response) {
 /**
  * Extract authenticated user from request cookie or header
  */
-export function getUserFromRequest(req: Request): User | null {
+export function getUserFromRequest(req: Request, allowFallback: boolean = false): User | null {
   try {
     let token = req.cookies?.session_token || req.cookies?.auth_token;
     if (!token && req.headers.authorization?.startsWith('Bearer ')) {
@@ -81,17 +81,18 @@ export function getUserFromRequest(req: Request): User | null {
       }
     }
 
-    // Fallback in iframe sandbox environments:
-    // If no token was transmitted due to 3rd-party cookie isolation, resolve to most recent active user in database
-    const recentUser = dbEngine.getMostRecentUser();
-    if (recentUser && recentUser.isActive !== false && recentUser.is_active !== 0) {
-      return recentUser;
+    // Fallback strictly in read-only iframe sandbox environments if explicitly enabled:
+    // Never allow fallback for state-changing or mutating requests (POST, PUT, DELETE, PATCH)
+    const isSafeMethod = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+    if (allowFallback && isSafeMethod) {
+      const recentUser = dbEngine.getMostRecentUser();
+      if (recentUser && recentUser.isActive !== false && recentUser.is_active !== 0) {
+        return recentUser;
+      }
     }
 
     return null;
   } catch (err) {
-    const recentUser = dbEngine.getMostRecentUser();
-    if (recentUser && recentUser.isActive !== false && recentUser.is_active !== 0) return recentUser;
     return null;
   }
 }
@@ -100,17 +101,26 @@ export function getUserFromRequest(req: Request): User | null {
  * Express middleware to attach user to request
  */
 export function attachUser(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  req.user = getUserFromRequest(req);
+  req.user = getUserFromRequest(req, true);
   next();
 }
 
 /**
- * Middleware requiring authentication
+ * Middleware requiring verified authentication without fallback
  */
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const user = getUserFromRequest(req);
+  const user = getUserFromRequest(req, false);
   if (!user) {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+  req.user = user;
+  next();
+}
+
+export function requireStrictAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const user = getUserFromRequest(req, false);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in with valid credentials.' });
   }
   req.user = user;
   next();

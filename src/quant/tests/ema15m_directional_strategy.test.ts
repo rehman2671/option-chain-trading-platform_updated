@@ -17,6 +17,7 @@ import assert from 'node:assert';
 import { ContractMaster } from '../data/contractMaster.js';
 import { ExpiryResolver } from '../data/expiryResolver.js';
 import { globalEma15mEngine } from '../../server/engine/ema15mEngine.js';
+import { StrategyRules } from '../../server/engine/ema15m/strategyRules.js';
 
 describe('15M EMA Alert & Directional Automated Strategy (12 Rules)', () => {
   describe('Rule 4 & 9: Directional ATM Strike Selection', () => {
@@ -98,13 +99,18 @@ describe('15M EMA Alert & Directional Automated Strategy (12 Rules)', () => {
       assert.strictEqual(targetPrice, 350.0, 'CE Target must be Entry + 100');
     });
 
-    it('calculates Bearish PE SL (+30) and Target (-100) per strategy specification', () => {
+    it('calculates Bearish PE SL (-30) and Target (+100) for option buyer long premium', () => {
       const entryPrice = 250.0;
-      const stopLoss = Number((entryPrice + 30).toFixed(2));
-      const targetPrice = Number((entryPrice - 100).toFixed(2));
+      const stopLoss = StrategyRules.calculateStopLoss(entryPrice);
+      const targetPrice = StrategyRules.calculateTargetPrice(entryPrice);
 
-      assert.strictEqual(stopLoss, 280.0, 'PE SL must be Entry + 30');
-      assert.strictEqual(targetPrice, 150.0, 'PE Target must be Entry - 100');
+      assert.strictEqual(stopLoss, 220.0, 'PE SL must be Entry - 30 for long option');
+      assert.strictEqual(targetPrice, 350.0, 'PE Target must be Entry + 100 for long option');
+
+      // Verify P&L accounting when premium appreciates
+      const higherExitPrice = 290.0;
+      const profit = StrategyRules.calculateOptionBuyerGrossPnl(entryPrice, higherExitPrice, 25);
+      assert.strictEqual(profit, 1000.0, 'PE buyer profits when premium increases: (290 - 250) * 25 = 1000');
     });
   });
 

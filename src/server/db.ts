@@ -9,6 +9,7 @@ import path from 'path';
 import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
+import type { EmaLiveOrderAttempt, EmaLivePosition, EmaExecutionEvent } from './engine/ema15m/types.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
 export interface MigrationReport {
@@ -1299,18 +1300,32 @@ class DatabaseEngine {
   public getHistoricalOptionLtp(symbol: string, expiry: string, strikePrice: number, optionType: string, timestamp: string): number | null {
     if (!this.db) return null;
     try {
-      const row = this.db.prepare(
-        `SELECT ltp FROM option_chains WHERE symbol = ? AND strike_price = ? AND option_type = ? AND updated_at <= ? ORDER BY updated_at DESC LIMIT 1`
-      ).get(symbol, strikePrice, optionType, timestamp) as any;
+      let row: any = null;
+      if (expiry) {
+        row = this.db.prepare(
+          `SELECT ltp FROM option_chains WHERE symbol = ? AND expiry = ? AND strike_price = ? AND option_type = ? AND updated_at <= ? ORDER BY updated_at DESC LIMIT 1`
+        ).get(symbol, expiry, strikePrice, optionType, timestamp) as any;
+      } else {
+        row = this.db.prepare(
+          `SELECT ltp FROM option_chains WHERE symbol = ? AND strike_price = ? AND option_type = ? AND updated_at <= ? ORDER BY updated_at DESC LIMIT 1`
+        ).get(symbol, strikePrice, optionType, timestamp) as any;
+      }
 
       if (row && typeof row.ltp === 'number' && row.ltp > 0) {
         return row.ltp;
       }
 
       // Check recorded quant_option_chain_snapshots
-      const quantRow = this.db.prepare(
-        `SELECT ltp FROM quant_option_chain_snapshots WHERE underlying = ? AND strike = ? AND option_type = ? AND market_ts <= ? ORDER BY market_ts DESC LIMIT 1`
-      ).get(symbol, strikePrice, optionType, timestamp) as any;
+      let quantRow: any = null;
+      if (expiry) {
+        quantRow = this.db.prepare(
+          `SELECT ltp FROM quant_option_chain_snapshots WHERE underlying = ? AND expiry = ? AND strike = ? AND option_type = ? AND market_ts <= ? ORDER BY market_ts DESC LIMIT 1`
+        ).get(symbol, expiry, strikePrice, optionType, timestamp) as any;
+      } else {
+        quantRow = this.db.prepare(
+          `SELECT ltp FROM quant_option_chain_snapshots WHERE underlying = ? AND strike = ? AND option_type = ? AND market_ts <= ? ORDER BY market_ts DESC LIMIT 1`
+        ).get(symbol, strikePrice, optionType, timestamp) as any;
+      }
 
       if (quantRow && typeof quantRow.ltp === 'number' && quantRow.ltp > 0) {
         return quantRow.ltp;
@@ -2175,6 +2190,120 @@ class DatabaseEngine {
       `).run();
       console.log('DatabaseEngine: Applied Migration 017 - EMA Live Broker Execution & Structured Logs.');
     }
+
+    // Migration 018: Independent Dual Execution Mode (Live Order Attempts, Confirmed Live Positions, Execution Events)
+    if (!appliedVersions.has(18)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_live_order_attempts (
+          id TEXT PRIMARY KEY,
+          signal_id TEXT NOT NULL,
+          execution_mode TEXT NOT NULL DEFAULT 'LIVE',
+          instrument TEXT NOT NULL,
+          broker_account_id TEXT,
+          broker_instrument_key TEXT,
+          tradingsymbol TEXT NOT NULL,
+          option_type TEXT NOT NULL,
+          strike REAL NOT NULL,
+          expiry TEXT NOT NULL,
+          requested_quantity INTEGER NOT NULL,
+          filled_quantity INTEGER NOT NULL DEFAULT 0,
+          average_fill_price REAL,
+          order_status TEXT NOT NULL,
+          broker_order_id TEXT,
+          rejection_reason TEXT,
+          submitted_at TEXT,
+          last_broker_update_at TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ema_live_positions (
+          id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL,
+          signal_id TEXT NOT NULL,
+          instrument TEXT NOT NULL,
+          broker_account_id TEXT,
+          broker_instrument_key TEXT,
+          tradingsymbol TEXT NOT NULL,
+          option_type TEXT NOT NULL,
+          strike_price REAL NOT NULL,
+          expiry_date TEXT NOT NULL,
+          product_type TEXT NOT NULL DEFAULT 'MIS',
+          side TEXT NOT NULL DEFAULT 'BUY',
+          market_bias TEXT NOT NULL,
+          entry_broker_order_id TEXT NOT NULL,
+          entry_timestamp TEXT NOT NULL,
+          entry_price REAL NOT NULL,
+          quantity INTEGER NOT NULL,
+          lot_size INTEGER NOT NULL,
+          current_price REAL NOT NULL,
+          unrealized_pnl REAL DEFAULT 0.0,
+          stop_loss REAL,
+          target_price REAL,
+          trailing_stop_loss REAL,
+          is_trailing_active INTEGER DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'OPEN',
+          exit_broker_order_id TEXT,
+          exit_timestamp TEXT,
+          exit_price REAL,
+          exit_reason TEXT,
+          gross_pnl REAL DEFAULT 0.0,
+          brokerage REAL DEFAULT 40.0,
+          charges REAL DEFAULT 0.0,
+          net_pnl REAL DEFAULT 0.0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ema_execution_events (
+          id TEXT PRIMARY KEY,
+          event_id TEXT,
+          signal_id TEXT,
+          execution_id TEXT,
+          execution_mode TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          status TEXT NOT NULL,
+          instrument TEXT NOT NULL,
+          broker_order_id TEXT,
+          error_code TEXT,
+          error_message TEXT,
+          details_json TEXT,
+          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ema_live_attempts_sig ON ema_live_order_attempts(signal_id);
+        CREATE INDEX IF NOT EXISTS idx_ema_live_attempts_inst ON ema_live_order_attempts(instrument, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ema_live_attempts_status ON ema_live_order_attempts(order_status);
+        CREATE INDEX IF NOT EXISTS idx_ema_live_pos_status ON ema_live_positions(status, instrument);
+        CREATE INDEX IF NOT EXISTS idx_ema_live_pos_signal ON ema_live_positions(signal_id);
+        CREATE INDEX IF NOT EXISTS idx_ema_exec_events_sig ON ema_execution_events(signal_id, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_ema_exec_events_mode ON ema_execution_events(execution_mode, stage);
+      `);
+
+      this.db.prepare(`
+        INSERT INTO schema_migrations (version, description)
+        VALUES (18, 'Independent Dual Execution Mode: Live Order Attempts, Live Positions, and Execution Events');
+      `).run();
+      console.log('DatabaseEngine: Applied Migration 018 - Independent Dual Execution Tables.');
+    }
+
+    // Safeguard: Ensure all modern columns exist on ema_notification_settings
+    try {
+      const settingsCols = new Set(
+        (this.db.prepare(`PRAGMA table_info(ema_notification_settings)`).all() as any[]).map(c => c.name)
+      );
+      if (!settingsCols.has('auto_paper_trading_enabled')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN auto_paper_trading_enabled INTEGER DEFAULT 1;`);
+      if (!settingsCols.has('live_broker_execution_enabled')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN live_broker_execution_enabled INTEGER DEFAULT 0;`);
+      if (!settingsCols.has('max_daily_loss_limit')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN max_daily_loss_limit REAL DEFAULT 5000;`);
+      if (!settingsCols.has('upstox_product_type')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN upstox_product_type TEXT DEFAULT 'MIS';`);
+      if (!settingsCols.has('trailing_sl_enabled')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN trailing_sl_enabled INTEGER DEFAULT 1;`);
+      if (!settingsCols.has('profit_lock_points')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN profit_lock_points REAL DEFAULT 70;`);
+      if (!settingsCols.has('trail_distance_points')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN trail_distance_points REAL DEFAULT 30;`);
+      if (!settingsCols.has('force_square_off_time')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN force_square_off_time TEXT DEFAULT '15:15';`);
+      if (!settingsCols.has('telegram_bot_token')) this.db.exec(`ALTER TABLE ema_notification_settings ADD COLUMN telegram_bot_token TEXT;`);
+    } catch (notifColErr: any) {
+      console.warn('[DB] ema_notification_settings safeguard check notice:', notifColErr.message);
+    }
   }
 
   /**
@@ -3021,7 +3150,7 @@ class DatabaseEngine {
     try {
       this.db.prepare(`DELETE FROM ema_15m_candles WHERE instrument = ? AND close < ?`).run(instrument, minPrice);
       this.db.prepare(`DELETE FROM ema_15m_signals WHERE instrument = ? AND price < ?`).run(instrument, minPrice);
-      this.db.prepare(`DELETE FROM ema_paper_trades WHERE instrument = ? AND entry_price < ?`).run(instrument, minPrice);
+      // NOTE: Destructive deletion of ema_paper_trades is removed. Option premiums are far smaller than index spot prices!
     } catch (err) {
       console.error(`[DB] Error purging corrupt EMA candles for ${instrument}:`, err);
     }
@@ -3527,6 +3656,51 @@ class DatabaseEngine {
     }
   }
 
+  public getEmaPaperTradeById(id: string): EmaPaperTrade | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare(`SELECT * FROM ema_paper_trades WHERE id = ?`).get(id) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        direction: r.direction,
+        optionType: r.option_type || undefined,
+        strikePrice: r.strike_price !== null && r.strike_price !== undefined ? Number(r.strike_price) : undefined,
+        expiryDate: r.expiry_date || undefined,
+        productType: (r.product_type as any) || 'MIS',
+        spotAtEntry: r.spot_at_entry !== null && r.spot_at_entry !== undefined ? Number(r.spot_at_entry) : undefined,
+        stopLoss: r.stop_loss !== null && r.stop_loss !== undefined ? Number(r.stop_loss) : undefined,
+        targetPrice: r.target_price !== null && r.target_price !== undefined ? Number(r.target_price) : undefined,
+        trailingStopLoss: r.trailing_stop_loss !== null && r.trailing_stop_loss !== undefined ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        orderId: r.order_id || undefined,
+        brokerStatus: r.broker_status || undefined,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        strategy: r.strategy,
+        source: r.source,
+        status: r.status,
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl),
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null && r.exit_price !== undefined ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl),
+        brokerage: Number(r.brokerage),
+        charges: Number(r.charges),
+        netPnl: Number(r.net_pnl),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch {
+      return null;
+    }
+  }
+
   public getOpenEmaPaperTrades(instrument?: string): EmaPaperTrade[] {
     if (!this.db) return [];
     try {
@@ -3835,6 +4009,625 @@ class DatabaseEngine {
     } catch (err) {
       console.error('[DB] Error computing EMA paper trading summary via SQL aggregation:', err);
       return defaultSummary;
+    }
+  }
+
+  // ========================================================
+  // 15-MINUTE 23/50 EMA LIVE BROKER EXECUTION PERSISTENCE
+  // ========================================================
+
+  public saveEmaLiveOrderAttempt(attempt: EmaLiveOrderAttempt): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_live_order_attempts (
+          id, signal_id, execution_mode, instrument, broker_account_id, broker_instrument_key,
+          tradingsymbol, option_type, strike, expiry, requested_quantity, filled_quantity,
+          average_fill_price, order_status, broker_order_id, rejection_reason, submitted_at,
+          last_broker_update_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          order_status = excluded.order_status,
+          filled_quantity = excluded.filled_quantity,
+          average_fill_price = COALESCE(excluded.average_fill_price, ema_live_order_attempts.average_fill_price),
+          broker_order_id = COALESCE(excluded.broker_order_id, ema_live_order_attempts.broker_order_id),
+          rejection_reason = COALESCE(excluded.rejection_reason, ema_live_order_attempts.rejection_reason),
+          last_broker_update_at = excluded.last_broker_update_at,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(
+        attempt.id,
+        attempt.signalId,
+        attempt.executionMode || 'LIVE',
+        attempt.instrument,
+        attempt.brokerAccountId || null,
+        attempt.brokerInstrumentKey || null,
+        attempt.tradingsymbol,
+        attempt.optionType,
+        attempt.strike,
+        attempt.expiry,
+        attempt.requestedQuantity,
+        attempt.filledQuantity || 0,
+        attempt.averageFillPrice !== undefined ? attempt.averageFillPrice : null,
+        attempt.orderStatus,
+        attempt.brokerOrderId || null,
+        attempt.rejectionReason || null,
+        attempt.submittedAt || null,
+        attempt.lastBrokerUpdateAt || null,
+        attempt.createdAt || new Date().toISOString(),
+        attempt.updatedAt || new Date().toISOString()
+      );
+    } catch (err: any) {
+      console.error('[DB] Error saving EMA live order attempt:', err.message);
+    }
+  }
+
+  public updateEmaLiveOrderAttempt(id: string, updates: Partial<EmaLiveOrderAttempt>): void {
+    if (!this.db) return;
+    try {
+      const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
+      const values: any[] = [];
+
+      if (updates.orderStatus !== undefined) {
+        sets.push('order_status = ?');
+        values.push(updates.orderStatus);
+      }
+      if (updates.filledQuantity !== undefined) {
+        sets.push('filled_quantity = ?');
+        values.push(updates.filledQuantity);
+      }
+      if (updates.averageFillPrice !== undefined) {
+        sets.push('average_fill_price = ?');
+        values.push(updates.averageFillPrice);
+      }
+      if (updates.brokerOrderId !== undefined) {
+        sets.push('broker_order_id = ?');
+        values.push(updates.brokerOrderId);
+      }
+      if (updates.rejectionReason !== undefined) {
+        sets.push('rejection_reason = ?');
+        values.push(updates.rejectionReason);
+      }
+      if (updates.lastBrokerUpdateAt !== undefined) {
+        sets.push('last_broker_update_at = ?');
+        values.push(updates.lastBrokerUpdateAt);
+      }
+
+      values.push(id);
+      this.db.prepare(`UPDATE ema_live_order_attempts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+    } catch (err: any) {
+      console.error('[DB] Error updating EMA live order attempt:', err.message);
+    }
+  }
+
+  public getEmaLiveOrderAttempts(instrument?: string, limit: number = 50, offset: number = 0): EmaLiveOrderAttempt[] {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.min(Math.max(1, limit), 200);
+      let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
+      const params: any[] = [];
+      if (instrument && instrument !== 'ALL') {
+        query += ` AND instrument = ?`;
+        params.push(instrument);
+      }
+      query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      params.push(safeLimit, offset);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        signalId: r.signal_id,
+        executionMode: 'LIVE' as const,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: r.expiry,
+        requestedQuantity: Number(r.requested_quantity),
+        filledQuantity: Number(r.filled_quantity || 0),
+        averageFillPrice: r.average_fill_price !== null ? Number(r.average_fill_price) : undefined,
+        orderStatus: r.order_status,
+        brokerOrderId: r.broker_order_id || undefined,
+        rejectionReason: r.rejection_reason || undefined,
+        submittedAt: r.submitted_at || undefined,
+        lastBrokerUpdateAt: r.last_broker_update_at || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+    } catch (err: any) {
+      console.error('[DB] Error fetching EMA live order attempts:', err.message);
+      return [];
+    }
+  }
+
+  public getLatestEmaLiveOrderAttempt(signalId?: string, instrument?: string): EmaLiveOrderAttempt | null {
+    if (!this.db) return null;
+    try {
+      let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
+      const params: any[] = [];
+      if (signalId) {
+        query += ` AND signal_id = ?`;
+        params.push(signalId);
+      }
+      if (instrument && instrument !== 'ALL') {
+        query += ` AND instrument = ?`;
+        params.push(instrument);
+      }
+      query += ` ORDER BY created_at DESC LIMIT 1`;
+
+      const r = this.db.prepare(query).get(...params) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        signalId: r.signal_id,
+        executionMode: 'LIVE' as const,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: r.expiry,
+        requestedQuantity: Number(r.requested_quantity),
+        filledQuantity: Number(r.filled_quantity || 0),
+        averageFillPrice: r.average_fill_price !== null ? Number(r.average_fill_price) : undefined,
+        orderStatus: r.order_status,
+        brokerOrderId: r.broker_order_id || undefined,
+        rejectionReason: r.rejection_reason || undefined,
+        submittedAt: r.submitted_at || undefined,
+        lastBrokerUpdateAt: r.last_broker_update_at || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public saveEmaLivePosition(pos: EmaLivePosition): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_live_positions (
+          id, attempt_id, signal_id, instrument, broker_account_id, broker_instrument_key,
+          tradingsymbol, option_type, strike_price, expiry_date, product_type, side, market_bias,
+          entry_broker_order_id, entry_timestamp, entry_price, quantity, lot_size, current_price,
+          unrealized_pnl, stop_loss, target_price, trailing_stop_loss, is_trailing_active, status,
+          exit_broker_order_id, exit_timestamp, exit_price, exit_reason, gross_pnl, brokerage,
+          charges, net_pnl, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          current_price = excluded.current_price,
+          unrealized_pnl = excluded.unrealized_pnl,
+          stop_loss = excluded.stop_loss,
+          target_price = excluded.target_price,
+          trailing_stop_loss = COALESCE(excluded.trailing_stop_loss, ema_live_positions.trailing_stop_loss),
+          is_trailing_active = COALESCE(excluded.is_trailing_active, ema_live_positions.is_trailing_active),
+          status = excluded.status,
+          exit_broker_order_id = COALESCE(excluded.exit_broker_order_id, ema_live_positions.exit_broker_order_id),
+          exit_timestamp = excluded.exit_timestamp,
+          exit_price = excluded.exit_price,
+          exit_reason = excluded.exit_reason,
+          gross_pnl = excluded.gross_pnl,
+          brokerage = excluded.brokerage,
+          charges = excluded.charges,
+          net_pnl = excluded.net_pnl,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(
+        pos.id,
+        pos.attemptId,
+        pos.signalId,
+        pos.instrument,
+        pos.brokerAccountId || null,
+        pos.brokerInstrumentKey || null,
+        pos.tradingsymbol,
+        pos.optionType,
+        pos.strikePrice,
+        pos.expiryDate,
+        pos.productType || 'MIS',
+        pos.side || 'BUY',
+        pos.marketBias,
+        pos.entryBrokerOrderId,
+        pos.entryTimestamp,
+        pos.entryPrice,
+        pos.quantity,
+        pos.lotSize,
+        pos.currentPrice,
+        pos.unrealizedPnl || 0,
+        pos.stopLoss,
+        pos.targetPrice,
+        pos.trailingStopLoss !== undefined ? pos.trailingStopLoss : null,
+        pos.isTrailingActive ? 1 : 0,
+        pos.status || 'OPEN',
+        pos.exitBrokerOrderId || null,
+        pos.exitTimestamp || null,
+        pos.exitPrice !== undefined && pos.exitPrice !== null ? pos.exitPrice : null,
+        pos.exitReason || null,
+        pos.grossPnl || 0,
+        pos.brokerage !== undefined ? pos.brokerage : 40,
+        0,
+        pos.netPnl || 0,
+        pos.createdAt || new Date().toISOString(),
+        pos.updatedAt || new Date().toISOString()
+      );
+    } catch (err: any) {
+      console.error('[DB] Error saving EMA live position:', err.message);
+    }
+  }
+
+  public updateEmaLivePosition(id: string, updates: Partial<EmaLivePosition>): void {
+    if (!this.db) return;
+    try {
+      const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
+      const values: any[] = [];
+
+      if (updates.currentPrice !== undefined) {
+        sets.push('current_price = ?');
+        values.push(updates.currentPrice);
+      }
+      if (updates.unrealizedPnl !== undefined) {
+        sets.push('unrealized_pnl = ?');
+        values.push(updates.unrealizedPnl);
+      }
+      if (updates.stopLoss !== undefined) {
+        sets.push('stop_loss = ?');
+        values.push(updates.stopLoss);
+      }
+      if (updates.targetPrice !== undefined) {
+        sets.push('target_price = ?');
+        values.push(updates.targetPrice);
+      }
+      if (updates.trailingStopLoss !== undefined) {
+        sets.push('trailing_stop_loss = ?');
+        values.push(updates.trailingStopLoss);
+      }
+      if (updates.isTrailingActive !== undefined) {
+        sets.push('is_trailing_active = ?');
+        values.push(updates.isTrailingActive ? 1 : 0);
+      }
+      if (updates.status !== undefined) {
+        sets.push('status = ?');
+        values.push(updates.status);
+      }
+      if (updates.exitBrokerOrderId !== undefined) {
+        sets.push('exit_broker_order_id = ?');
+        values.push(updates.exitBrokerOrderId);
+      }
+      if (updates.exitTimestamp !== undefined) {
+        sets.push('exit_timestamp = ?');
+        values.push(updates.exitTimestamp);
+      }
+      if (updates.exitPrice !== undefined) {
+        sets.push('exit_price = ?');
+        values.push(updates.exitPrice);
+      }
+      if (updates.exitReason !== undefined) {
+        sets.push('exit_reason = ?');
+        values.push(updates.exitReason);
+      }
+      if (updates.grossPnl !== undefined) {
+        sets.push('gross_pnl = ?');
+        values.push(updates.grossPnl);
+      }
+      if (updates.netPnl !== undefined) {
+        sets.push('net_pnl = ?');
+        values.push(updates.netPnl);
+      }
+
+      values.push(id);
+      this.db.prepare(`UPDATE ema_live_positions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+    } catch (err: any) {
+      console.error('[DB] Error updating EMA live position:', err.message);
+    }
+  }
+
+  public getOpenEmaLivePositions(instrument?: string): EmaLivePosition[] {
+    if (!this.db) return [];
+    try {
+      let query = `SELECT * FROM ema_live_positions WHERE status = 'OPEN'`;
+      const params: any[] = [];
+      if (instrument && instrument !== 'ALL') {
+        query += ` AND instrument = ?`;
+        params.push(instrument);
+      }
+      query += ` ORDER BY created_at DESC`;
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        attemptId: r.attempt_id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strikePrice: Number(r.strike_price),
+        expiryDate: r.expiry_date,
+        productType: r.product_type,
+        side: r.side,
+        marketBias: r.market_bias,
+        entryBrokerOrderId: r.entry_broker_order_id,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        stopLoss: Number(r.stop_loss),
+        targetPrice: Number(r.target_price),
+        trailingStopLoss: r.trailing_stop_loss !== null ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        status: r.status,
+        exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+    } catch (err: any) {
+      console.error('[DB] Error getting open EMA live positions:', err.message);
+      return [];
+    }
+  }
+
+  public getOpenEmaLivePositionByInstrument(instrument: string): EmaLivePosition | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare(`
+        SELECT * FROM ema_live_positions WHERE instrument = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1
+      `).get(instrument) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        attemptId: r.attempt_id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strikePrice: Number(r.strike_price),
+        expiryDate: r.expiry_date,
+        productType: r.product_type,
+        side: r.side,
+        marketBias: r.market_bias,
+        entryBrokerOrderId: r.entry_broker_order_id,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        stopLoss: Number(r.stop_loss),
+        targetPrice: Number(r.target_price),
+        trailingStopLoss: r.trailing_stop_loss !== null ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        status: r.status,
+        exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public getEmaLivePositions(instrument?: string, status?: string, limit: number = 50, offset: number = 0): EmaLivePosition[] {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.min(Math.max(1, limit), 200);
+      let query = `SELECT * FROM ema_live_positions WHERE 1=1`;
+      const params: any[] = [];
+      if (instrument && instrument !== 'ALL') {
+        query += ` AND instrument = ?`;
+        params.push(instrument);
+      }
+      if (status && status !== 'ALL') {
+        query += ` AND status = ?`;
+        params.push(status);
+      }
+      query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      params.push(safeLimit, offset);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        attemptId: r.attempt_id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strikePrice: Number(r.strike_price),
+        expiryDate: r.expiry_date,
+        productType: r.product_type,
+        side: r.side,
+        marketBias: r.market_bias,
+        entryBrokerOrderId: r.entry_broker_order_id,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        stopLoss: Number(r.stop_loss),
+        targetPrice: Number(r.target_price),
+        trailingStopLoss: r.trailing_stop_loss !== null ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        status: r.status,
+        exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+    } catch (err: any) {
+      console.error('[DB] Error getting EMA live positions:', err.message);
+      return [];
+    }
+  }
+
+  public getEmaLiveTradingSummary(): {
+    totalAttempts: number;
+    filledAttemptsCount: number;
+    rejectedAttemptsCount: number;
+    openPositionsCount: number;
+    closedPositionsCount: number;
+    winningPositions: number;
+    losingPositions: number;
+    realizedGrossPnl: number;
+    realizedBrokerage: number;
+    realizedNetPnl: number;
+    unrealizedPnl: number;
+    totalNetPnl: number;
+    liveTradingEnabled: boolean;
+  } {
+    const defaultRes = {
+      totalAttempts: 0,
+      filledAttemptsCount: 0,
+      rejectedAttemptsCount: 0,
+      openPositionsCount: 0,
+      closedPositionsCount: 0,
+      winningPositions: 0,
+      losingPositions: 0,
+      realizedGrossPnl: 0,
+      realizedBrokerage: 0,
+      realizedNetPnl: 0,
+      unrealizedPnl: 0,
+      totalNetPnl: 0,
+      liveTradingEnabled: false
+    };
+
+    if (!this.db) return defaultRes;
+    try {
+      const attAgg = this.db.prepare(`
+        SELECT
+          COUNT(*) as totalAttempts,
+          SUM(CASE WHEN order_status = 'FILLED' THEN 1 ELSE 0 END) as filledAttemptsCount,
+          SUM(CASE WHEN order_status IN ('REJECTED', 'PRE_TRADE_REJECTED') THEN 1 ELSE 0 END) as rejectedAttemptsCount
+        FROM ema_live_order_attempts
+      `).get() as any;
+
+      const posAgg = this.db.prepare(`
+        SELECT
+          COUNT(*) as totalPositions,
+          SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) as openPositionsCount,
+          SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closedPositionsCount,
+          SUM(CASE WHEN status = 'CLOSED' AND net_pnl > 0 THEN 1 ELSE 0 END) as winningPositions,
+          SUM(CASE WHEN status = 'CLOSED' AND net_pnl < 0 THEN 1 ELSE 0 END) as losingPositions,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN gross_pnl ELSE 0 END), 0) as realizedGrossPnl,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN brokerage ELSE 0 END), 0) as realizedBrokerage,
+          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END), 0) as realizedNetPnl,
+          COALESCE(SUM(CASE WHEN status = 'OPEN' THEN unrealized_pnl ELSE 0 END), 0) as unrealizedPnl
+        FROM ema_live_positions
+      `).get() as any;
+
+      const realizedNetPnl = Number(Number(posAgg?.realizedNetPnl || 0).toFixed(2));
+      const unrealizedPnl = Number(Number(posAgg?.unrealizedPnl || 0).toFixed(2));
+      const settings = this.getEmaNotificationSettings('GLOBAL');
+
+      return {
+        totalAttempts: Number(attAgg?.totalAttempts || 0),
+        filledAttemptsCount: Number(attAgg?.filledAttemptsCount || 0),
+        rejectedAttemptsCount: Number(attAgg?.rejectedAttemptsCount || 0),
+        openPositionsCount: Number(posAgg?.openPositionsCount || 0),
+        closedPositionsCount: Number(posAgg?.closedPositionsCount || 0),
+        winningPositions: Number(posAgg?.winningPositions || 0),
+        losingPositions: Number(posAgg?.losingPositions || 0),
+        realizedGrossPnl: Number(Number(posAgg?.realizedGrossPnl || 0).toFixed(2)),
+        realizedBrokerage: Number(Number(posAgg?.realizedBrokerage || 0).toFixed(2)),
+        realizedNetPnl,
+        unrealizedPnl,
+        totalNetPnl: Number((realizedNetPnl + unrealizedPnl).toFixed(2)),
+        liveTradingEnabled: settings.liveBrokerExecutionEnabled === true
+      };
+    } catch (err: any) {
+      console.error('[DB] Error getting EMA live summary:', err.message);
+      return defaultRes;
+    }
+  }
+
+  public logEmaExecutionEvent(event: EmaExecutionEvent): void {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ema_execution_events (
+          id, event_id, signal_id, execution_id, execution_mode, stage, status,
+          instrument, broker_order_id, error_code, error_message, details_json, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        event.id || `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        event.eventId || null,
+        event.signalId || null,
+        event.executionId || null,
+        event.executionMode,
+        event.stage,
+        event.status,
+        event.instrument,
+        event.brokerOrderId || null,
+        event.errorCode || null,
+        event.errorMessage || null,
+        event.details ? JSON.stringify(event.details) : null,
+        event.timestamp || new Date().toISOString()
+      );
+    } catch (err: any) {
+      console.error('[DB] Error logging EMA execution event:', err.message);
+    }
+  }
+
+  public getEmaExecutionEvents(limit: number = 100, stage?: string, instrument?: string): EmaExecutionEvent[] {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.min(Math.max(1, limit), 500);
+      let query = `SELECT * FROM ema_execution_events WHERE 1=1`;
+      const params: any[] = [];
+      if (stage && stage !== 'ALL') {
+        query += ` AND stage = ?`;
+        params.push(stage);
+      }
+      if (instrument && instrument !== 'ALL') {
+        query += ` AND instrument = ?`;
+        params.push(instrument);
+      }
+      query += ` ORDER BY timestamp DESC LIMIT ?`;
+      params.push(safeLimit);
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map(r => ({
+        id: r.id,
+        eventId: r.event_id || undefined,
+        signalId: r.signal_id || undefined,
+        executionId: r.execution_id || undefined,
+        executionMode: r.execution_mode,
+        stage: r.stage,
+        status: r.status,
+        instrument: r.instrument,
+        brokerOrderId: r.broker_order_id || undefined,
+        errorCode: r.error_code || undefined,
+        errorMessage: r.error_message || undefined,
+        details: r.details_json ? JSON.parse(r.details_json) : undefined,
+        timestamp: r.timestamp
+      }));
+    } catch (err: any) {
+      console.error('[DB] Error fetching EMA execution events:', err.message);
+      return [];
     }
   }
 

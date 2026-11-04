@@ -809,4 +809,81 @@ export interface Ema15mBacktestResult {
   trades: Ema15mBacktestTrade[];
 }
 
+export interface EmaLiveOrderAttempt {
+  id: string;
+  signalId: string;
+  executionMode: 'LIVE';
+  instrument: Ema15mInstrument;
+  brokerAccountId?: string;
+  brokerInstrumentKey?: string;
+  tradingsymbol: string;
+  optionType: 'CE' | 'PE';
+  strike: number;
+  expiry: string;
+  requestedQuantity: number;
+  filledQuantity: number;
+  averageFillPrice?: number;
+  orderStatus: 'CREATED' | 'PRE_TRADE_REJECTED' | 'SUBMITTED' | 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'REJECTED' | 'CANCELLED' | 'UNKNOWN';
+  brokerOrderId?: string;
+  rejectionReason?: string;
+  submittedAt?: string;
+  lastBrokerUpdateAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmaLivePosition {
+  id: string;
+  attemptId: string;
+  signalId: string;
+  instrument: Ema15mInstrument;
+  brokerAccountId?: string;
+  brokerInstrumentKey?: string;
+  tradingsymbol: string;
+  optionType: 'CE' | 'PE';
+  strikePrice: number;
+  expiryDate: string;
+  productType: 'MIS' | 'NRML';
+  side: 'BUY' | 'SELL';
+  marketBias: 'BULLISH' | 'BEARISH';
+  entryBrokerOrderId: string;
+  entryTimestamp: string;
+  entryPrice: number;
+  quantity: number;
+  lotSize: number;
+  currentPrice: number;
+  unrealizedPnl: number;
+  stopLoss: number;
+  targetPrice: number;
+  trailingStopLoss?: number;
+  isTrailingActive?: boolean;
+  status: 'OPEN' | 'EXIT_REQUESTED' | 'EXIT_PENDING' | 'EXIT_FAILED' | 'PARTIALLY_CLOSED' | 'CLOSED';
+  exitBrokerOrderId?: string;
+  exitTimestamp?: string | null;
+  exitPrice?: number | null;
+  exitReason?: string | null;
+  grossPnl: number;
+  brokerage: number;
+  netPnl: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmaLiveTradingSummary {
+  totalPositions: number;
+  openPositionsCount: number;
+  closedPositionsCount: number;
+  winningPositions: number;
+  losingPositions: number;
+  winRatePercent: number;
+  realizedGrossPnl: number;
+  realizedBrokerage: number;
+  realizedNetPnl: number;
+  unrealizedPnl: number;
+  totalNetPnl: number;
+  totalAttempts: number;
+  rejectedAttempts: number;
+  liveBrokerExecutionEnabled: boolean;
+}
+
 
