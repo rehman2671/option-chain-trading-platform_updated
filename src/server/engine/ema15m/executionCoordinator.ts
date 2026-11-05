@@ -52,7 +52,7 @@ export class ExecutionCoordinator {
 
     // 2. Structured Event: Signal Confirmed
     dbEngine.logEmaExecutionEvent({
-      id: `evt-sig-${Date.now()}`,
+      id: `evt-sig-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       signalId: signal.id,
       executionMode: 'SYSTEM',
       stage: 'SIGNAL_CONFIRMED',

@@ -28,6 +28,7 @@ import { liveExecutionService } from '../../server/engine/ema15m/liveExecutionSe
 import { executionCoordinator } from '../../server/engine/ema15m/executionCoordinator.js';
 import { brokerOrderReconciler } from '../../server/engine/ema15m/brokerOrderReconciler.js';
 import { dbEngine } from '../../server/db.js';
+import { activeProvider } from '../../server/engine/providers/index.js';
 import { getUserFromRequest } from '../../server/auth.js';
 import { Ema15mSignal } from '../../types.js';
 
@@ -409,4 +410,257 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     const resolvedUser = getUserFromRequest(mockUnauthenticatedReq, false);
     assert.strictEqual(resolvedUser, null, 'Unauthenticated POST request must return null, never getMostRecentUser()');
   });
+
+  // 21. Ordinary Upstox placement acknowledgment sets SUBMITTED, 0 filledQty, and 0 live positions
+  it('21. Placement Acknowledgment: order_id only sets SUBMITTED, 0 filledQty, and 0 live positions', async () => {
+    dbEngine.saveEmaNotificationSettings({
+      telegramEnabled: false,
+      emailEnabled: false,
+      browserEnabled: false,
+      soundEnabled: false,
+      autoPaperTradingEnabled: true,
+      liveBrokerExecutionEnabled: true
+    }, 'GLOBAL');
+
+    // Ensure clean state for SENSEX
+    const existingAtts = dbEngine.getEmaLiveOrderAttempts('SENSEX', 50);
+    for (const a of existingAtts) {
+      if (a.orderStatus === 'SUBMITTED' || a.orderStatus === 'OPEN') {
+        dbEngine.updateEmaLiveOrderAttempt(a.id, { orderStatus: 'CANCELLED' });
+      }
+    }
+    const existingPos = dbEngine.getOpenEmaLivePositionByInstrument('SENSEX');
+    if (existingPos) {
+      dbEngine.updateEmaLivePosition(existingPos.id, { status: 'CLOSED' });
+    }
+
+    const testSignal: Ema15mSignal = {
+      ...dummySignal,
+      id: `ack-sig-${Date.now()}`,
+      instrument: 'SENSEX'
+    };
+    const contract = ContractResolver.resolveContract('SENSEX', 84000, 'CE', '2026-11-05');
+
+    // Simulate placeOrder returning acknowledgment without fill
+    const origPlaceOrder = (activeProvider as any).placeOrder;
+    const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    const origIsOpen = SessionCalendar.isExchangeOpen;
+
+    SessionCalendar.isExchangeOpen = () => ({
+      isOpen: true,
+      reason: 'Exchange open for testing',
+      istTime: '10:00:00',
+      dateStr: '2026-11-05'
+    });
+    (activeProvider as any).isUpstoxLiveConnected = () => true;
+    (activeProvider as any).placeOrder = async () => ({
+      order_id: `241103${Date.now()}`
+    });
+
+    try {
+      const res = await liveExecutionService.attemptLiveSignal(testSignal, contract, 150, 'GLOBAL');
+      assert.strictEqual(res.status, 'SUBMITTED', 'Order status must be SUBMITTED');
+      assert.strictEqual(res.filledQuantity, 0, 'Filled quantity must be 0 until confirmed fill');
+      assert.strictEqual(res.positionCreated, false, 'No position must be created on mere placement acknowledgment');
+      assert.strictEqual(res.positionId, undefined);
+    } finally {
+      (activeProvider as any).placeOrder = origPlaceOrder;
+      (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+      SessionCalendar.isExchangeOpen = origIsOpen;
+    }
+  });
+
+  // 22. Broker Reconciler detects fill for SUBMITTED attempt and creates authoritative live position
+  it('22. Broker Reconciler Fill: detects COMPLETE fill and creates live position in OPEN status', async () => {
+    const testAttemptId = `att-reconcile-${Date.now()}`;
+    const mockBrokerOrderId = `UPSTOX-${Date.now()}`;
+
+    // Seed a SUBMITTED order attempt
+    dbEngine.saveEmaLiveOrderAttempt({
+      id: testAttemptId,
+      signalId: `sig-reconcile-${Date.now()}`,
+      executionMode: 'LIVE',
+      instrument: 'NIFTY',
+      tradingsymbol: 'NIFTY26NOV25200CE',
+      optionType: 'CE',
+      strike: 25200,
+      expiry: '2026-11-05',
+      requestedQuantity: 50,
+      filledQuantity: 0,
+      orderStatus: 'SUBMITTED',
+      brokerOrderId: mockBrokerOrderId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    const origHistory = (activeProvider as any).getOrderHistory;
+    const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    (activeProvider as any).isUpstoxLiveConnected = () => true;
+    (activeProvider as any).getOrderHistory = async (orderId: string) => {
+      if (orderId === mockBrokerOrderId) {
+        return [{
+          status: 'COMPLETE',
+          filled_quantity: 50,
+          average_price: 185.50
+        }];
+      }
+      return [];
+    };
+
+    try {
+      const recResult = await brokerOrderReconciler.reconcileBrokerState();
+      assert.ok(recResult.checkedAttempts >= 1);
+
+      // Verify attempt transitioned to FILLED
+      const attempts = dbEngine.getEmaLiveOrderAttempts('NIFTY', 20);
+      const updatedAtt = attempts.find(a => a.id === testAttemptId);
+      assert.strictEqual(updatedAtt?.orderStatus, 'FILLED');
+      assert.strictEqual(updatedAtt?.filledQuantity, 50);
+      assert.strictEqual(updatedAtt?.averageFillPrice, 185.50);
+
+      // Verify authoritative position created in OPEN status
+      const livePos = dbEngine.getEmaLivePositionByAttemptId(testAttemptId);
+      assert.ok(livePos, 'Authoritative live position must be created by reconciler upon confirmed fill');
+      assert.strictEqual(livePos?.entryPrice, 185.50);
+      assert.strictEqual(livePos?.quantity, 50);
+      assert.strictEqual(livePos?.status, 'OPEN');
+      assert.strictEqual(livePos?.stopLoss, 155.50); // 185.50 - 30
+      assert.strictEqual(livePos?.targetPrice, 285.50); // 185.50 + 100
+    } finally {
+      (activeProvider as any).getOrderHistory = origHistory;
+      (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+    }
+  });
+
+  // 23. Live SELL submission sets EXIT_PENDING, not prematurely CLOSED
+  it('23. Live SELL Submission: sets EXIT_PENDING when order_id returned without immediate fill', async () => {
+    const testPosId = `live-pos-test-exit-${Date.now()}`;
+    dbEngine.saveEmaLivePosition({
+      id: testPosId,
+      attemptId: `att-${Date.now()}`,
+      signalId: `sig-${Date.now()}`,
+      instrument: 'NIFTY',
+      tradingsymbol: 'NIFTY26NOV25200CE',
+      optionType: 'CE',
+      strikePrice: 25200,
+      expiryDate: '2026-11-05',
+      productType: 'MIS',
+      side: 'BUY',
+      marketBias: 'BULLISH',
+      entryBrokerOrderId: `ENTRY-${Date.now()}`,
+      entryTimestamp: new Date().toISOString(),
+      entryPrice: 200,
+      quantity: 50,
+      lotSize: 50,
+      currentPrice: 200,
+      unrealizedPnl: 0,
+      stopLoss: 170,
+      targetPrice: 300,
+      status: 'OPEN',
+      grossPnl: 0,
+      brokerage: 40,
+      netPnl: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    const origPlaceOrder = (activeProvider as any).placeOrder;
+    const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    (activeProvider as any).isUpstoxLiveConnected = () => true;
+    (activeProvider as any).placeOrder = async () => ({
+      order_id: `EXIT-ORD-${Date.now()}`
+    });
+
+    try {
+      const exitRes = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(exitRes.success, true);
+
+      // Verify position status is EXIT_PENDING, NOT CLOSED!
+      const activePositions = dbEngine.getOpenEmaLivePositions('NIFTY');
+      const pendingPos = activePositions.find(p => p.id === testPosId);
+      assert.ok(pendingPos, 'Position must remain visible in active positions');
+      assert.strictEqual(pendingPos?.status, 'EXIT_PENDING', 'Status must be EXIT_PENDING, not prematurely CLOSED');
+    } finally {
+      (activeProvider as any).placeOrder = origPlaceOrder;
+      (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+    }
+  });
+
+  // 24. Stranded positions query includes EXIT_REQUESTED, EXIT_PENDING, EXIT_FAILED, PARTIALLY_CLOSED
+  it('24. Active Live Positions Query: includes EXIT_FAILED and EXIT_PENDING positions', () => {
+    const failedPosId = `live-pos-failed-${Date.now()}`;
+    dbEngine.saveEmaLivePosition({
+      id: failedPosId,
+      attemptId: `att-${Date.now()}`,
+      signalId: `sig-${Date.now()}`,
+      instrument: 'NIFTY',
+      tradingsymbol: 'NIFTY26NOV25200CE',
+      optionType: 'CE',
+      strikePrice: 25200,
+      expiryDate: '2026-11-05',
+      productType: 'MIS',
+      side: 'BUY',
+      marketBias: 'BULLISH',
+      entryBrokerOrderId: `ENTRY-${Date.now()}`,
+      entryTimestamp: new Date().toISOString(),
+      entryPrice: 200,
+      quantity: 50,
+      lotSize: 50,
+      currentPrice: 200,
+      unrealizedPnl: 0,
+      stopLoss: 170,
+      targetPrice: 300,
+      status: 'EXIT_FAILED',
+      grossPnl: 0,
+      brokerage: 40,
+      netPnl: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    const openPositions = dbEngine.getOpenEmaLivePositions('NIFTY');
+    const found = openPositions.find(p => p.id === failedPosId);
+    assert.ok(found, 'EXIT_FAILED position must be returned in active positions query');
+    assert.strictEqual(found?.status, 'EXIT_FAILED');
+  });
+
+  // 25. BUY PE Option Buyer Accounting in Database Close Path
+  it('25. BUY PE Accounting: closeEmaPaperTrade calculates positive gross P&L when exitPrice > entryPrice', () => {
+    const peTradeId = `paper-pe-test-${Date.now()}`;
+    dbEngine.saveEmaPaperTrade({
+      id: peTradeId,
+      signalId: `sig-pe-${Date.now()}`,
+      instrument: 'NIFTY',
+      direction: 'SHORT', // BEARISH crossover buys PE
+      optionType: 'PE',
+      strikePrice: 25000,
+      expiryDate: '2026-11-05',
+      entryTimestamp: new Date().toISOString(),
+      entryPrice: 100,
+      quantity: 50,
+      lotSize: 50,
+      strategy: 'EMA_15M_23_50',
+      source: 'PRACTICE',
+      status: 'OPEN',
+      currentPrice: 100,
+      unrealizedPnl: 0,
+      grossPnl: 0,
+      brokerage: 40,
+      charges: 0,
+      netPnl: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    // Close PE at 150 (premium went up by 50 points)
+    const closed = dbEngine.closeEmaPaperTrade(peTradeId, 150, 'TARGET');
+    assert.strictEqual(closed, true);
+
+    const closedTrade = dbEngine.getEmaPaperTradeById(peTradeId);
+    assert.ok(closedTrade);
+    // Option buyer profit: (150 - 100) * 50 = +2500 (Gross), -40 brokerage = +2460 (Net)
+    assert.strictEqual(closedTrade?.grossPnl, 2500, 'PE buyer gross PnL must be +2500 when premium rises');
+    assert.strictEqual(closedTrade?.netPnl, 2460, 'PE buyer net PnL must be +2460');
+  });
 });
+

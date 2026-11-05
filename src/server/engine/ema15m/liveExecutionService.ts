@@ -90,11 +90,19 @@ export class LiveExecutionService {
       return { passed: false, failureReason: 'Upstox broker provider is disconnected or token expired.' };
     }
 
-    // 7. Session Daily Loss Circuit Breaker on Live Positions
-    const livePositions = dbEngine.getEmaLivePositions(signal.instrument, 'ALL', 100);
+    // 7. Session Daily Loss Circuit Breaker on Live Positions (Account-wide IST session)
+    const livePositions = dbEngine.getEmaLivePositions('ALL', 'ALL', 200);
     const todayStr = SessionCalendar.toIstDate().dateStr;
     const todayLiveNetPnl = livePositions
-      .filter(p => p.createdAt && p.createdAt.startsWith(todayStr))
+      .filter(p => {
+        if (!p.createdAt) return false;
+        try {
+          const posIstDate = SessionCalendar.toIstDate(new Date(p.createdAt)).dateStr;
+          return posIstDate === todayStr;
+        } catch {
+          return false;
+        }
+      })
       .reduce((sum, p) => sum + (p.netPnl || 0), 0);
 
     const maxDailyLoss = settings.maxDailyLossLimit ?? 5000;
@@ -121,7 +129,23 @@ export class LiveExecutionService {
     const settings = dbEngine.getEmaNotificationSettings(userId);
     const productType: 'MIS' | 'NRML' = settings.upstoxProductType || 'MIS';
 
-    // 1. Check if an open live position already exists on this instrument
+    // 0. Check if there is an in-flight pending entry attempt for this instrument
+    const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 10);
+    const inFlightAttempt = recentAttempts.find(a => a.orderStatus === 'SUBMITTED' || a.orderStatus === 'OPEN');
+    if (inFlightAttempt) {
+      console.log(`[EMA LIVE] In-flight entry attempt ${inFlightAttempt.id} exists for ${inst}. Suppressing duplicate entry.`);
+      return {
+        enabled: true,
+        status: 'HELD',
+        brokerOrderId: inFlightAttempt.brokerOrderId,
+        requestedQuantity: quantity,
+        filledQuantity: 0,
+        positionCreated: false,
+        message: `In-flight live order ${inFlightAttempt.brokerOrderId || inFlightAttempt.id} pending. Suppressing duplicate entry.`
+      };
+    }
+
+    // 1. Check if an active live position already exists on this instrument
     const existingLivePos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
     if (existingLivePos) {
       const isOpposite = (signal.signalType === 'BULLISH' && existingLivePos.optionType === 'PE') ||
@@ -129,7 +153,31 @@ export class LiveExecutionService {
 
       if (isOpposite) {
         console.log(`[EMA LIVE] 🔄 Reversal: Exiting old live position ${existingLivePos.id} before opening new entry.`);
-        await this.requestLiveExit(existingLivePos.id, 'OPPOSITE_CROSSOVER');
+        const exitResult = await this.requestLiveExit(existingLivePos.id, 'OPPOSITE_CROSSOVER');
+        if (!exitResult.success) {
+          console.warn(`[EMA LIVE] Reversal exit failed for ${existingLivePos.id}. Blocking new live entry.`);
+          return {
+            enabled: true,
+            status: 'SKIPPED',
+            requestedQuantity: quantity,
+            filledQuantity: 0,
+            positionCreated: false,
+            message: `Reversal blocked: Failed to exit opposite live position ${existingLivePos.id}: ${exitResult.message}`
+          };
+        }
+        // Verify old position is not still open before submitting new BUY
+        const postExitPos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
+        if (postExitPos && (postExitPos.status === 'OPEN' || postExitPos.status === 'EXIT_FAILED')) {
+          console.warn(`[EMA LIVE] Reversal exit for ${existingLivePos.id} still active or failed. Blocking new live entry.`);
+          return {
+            enabled: true,
+            status: 'SKIPPED',
+            requestedQuantity: quantity,
+            filledQuantity: 0,
+            positionCreated: false,
+            message: `Reversal blocked: Opposite live position ${existingLivePos.id} is still ${postExitPos.status}.`
+          };
+        }
       } else {
         console.log(`[EMA LIVE] Live position in same direction already open on ${inst}. Maintaining position without averaging.`);
         return {
@@ -169,8 +217,9 @@ export class LiveExecutionService {
 
       dbEngine.saveEmaLiveOrderAttempt(orderAttempt);
 
+      const randPre = Math.random().toString(36).slice(2, 8);
       dbEngine.logEmaExecutionEvent({
-        id: `evt-live-pre-rej-${Date.now()}`,
+        id: `evt-live-pre-rej-${Date.now()}-${randPre}`,
         signalId: signal.id,
         executionId: attemptId,
         executionMode: 'LIVE',
@@ -184,7 +233,7 @@ export class LiveExecutionService {
       });
 
       dbEngine.logEmaExecution({
-        id: `exec-pre-rej-${Date.now()}`,
+        id: `exec-pre-rej-${Date.now()}-${randPre}`,
         timestamp: timestampStr,
         level: 'WARN',
         stage: 'PRE_TRADE',
@@ -226,7 +275,7 @@ export class LiveExecutionService {
     dbEngine.saveEmaLiveOrderAttempt(orderAttempt);
 
     dbEngine.logEmaExecutionEvent({
-      id: `evt-live-sub-${Date.now()}`,
+      id: `evt-live-sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       signalId: signal.id,
       executionId: attemptId,
       executionMode: 'LIVE',
@@ -257,26 +306,27 @@ export class LiveExecutionService {
       }
 
       // Check broker acknowledgment & fills
-      // In production Upstox, an order placed at market may be immediately open or filled
-      // Check order status if status property is provided in response
-      const brokerStatusStr = (brokerRes?.status || brokerRes?.order_status || 'ACCEPTED').toUpperCase();
-      const isFilled = brokerStatusStr === 'COMPLETE' || brokerStatusStr === 'FILLED';
-      const filledQty = isFilled ? quantity : (brokerRes?.filled_quantity || brokerRes?.quantity || quantity);
-      const avgFillPrice = Number(brokerRes?.average_price || brokerRes?.price || estimatedEntryPrice);
+      // In production Upstox, placeOrder returns { order_id: "..." } for acknowledgment.
+      // Order status is SUBMITTED with 0 filledQty until authoritative fill confirmation is received.
+      const brokerStatusStr = (brokerRes?.status || brokerRes?.order_status || '').toUpperCase();
+      const isConfirmedFill = (brokerStatusStr === 'COMPLETE' || brokerStatusStr === 'FILLED') &&
+        Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || 0) > 0;
 
-      const finalStatus: OrderStatus = isFilled ? 'FILLED' : 'OPEN';
+      const filledQty = isConfirmedFill ? Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || quantity) : 0;
+      const avgFillPrice = isConfirmedFill ? Number(brokerRes?.average_price || brokerRes?.averagePrice || brokerRes?.price || estimatedEntryPrice) : 0;
+      const finalStatus: OrderStatus = isConfirmedFill ? 'FILLED' : 'SUBMITTED';
 
       dbEngine.updateEmaLiveOrderAttempt(attemptId, {
         brokerOrderId,
         orderStatus: finalStatus,
         filledQuantity: filledQty,
-        averageFillPrice: avgFillPrice,
+        averageFillPrice: isConfirmedFill ? avgFillPrice : undefined,
         lastBrokerUpdateAt: new Date().toISOString()
       });
 
       // 5. Create authoritative Live Position ONLY upon confirmed fill
       let positionId: string | undefined;
-      if (filledQty > 0) {
+      if (isConfirmedFill && filledQty > 0) {
         positionId = `live-pos-${inst.toLowerCase()}-${Date.now()}`;
         const stopLoss = StrategyRules.calculateStopLoss(avgFillPrice);
         const targetPrice = StrategyRules.calculateTargetPrice(avgFillPrice);
@@ -314,8 +364,9 @@ export class LiveExecutionService {
 
         dbEngine.saveEmaLivePosition(livePosition);
 
+        const randFill = Math.random().toString(36).slice(2, 8);
         dbEngine.logEmaExecutionEvent({
-          id: `evt-live-fill-${Date.now()}`,
+          id: `evt-live-fill-${Date.now()}-${randFill}`,
           signalId: signal.id,
           executionId: positionId,
           executionMode: 'LIVE',
@@ -328,13 +379,37 @@ export class LiveExecutionService {
         });
 
         dbEngine.logEmaExecution({
-          id: `exec-live-ok-${Date.now()}`,
+          id: `exec-live-ok-${Date.now()}-${randFill}`,
           timestamp: new Date().toISOString(),
           level: 'SUCCESS',
           stage: 'BROKER_RESPONSE',
           instrument: inst,
           message: `🟢 LIVE Upstox Order FILLED! Order ID: ${brokerOrderId} | Position: ${contract.tradingsymbol} (${filledQty} Qty) @ ₹${avgFillPrice}`,
           details: { brokerOrderId, positionId, filledQty, avgFillPrice }
+        });
+      } else {
+        const randSub = Math.random().toString(36).slice(2, 8);
+        dbEngine.logEmaExecutionEvent({
+          id: `evt-live-sub-${Date.now()}-${randSub}`,
+          signalId: signal.id,
+          executionId: attemptId,
+          executionMode: 'LIVE',
+          stage: 'LIVE_ORDER_SUBMITTED',
+          status: 'SUCCESS',
+          instrument: inst,
+          brokerOrderId,
+          details: { attemptId, requestedQuantity: quantity },
+          timestamp: new Date().toISOString()
+        });
+
+        dbEngine.logEmaExecution({
+          id: `exec-live-sub-${Date.now()}-${randSub}`,
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          stage: 'BROKER_RESPONSE',
+          instrument: inst,
+          message: `🟡 LIVE Order SUBMITTED to Upstox. Awaiting fill. Order ID: ${brokerOrderId} | ${contract.tradingsymbol} x ${quantity}`,
+          details: { brokerOrderId, attemptId, requestedQuantity: quantity }
         });
       }
 
@@ -344,9 +419,11 @@ export class LiveExecutionService {
         brokerOrderId,
         requestedQuantity: quantity,
         filledQuantity: filledQty,
-        positionCreated: filledQty > 0,
+        positionCreated: Boolean(positionId),
         positionId,
-        message: `Order submitted to Upstox. Broker Order ID: ${brokerOrderId}`
+        message: isConfirmedFill
+          ? `Live order filled on Upstox. Position ${positionId} opened.`
+          : `Live order ${brokerOrderId} submitted to Upstox. Awaiting broker execution fill.`
       };
     } catch (brokerErr: any) {
       // 6. Handle Broker Rejection (e.g. Insufficient Margin / Funds)
@@ -360,8 +437,9 @@ export class LiveExecutionService {
         lastBrokerUpdateAt: new Date().toISOString()
       });
 
+      const randRej = Math.random().toString(36).slice(2, 8);
       dbEngine.logEmaExecutionEvent({
-        id: `evt-live-rej-${Date.now()}`,
+        id: `evt-live-rej-${Date.now()}-${randRej}`,
         signalId: signal.id,
         executionId: attemptId,
         executionMode: 'LIVE',
@@ -375,7 +453,7 @@ export class LiveExecutionService {
       });
 
       dbEngine.logEmaExecution({
-        id: `exec-live-err-${Date.now()}`,
+        id: `exec-live-err-${Date.now()}-${randRej}`,
         timestamp: new Date().toISOString(),
         level: 'ERROR',
         stage: 'BROKER_RESPONSE',
@@ -413,8 +491,8 @@ export class LiveExecutionService {
     const trailDistancePts = settings.trailDistancePoints ?? 30;
 
     for (const pos of openPositions) {
-      if (this.pendingExitIds.has(pos.id)) {
-        continue; // Exit already in flight
+      if (pos.status !== 'OPEN' || this.pendingExitIds.has(pos.id)) {
+        continue; // Only monitor actively open positions; skip EXIT_PENDING, EXIT_FAILED, or in-flight exits
       }
 
       const entryPrice = Number(pos.entryPrice);
@@ -514,7 +592,7 @@ export class LiveExecutionService {
     });
 
     dbEngine.logEmaExecutionEvent({
-      id: `evt-live-exit-req-${Date.now()}`,
+      id: `evt-live-exit-req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       signalId: pos.signalId,
       executionId: pos.id,
       executionMode: 'LIVE',
@@ -526,8 +604,49 @@ export class LiveExecutionService {
     });
 
     try {
-      if (!activeProvider || typeof (activeProvider as any).placeOrder !== 'function') {
-        throw new Error('Broker provider unavailable for live exit.');
+      // Check broker connection before attempting order placement
+      const brokerConnected = activeProvider && (
+        typeof (activeProvider as any).isUpstoxLiveConnected === 'function'
+          ? (activeProvider as any).isUpstoxLiveConnected()
+          : Boolean((activeProvider as any).isConnected)
+      );
+
+      if (!brokerConnected || typeof (activeProvider as any).placeOrder !== 'function') {
+        const disconnectMsg = 'Upstox API is not connected. Cannot execute live order.';
+        console.warn(`[EMA LIVE] ⚠️ Upstox broker disconnected. Cannot dispatch live exit for ${pos.tradingsymbol}`);
+
+        dbEngine.updateEmaLivePosition(pos.id, {
+          status: 'EXIT_FAILED',
+          exitReason: disconnectMsg
+        });
+
+        const randomSuffix = Math.random().toString(36).slice(2, 8);
+        dbEngine.logEmaExecutionEvent({
+          id: `evt-live-exit-err-${Date.now()}-${randomSuffix}`,
+          signalId: pos.signalId,
+          executionId: pos.id,
+          executionMode: 'LIVE',
+          stage: 'LIVE_EXIT_FAILED',
+          status: 'FAILED',
+          instrument: pos.instrument,
+          errorCode: 'BROKER_NOT_CONNECTED',
+          errorMessage: disconnectMsg,
+          details: { error: disconnectMsg },
+          timestamp: new Date().toISOString()
+        });
+
+        dbEngine.logEmaExecution({
+          id: `exec-live-exit-err-${Date.now()}-${randomSuffix}`,
+          timestamp: new Date().toISOString(),
+          level: 'WARN',
+          stage: 'EXIT',
+          instrument: pos.instrument,
+          message: `⚠️ Cannot close LIVE position on Upstox: ${disconnectMsg}. Position marked as EXIT_FAILED.`,
+          details: { error: disconnectMsg, positionId: pos.id }
+        });
+
+        this.pendingExitIds.delete(pos.id);
+        return { success: false, message: disconnectMsg };
       }
 
       // Submit real SELL order to Upstox API v2
@@ -543,56 +662,102 @@ export class LiveExecutionService {
         tag: 'ema15m_exit'
       });
 
-      const exitBrokerOrderId = exitRes?.order_id || exitRes?.orderId || `UPSTOX-EXIT-${Date.now()}`;
-      const exitPrice = currentOptionPrice || pos.currentPrice || pos.entryPrice;
-      const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, exitPrice, pos.quantity);
-      const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
+      const exitBrokerOrderId = exitRes?.order_id || exitRes?.orderId;
+      if (!exitBrokerOrderId) {
+        throw new Error('Broker did not return an authoritative order identifier for exit.');
+      }
 
-      dbEngine.updateEmaLivePosition(pos.id, {
-        status: 'CLOSED',
-        exitBrokerOrderId,
-        exitTimestamp: new Date().toISOString(),
-        exitPrice,
-        exitReason: reason,
-        grossPnl,
-        netPnl,
-        unrealizedPnl: 0
-      });
+      const exitStatusStr = (exitRes?.status || exitRes?.order_status || '').toUpperCase();
+      const isExitFilled = (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
+        Number(exitRes?.filled_quantity || exitRes?.filledQuantity || 0) > 0;
 
-      dbEngine.logEmaExecutionEvent({
-        id: `evt-live-exit-ok-${Date.now()}`,
-        signalId: pos.signalId,
-        executionId: pos.id,
-        executionMode: 'LIVE',
-        stage: 'LIVE_EXIT_FILLED',
-        status: 'SUCCESS',
-        instrument: pos.instrument,
-        brokerOrderId: exitBrokerOrderId,
-        details: { exitBrokerOrderId, exitPrice, grossPnl, netPnl, reason },
-        timestamp: new Date().toISOString()
-      });
+      const randomSuffix = Math.random().toString(36).slice(2, 8);
+      if (isExitFilled) {
+        const exitPrice = Number(exitRes?.average_price || exitRes?.price || currentOptionPrice || pos.currentPrice || pos.entryPrice);
+        const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, exitPrice, pos.quantity);
+        const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
 
-      dbEngine.logEmaExecution({
-        id: `exec-live-exit-ok-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        level: 'SUCCESS',
-        stage: 'EXIT',
-        instrument: pos.instrument,
-        message: `🟢 LIVE Position CLOSED on Upstox! Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol} @ ₹${exitPrice} (Net P&L: ₹${netPnl})`,
-        details: { exitBrokerOrderId, exitPrice, netPnl }
-      });
+        dbEngine.updateEmaLivePosition(pos.id, {
+          status: 'CLOSED',
+          exitBrokerOrderId,
+          exitTimestamp: new Date().toISOString(),
+          exitPrice,
+          exitReason: reason,
+          grossPnl,
+          netPnl,
+          unrealizedPnl: 0
+        });
 
-      this.pendingExitIds.delete(pos.id);
-      return { success: true, message: `Live position closed on broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
+        dbEngine.logEmaExecutionEvent({
+          id: `evt-live-exit-ok-${Date.now()}-${randomSuffix}`,
+          signalId: pos.signalId,
+          executionId: pos.id,
+          executionMode: 'LIVE',
+          stage: 'LIVE_EXIT_FILLED',
+          status: 'SUCCESS',
+          instrument: pos.instrument,
+          brokerOrderId: exitBrokerOrderId,
+          details: { exitBrokerOrderId, exitPrice, grossPnl, netPnl, reason },
+          timestamp: new Date().toISOString()
+        });
+
+        dbEngine.logEmaExecution({
+          id: `exec-live-exit-ok-${Date.now()}-${randomSuffix}`,
+          timestamp: new Date().toISOString(),
+          level: 'SUCCESS',
+          stage: 'EXIT',
+          instrument: pos.instrument,
+          message: `🟢 LIVE Position CLOSED on Upstox! Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol} @ ₹${exitPrice} (Net P&L: ₹${netPnl})`,
+          details: { exitBrokerOrderId, exitPrice, netPnl }
+        });
+
+        this.pendingExitIds.delete(pos.id);
+        return { success: true, message: `Live position closed on broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
+      } else {
+        // Exit order submitted to broker; remains visible and tracked until fill confirmed
+        dbEngine.updateEmaLivePosition(pos.id, {
+          status: 'EXIT_PENDING',
+          exitBrokerOrderId,
+          exitReason: reason
+        });
+
+        dbEngine.logEmaExecutionEvent({
+          id: `evt-live-exit-sub-${Date.now()}-${randomSuffix}`,
+          signalId: pos.signalId,
+          executionId: pos.id,
+          executionMode: 'LIVE',
+          stage: 'LIVE_EXIT_SUBMITTED',
+          status: 'SUCCESS',
+          instrument: pos.instrument,
+          brokerOrderId: exitBrokerOrderId,
+          details: { exitBrokerOrderId, reason },
+          timestamp: new Date().toISOString()
+        });
+
+        dbEngine.logEmaExecution({
+          id: `exec-live-exit-sub-${Date.now()}-${randomSuffix}`,
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          stage: 'EXIT',
+          instrument: pos.instrument,
+          message: `🟡 LIVE Exit Order SUBMITTED to Upstox. Awaiting fill. Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol}`,
+          details: { exitBrokerOrderId, reason }
+        });
+
+        this.pendingExitIds.delete(pos.id);
+        return { success: true, message: `Live exit order submitted to broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
+      }
     } catch (exitErr: any) {
       console.error(`[EMA LIVE] 🔴 Error dispatching broker exit order for ${pos.tradingsymbol}:`, exitErr.message);
 
       dbEngine.updateEmaLivePosition(pos.id, {
-        status: 'EXIT_FAILED'
+        status: 'EXIT_FAILED',
+        exitReason: `Exit Failed: ${exitErr.message}`
       });
 
+      const randomSuffix = Math.random().toString(36).slice(2, 8);
       dbEngine.logEmaExecutionEvent({
-        id: `evt-live-exit-err-${Date.now()}`,
+        id: `evt-live-exit-err-${Date.now()}-${randomSuffix}`,
         signalId: pos.signalId,
         executionId: pos.id,
         executionMode: 'LIVE',
@@ -606,7 +771,7 @@ export class LiveExecutionService {
       });
 
       dbEngine.logEmaExecution({
-        id: `exec-live-exit-err-${Date.now()}`,
+        id: `exec-live-exit-err-${Date.now()}-${randomSuffix}`,
         timestamp: new Date().toISOString(),
         level: 'ERROR',
         stage: 'EXIT',
@@ -637,7 +802,9 @@ export class LiveExecutionService {
     console.log(`[EMA LIVE INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Exiting ${openPositions.length} live position(s)...`);
 
     for (const pos of openPositions) {
-      await this.requestLiveExit(pos.id, 'FORCED_INTRADAY_SQUARE_OFF');
+      if (pos.status === 'OPEN' && !this.pendingExitIds.has(pos.id)) {
+        await this.requestLiveExit(pos.id, 'FORCED_INTRADAY_SQUARE_OFF');
+      }
     }
   }
 }

@@ -1,0 +1,1052 @@
+# TASK: FIX REMAINING EMA15M DEFECTS — DO NOT REBUILD WORK ALREADY DONE
+
+## 0. Repository and scope
+
+Repository: `https://github.com/rehman2671/option-chain-trading-platform_updated.git`
+
+Audited HEAD: `0c21e5073e37c7f2b46fb38e24ac7f0db7fb88fc`
+
+**Task:** Fix and verify the remaining correctness, safety, persistence, API, and testing bugs in the existing EMA15M dual-execution implementation.
+
+This is an **incremental repair task**, not a rewrite.
+
+Before editing:
+1. Check current HEAD and `git status`.
+2. Read only the files listed below first.
+3. Search additional files only when directly required by a dependency.
+4. If a finding is already genuinely fixed in a newer commit, skip it.
+5. Make minimal changes. Do not unnecessarily rename files, move modules, or replace UI components.
+
+### Priority files
+
+```text
+src/server/engine/ema15m/liveExecutionService.ts
+src/server/engine/ema15m/brokerOrderReconciler.ts
+src/server/engine/ema15m/contractResolver.ts
+src/server/engine/ema15m/executionCoordinator.ts
+src/server/engine/ema15m/paperExecutionService.ts
+src/server/engine/ema15m/sessionCalendar.ts
+src/server/engine/ema15m/strategyRules.ts
+src/server/engine/ema15m/types.ts
+src/server/engine/ema15mEngine.ts
+src/server/engine/providers/UpstoxProvider.ts
+src/server/engine/providers/index.ts
+src/server/db.ts
+src/server/auth.ts
+src/quant/risk/exposureController.ts
+src/shared/marketConfig.ts
+src/quant/data/expiryResolver.ts
+src/server/engine/notificationService.ts
+src/components/Ema15mDashboardView.tsx
+src/types.ts
+serverApp.ts
+src/quant/tests/ema15m_dual_execution.test.ts
+```
+
+### Non-negotiable user requirement
+
+Both settings must be supported simultaneously:
+
+```ts
+autoPaperTradingEnabled = true;
+liveBrokerExecutionEnabled = true;
+```
+
+One genuine EMA crossover can produce:
+
+- One independently simulated paper execution.
+- One independently submitted real Upstox order attempt, subject to mandatory safety checks.
+
+The user accepts an actual Upstox rejection for insufficient funds.
+
+**Do not make paper/live modes mutually exclusive. Do not disable paper trading when Upstox rejects.**
+
+Never assume that an Upstox account with ₹0 cash must reject every order; real fills are possible under different broker account conditions.
+
+**Never submit real orders while testing. Use a fully mocked broker.**
+
+---
+
+## 1. Already implemented — preserve these fixes
+
+The latest audited commit already introduced:
+
+- Dedicated execution coordinator.
+- Separate paper and live execution services.
+- Live order-attempt and live-position database tables.
+- Paper/live dashboard sections.
+- BUY PE stop-loss/target correction in backtesting.
+- Expiry filtering in historical option-price lookup.
+- Mock flag suppressing live execution.
+- Removal of destructive paper-trade deletion from startup cleanup.
+- `requireAuth` on several EMA POST routes.
+
+**Do not delete or reimplement these features. Complete and correct their remaining defects.**
+
+---
+
+## 2. P0 — Fix false BUY fills immediately
+
+File: `liveExecutionService.ts`, approximately lines 259–279.
+
+Current defective pattern:
+
+```ts
+const isFilled =
+  brokerStatusStr === 'COMPLETE' ||
+  brokerStatusStr === 'FILLED';
+
+const filledQty = isFilled
+  ? quantity
+  : (brokerRes?.filled_quantity ||
+     brokerRes?.quantity ||
+     quantity);
+
+if (filledQty > 0) {
+  // Creates live position
+}
+```
+
+**Bug:** An order placement response containing only an `order_id` can create a fake live position with the full requested quantity.
+
+Upstox place-order success is **not** proof of an exchange fill.
+
+### Required correction
+
+On ordinary broker placement acknowledgment:
+
+```ts
+const brokerOrderId =
+  brokerRes?.order_id ?? brokerRes?.orderId;
+
+if (!brokerOrderId) {
+  // Ambiguous result; see section 4.
+}
+
+dbEngine.updateEmaLiveOrderAttempt(attemptId, {
+  brokerOrderId,
+  orderStatus: 'SUBMITTED',
+  filledQuantity: 0,
+  lastBrokerUpdateAt: new Date().toISOString()
+});
+
+return {
+  enabled: true,
+  status: 'SUBMITTED',
+  brokerOrderId,
+  requestedQuantity: quantity,
+  filledQuantity: 0,
+  positionCreated: false,
+  message: 'Broker acknowledged order; fill pending verification.'
+};
+```
+
+Create/update a live position only after reading authoritative broker order/fill data.
+
+Never infer filled quantity from `brokerRes.quantity`.
+
+Never use estimated option price as confirmed average fill price.
+
+**Acceptance:**
+
+Broker response:
+
+```json
+{"order_id":"ORDER_123"}
+```
+
+Expected:
+
+```text
+Attempt status: SUBMITTED
+Filled quantity: 0
+Live positions created: 0
+```
+
+---
+
+## 3. P0 — Implement genuine broker fill reconciliation
+
+File: `brokerOrderReconciler.ts`.
+
+Existing reconciler updates some attempt statuses but does not reliably create/update live positions when an order fills later.
+
+Its open-position loop is not actual reconciliation.
+
+Implement complete reconciliation for:
+
+```text
+SUBMITTED
+OPEN
+PARTIALLY_FILLED
+FILLED
+REJECTED
+CANCELLED
+UNKNOWN
+```
+
+Required rules:
+
+1. Fetch broker order details/history for the actual order ID.
+2. Determine latest status using authoritative timestamps; do not blindly assume the last array element is newest.
+3. Read actual filled quantity and average traded price.
+4. Validate quantity and price.
+5. Update the order-attempt record.
+6. Create or upsert a live position for **confirmed filled quantity only**.
+7. Use a unique constraint on the source order/attempt to prevent duplicate positions.
+8. Process additional partial fills without creating duplicate positions.
+9. Preserve previously filled quantity if the remaining order quantity is cancelled.
+10. Handle rejected orders with partial fills correctly.
+11. Reconcile open broker positions against the local position ledger.
+12. Detect and report broker/local discrepancies.
+13. Run reconciliation after startup and periodically while orders or positions remain unresolved.
+14. Ensure reconciliation errors never silently erase order history.
+
+Do not create a live position from a `COMPLETE` label when the broker's authoritative filled quantity cannot be determined; fetch further details or mark it unresolved.
+
+A broker fill discovered later must create/update the position even if the original HTTP request finished long ago.
+
+---
+
+## 4. P0 — Correct ambiguous broker submission failures
+
+Files:
+
+- `liveExecutionService.ts`
+- `UpstoxProvider.ts`
+
+Currently the live service catches submission exceptions and generally records `REJECTED`.
+
+That is only correct for a **confirmed broker rejection**.
+
+A timeout, connection reset, malformed response or missing order ID can be ambiguous: the broker might have received the order.
+
+Implement:
+
+```text
+Explicit broker rejection → REJECTED
+Pre-trade validation failure → PRE_TRADE_REJECTED
+Order ID acknowledgment → SUBMITTED
+Unknown network outcome → UNKNOWN
+Confirmed broker fill → FILLED
+```
+
+On `UNKNOWN`:
+
+- Keep the attempt record.
+- Do not create a live position without evidence.
+- Do not automatically resubmit.
+- Reconcile by broker order ID or unique order tag.
+- Alert if the outcome remains unknown.
+
+Fix `UpstoxProvider.placeOrder()` so a unique supplied order tag is preserved instead of overwritten with a constant tag.
+
+Use unique, stable client request identities for EMA order attempts.
+
+Preserve Upstox error codes/messages in the attempt record.
+
+Never fabricate broker order IDs.
+
+---
+
+## 5. P0 — Fix premature live SELL closure
+
+File: `liveExecutionService.ts`, approximately lines 493–621.
+
+Current defective pattern:
+
+```ts
+const exitRes = await activeProvider.placeOrder(...);
+
+dbEngine.updateEmaLivePosition(pos.id, {
+  status: 'CLOSED'
+});
+```
+
+**This is wrong.** A successful SELL submission does not prove a completed SELL fill.
+
+### Required exit lifecycle
+
+```text
+OPEN
+  ↓
+EXIT_REQUESTED
+  ↓
+EXIT_SUBMITTED / EXIT_PENDING
+  ↓
+PARTIALLY_CLOSED, if applicable
+  ↓
+CLOSED only after confirmed filled exit quantity
+```
+
+Requirements:
+
+- Persist the exit request before calling Upstox.
+- Track the real exit order ID.
+- Add a durable exit-order record/table if needed.
+- Never generate a fake exit order ID.
+- Use actual exit fill quantity and average price.
+- Reduce open quantity only by confirmed exit fills.
+- Mark CLOSED only when remaining confirmed broker position quantity becomes zero.
+- Calculate realized P&L from confirmed fills.
+- Keep unresolved exits visible.
+- Handle rejection, partial fill, cancellation, timeout, restart and connection loss.
+- Never issue duplicate exit SELL orders for an existing pending exit.
+
+The API must not claim a position has closed merely because the broker accepted the order request.
+
+If submission succeeds but fill is pending, return a pending/accepted response, not a completed-square-off response.
+
+---
+
+## 6. P0 — Repair stranded EXIT_FAILED positions
+
+File: `db.ts`, approximately lines 4325–4383.
+
+Existing queries filter:
+
+```sql
+WHERE status = 'OPEN'
+```
+
+This excludes positions in:
+
+```text
+EXIT_REQUESTED
+EXIT_PENDING
+EXIT_FAILED
+PARTIALLY_CLOSED
+```
+
+Some of those statuses can still represent real broker exposure.
+
+Implement a query for **all non-fully-closed positions**, with confirmed remaining open quantity.
+
+Use it consistently in:
+
+- Live position monitoring.
+- Reversal checks.
+- Manual square-off.
+- Forced square-off.
+- Startup recovery.
+- Risk exposure calculations.
+- Dashboard active-position counters.
+
+After a rejected exit, the position must remain visible, recoverable and reconcilable.
+
+Do not permanently hide it simply because status changed to `EXIT_FAILED`.
+
+---
+
+## 7. P0 — Make reversals safe
+
+File: `liveExecutionService.ts`, approximately lines 124–149.
+
+Current flow calls:
+
+```ts
+await this.requestLiveExit(existingLivePos.id, 'OPPOSITE_CROSSOVER');
+```
+
+but can continue to submit the new BUY without verifying that the old live position was fully exited.
+
+Correct it.
+
+Required rule:
+
+```text
+Old live position exists
+    ↓
+Request old exit
+    ↓
+Wait for confirmed broker exit
+    ↓
+Verify remaining quantity = 0
+    ↓
+Only then consider new live BUY
+```
+
+If the old exit is rejected/pending/unknown, do not submit the replacement BUY.
+
+Paper reversals must remain independent and continue according to paper settings.
+
+Also check pending entry orders, not only confirmed OPEN positions, before submitting a new live BUY.
+
+---
+
+## 8. P0 — Use actual Upstox contracts, not fabricated keys
+
+File: `contractResolver.ts`, approximately lines 45–100.
+
+Current resolver constructs:
+
+```ts
+const brokerInstrumentKey =
+  `${segment === 'BFO' ? 'BSE_FO' : 'NSE_FO'}|${tradingsymbol}`;
+```
+
+and then marks the contract valid.
+
+This is not an authoritative broker instrument lookup.
+
+### Fix
+
+Use the current Upstox BOD JSON instrument master or official option-contract API.
+
+Match all of:
+
+```text
+exchange / segment
+underlying
+expiry
+strike
+CE or PE
+listed instrument
+```
+
+Read directly from the matching contract:
+
+```text
+instrument_key
+trading_symbol
+lot_size
+tick_size
+expiry
+strike_price
+instrument_type
+```
+
+Verify that the instrument is eligible for the selected product and currently tradable.
+
+Do not manually invent instrument keys.
+
+Do not hardcode `25`, `15` or `10` units as authoritative live option lot sizes.
+
+Do not hardcode outdated weekly expiry weekdays.
+
+If the exact contract cannot be verified:
+
+```text
+Live attempt: PRE_TRADE_REJECTED
+Reason: CONTRACT_NOT_VERIFIED
+Live order submitted: NO
+Paper execution: unaffected
+```
+
+Consult:
+
+- https://upstox.com/developer/api-documentation/instruments/
+- https://upstox.com/developer/api-documentation/get-option-contracts/
+- https://upstox.com/developer/api-documentation/place-order/
+
+The intended real Upstox attempt should fail only for an **actual returned broker reason**, not because the platform invented an invalid contract key.
+
+---
+
+## 9. P0 — Fix BUY PE P&L in database close paths
+
+File: `db.ts`, approximately lines 3808–3819.
+
+Current code:
+
+```ts
+const isLong = trade.direction === 'LONG';
+
+const grossPnl = isLong
+  ? (exitPrice - entryPrice) * qty
+  : (entryPrice - exitPrice) * qty;
+```
+
+In this strategy, `direction = 'SHORT'` represents **bearish market bias**, but the actual option transaction is BUY PE.
+
+For both BUY CE and BUY PE:
+
+```ts
+const grossPnl = Number(
+  ((exitPrice - entryPrice) * qty).toFixed(2)
+);
+```
+
+Apply to every relevant EMA paper closing/accounting path:
+
+- Manual close.
+- Forced square-off.
+- Reversal.
+- SL/TP.
+- Trade review.
+- Summary reconciliation.
+
+Do not accidentally change real short-option accounting in unrelated strategies.
+
+Add a database integration test:
+
+```text
+BUY PE
+Entry = 250
+Exit = 280
+Quantity = 30
+Brokerage = 40
+
+Expected gross = +900
+Expected net = +860
+```
+
+Do not modify historical realized P&L records blindly. If reconciliation of old records is necessary, create an audited migration with backup.
+
+---
+
+## 10. P0 — Fix order safety and real broker risk inputs
+
+File: `liveExecutionService.ts`, approximately lines 47–105.
+
+Currently:
+
+```ts
+exposureController.checkOrderGating()
+```
+
+uses default representative Greeks and capital values.
+
+Do not approve live entries using fabricated capital/portfolio defaults.
+
+Required behavior:
+
+- Supply actual account-specific exposure and risk inputs.
+- Use confirmed positions and pending broker orders.
+- Use real broker account/margin information where required.
+- Evaluate kill switch and daily-loss limits against actual live exposure.
+- Do not mix paper P&L with live P&L.
+- If mandatory data is missing, fail closed for new live entries.
+- Preserve risk-reducing exit mechanisms.
+
+Correct daily-session P&L calculation.
+
+Do not use UTC `createdAt.startsWith(IST date)` as an authoritative calculation of today's realized P&L.
+
+Use properly converted IST session timestamps and confirmed broker fills.
+
+A zero-cash Upstox account may reject a valid order. That rejection is acceptable.
+
+**Never bypass mandatory risk checks or fabricate margin availability merely to force a broker rejection.**
+
+---
+
+## 11. P0 — Enforce authorization and isolate account settings
+
+Files:
+
+- `serverApp.ts`
+- `src/server/auth.ts`
+
+Several EMA POST endpoints have authentication but insufficient role/account authorization.
+
+Ordinary authenticated users can modify global live-trading settings.
+
+Fix:
+
+- Live trading enable/disable permissions.
+- Global risk settings updates.
+- Manual live square-off permissions.
+- Settings ownership.
+- Broker-account ownership.
+- Sensitive GET endpoints showing positions, attempts and P&L.
+- Execution log deletion permissions.
+- Settings secret exposure.
+
+Do not copy one user's entire settings object into `GLOBAL` automatically.
+
+Separate user notification preferences from account-level execution authorization.
+
+For live trading permissions, use the existing role model; do not invent a new user system unnecessarily.
+
+At minimum, unauthorized users must not arm real trading or submit exits for another broker account.
+
+Ensure GET/POST settings never expose raw Telegram bot tokens to unauthorized clients.
+
+When saving settings, do not persist a masked token string as the actual secret.
+
+Remove insecure authentication fallback pathways where they expose user identity or sensitive data.
+
+---
+
+## 12. P1 — Correct forced square-off and recovery
+
+Files:
+
+- `sessionCalendar.ts`
+- `liveExecutionService.ts`
+- `paperExecutionService.ts`
+
+Existing `isAtOrPastForcedSquareOff()` returns true whenever local time is after the specified time, including outside exchange trading sessions.
+
+Correctly distinguish:
+
+- Before square-off.
+- Square-off window during a trading session.
+- Market closed.
+- Weekend/holiday.
+- Exchange special session.
+- Unresolved position from a previous session.
+
+Do not repeatedly dispatch live market SELL orders after the exchange has closed.
+
+If a live position remains open after the square-off window, retain it as unresolved and alert rather than falsely closing it.
+
+Handle MIS and NRML appropriately.
+
+Paper square-off must remain simulation-only.
+
+---
+
+## 13. P1 — Live SL/TP must not rely on synthetic prices
+
+Files:
+
+- `liveExecutionService.ts`
+- `ema15mEngine.ts`
+
+Live position monitoring currently accepts `getEstimatedOptionPrice()`, which can return:
+
+- Stale recorded LTP.
+- Theoretical Black–Scholes price.
+
+This is not reliable enough to trigger actual broker SELL orders.
+
+Use fresh contract-specific Upstox market quotes for automatic live exit decisions.
+
+Validate:
+
+```text
+exact instrument key
+exchange timestamp
+quote age
+bid/ask/LTP availability
+source = genuine live feed
+```
+
+Do not allow model prices or stale quotes to trigger real exits.
+
+If live quotes are unavailable, raise a risk alert and apply a separately defined protective-exit policy.
+
+Paper trades may continue using estimated prices, explicitly labeled as simulated.
+
+---
+
+## 14. P1 — Eliminate mock data contamination
+
+File: `ema15mEngine.ts`.
+
+Current mock crossover uses:
+
+```ts
+this.finalizeCandle(mockCandle, true);
+```
+
+The live order is suppressed, but `finalizeCandle()` still saves the synthetic candle and signal into regular history/database.
+
+Fix mock testing so synthetic events do not mutate genuine market candle or signal history.
+
+Use an isolated in-memory/mock execution path or test database.
+
+Guarantee:
+
+```text
+Mock crossover:
+Real broker orders = 0
+Real positions changed = 0
+Authentic candle history changed = 0
+Authentic signal history changed = 0
+```
+
+Allow isolated simulated paper tests if explicitly requested, without contaminating normal performance statistics.
+
+---
+
+## 15. P1 — Fix backtest and historical accuracy
+
+File: `ema15mEngine.ts`.
+
+Some historical timestamp and BUY PE issues were corrected; preserve those fixes.
+
+Remaining work:
+
+1. Fix historical contract selection so it uses contracts valid **at the historical simulation date**, not today's available expiry list.
+2. Prevent fallback to current date for invalid simulation timestamps.
+3. Avoid treating stale historical option quotes as contemporaneous fills.
+4. Clearly label model-derived option premiums.
+5. Correct equity-based maximum drawdown percentage.
+6. Use actual configured initial capital and trade quantity.
+7. Include appropriate modeled costs/slippage.
+8. Apply a conservative policy when candle SL and target can both be touched.
+9. Ensure no future observations influence historical decisions.
+10. Make strategy rules consistent across live, paper and backtest.
+
+Current drawdown calculation uses a nonstandard denominator based on the first entry price; replace it with actual equity-curve drawdown.
+
+Do not rewrite the entire backtester if targeted changes suffice.
+
+---
+
+## 16. P1 — Fix API/dashboard response mismatch
+
+Files:
+
+- `src/types.ts`
+- `db.ts`
+- `Ema15mDashboardView.tsx`
+- `serverApp.ts`
+
+The frontend `EmaLiveTradingSummary` type expects fields including:
+
+```text
+rejectedAttempts
+liveBrokerExecutionEnabled
+totalPositions
+winRatePercent
+```
+
+The backend currently returns different names such as:
+
+```text
+rejectedAttemptsCount
+liveTradingEnabled
+```
+
+Make the response contract consistent.
+
+Prefer one shared DTO type.
+
+Correct dashboard counting for positions in:
+
+```text
+OPEN
+EXIT_REQUESTED
+EXIT_PENDING
+EXIT_FAILED
+PARTIALLY_CLOSED
+```
+
+Do not show unresolved live exposure as "No Active Live Broker Positions."
+
+Show actual broker order state and actual rejection reasons.
+
+Make manual live square-off display `PENDING` until fill confirmation.
+
+Do not show "live fill confirmed" based only on a local SQLite insert.
+
+---
+
+## 17. P1 — Make persistence and tests safe
+
+File: `db.ts`.
+
+Current database path is effectively:
+
+```ts
+path.join(process.cwd(), 'option_platform.sqlite');
+```
+
+The existing tests call `dbEngine.initialize()` and can mutate the repository's tracked SQLite database.
+
+Before running tests:
+
+- Introduce a safe, validated test database path override.
+- Use a fresh temporary SQLite database per test suite.
+- Never use the production/repository database in automated tests.
+- Never use production Upstox credentials.
+- Never make real network order-placement calls in tests.
+- Ensure test cleanup runs reliably.
+- Do not delete, replace or reset existing operational trade data.
+
+Check migrations on a database copy before production migration.
+
+Database persistence methods currently catch some write errors without propagating failure. Ensure execution cannot report successful durable submission when the required attempt record was not persisted.
+
+If persistence fails before a new live order, do not submit the order.
+
+If persistence fails after broker submission, preserve the ambiguous state for recovery and alert.
+
+Avoid destructive automatic database recovery that silently discards EMA live orders or positions.
+
+---
+
+## 18. P1 — Correct broker provider integration
+
+File: `UpstoxProvider.ts`.
+
+Inspect `placeOrder()` and `getOrderHistory()`.
+
+Required:
+
+- Pass actual instrument master key.
+- Preserve unique order tag.
+- Use valid product/order-type mappings.
+- Return broker errors with codes and details.
+- Handle HTTP failures and malformed responses.
+- Distinguish rejection from transport uncertainty.
+- Do not discard actual fill/status information.
+- Avoid silent order-status fallback to simulated data.
+- Allow test dependency injection of a fake broker.
+
+Verify API fields against official Upstox documentation.
+
+Do not change unrelated basket-order behavior without corresponding regression tests.
+
+---
+
+## 19. MANDATORY TESTS — REAL MOCKS, NOT FORMULA-ONLY TESTS
+
+The current `ema15m_dual_execution.test.ts` contains several assertions that do not exercise actual broker execution paths.
+
+Replace/add **dependency-injected broker mock integration tests**.
+
+A test calling a simple formula is not proof that the live service handles an order lifecycle.
+
+Implement these tests:
+
+| Test | Mocked broker response | Required assertion |
+|---|---|---|
+| A | Paper ON, Live OFF | Paper created; broker called 0 times |
+| B | Paper OFF, Live ON | No paper position; broker call only if pre-trade passes |
+| C | Both ON, insufficient margin | Paper OPEN; live REJECTED; live position absent |
+| D | `order_id` only | SUBMITTED; filledQty 0; no live position |
+| E | Order fills later | Reconciler creates exactly one live position |
+| F | Partial fill | Position quantity equals confirmed fill |
+| G | Partial fill then cancel | Filled exposure remains; unfilled remainder cancelled |
+| H | BUY rejected | No real SELL order ever issued for it |
+| I | SELL acknowledged but pending | Live position not CLOSED |
+| J | SELL rejected | Position remains visible and recoverable |
+| K | Reversal exit pending | Opposite BUY not submitted |
+| L | Repeated same signal | No duplicate real order |
+| M | Network timeout after submission | UNKNOWN; no blind retry |
+| N | Server restart | Pending orders and open exposure reconciled |
+| O | BUY PE manual close | Correct positive premium P&L |
+| P | Invalid broker contract | PRE_TRADE_REJECTED; no real order |
+| Q | Mock crossover | No broker calls; no authentic history changes |
+| R | Stale/model quote | No automatic live exit based on modeled price |
+| S | Unauthorized API caller | Cannot arm live or square off another account |
+| T | Forced square-off outside session | No false broker fill/closure |
+| U | DB persistence failure | No success reported; safe recovery |
+| V | Both modes OFF | Signal only; no position/order |
+| W | Paper/Live independent failure | One pipeline failure does not corrupt the other |
+| X | Test isolation | Original SQLite database unchanged |
+
+For broker mock examples, explicitly simulate:
+
+```ts
+// Acknowledgment only:
+{ order_id: 'OID-100' }
+
+// Later complete fill from order-history mock:
+{
+  order_id: 'OID-100',
+  status: 'complete',
+  filled_quantity: 30,
+  average_price: 245.50
+}
+
+// Rejection:
+{
+  status: 'rejected',
+  status_message: 'Insufficient margin'
+}
+```
+
+Do not mock `LiveExecutionService` itself when testing its behavior. Mock the broker adapter and database boundary.
+
+Use deterministic test clocks and unique isolated fixture records.
+
+---
+
+## 20. Existing test suite is NOT sufficient evidence
+
+The previous test suite includes cases which:
+
+- Set `filledQty` in test code without running the actual live-fill handler.
+- Test an `isBreached` boolean instead of the risk gateway.
+- Test a disconnected broker rather than actually engaging the kill switch.
+- Check that a reconciliation method returns numbers without verifying state reconciliation.
+- Use real DB initialization rather than isolated fixtures.
+
+Replace these superficial tests with assertions against actual state transitions.
+
+Do not claim a scenario is fully tested unless the relevant production method was executed with controlled mock dependencies.
+
+---
+
+## 21. Execution order — follow exactly
+
+### Step 1: Baseline
+
+Record:
+
+```bash
+git rev-parse HEAD
+git status --short
+```
+
+Inspect the files above and confirm each current bug exists.
+
+### Step 2: P0 first
+
+Implement, in this order:
+
+1. Correct live BUY acknowledgment.
+2. Correct broker fill reconciliation.
+3. Correct SELL acknowledgment and position closure.
+4. Restore monitoring of unresolved positions.
+5. Fix reversal and duplicate-order control.
+6. Fix authoritative option-contract resolution.
+7. Fix BUY PE database P&L.
+8. Fix risk inputs and authorization.
+
+### Step 3: P1
+
+Implement:
+
+9. Forced square-off calendar handling.
+10. Genuine live quote validation.
+11. Mock-data isolation.
+12. Historical/backtest accuracy.
+13. API/dashboard contract alignment.
+14. Database/test isolation.
+
+### Step 4: Verification
+
+Run safely against an isolated test database and mocked broker:
+
+```bash
+npm run lint
+npm test
+npm run build
+```
+
+Never run the current test suite against the original operational SQLite file.
+
+If tests or builds fail, fix the root cause and rerun.
+
+Do not report unexecuted commands as successful.
+
+### Step 5: Review
+
+Check the final diff for unintended changes and secrets.
+
+Do not include modifications to:
+
+```text
+option_platform.sqlite
+option_platform.sqlite-wal
+option_platform.sqlite-shm
+.env
+real broker tokens
+```
+
+If these files are already tracked or modified, do not silently delete them or rewrite Git history during this task. Report the issue separately.
+
+---
+
+## 22. Things you must NOT do
+
+**DO NOT:**
+
+- Rewrite the whole EMA engine.
+- Delete existing independent execution services.
+- Merge paper and live trading into one position table.
+- Make paper and live enable settings mutually exclusive.
+- Disable paper execution because a broker rejected.
+- Mark a broker acknowledgment as FILLED.
+- Mark a submitted SELL as CLOSED.
+- Generate fake broker order IDs.
+- Fabricate broker instrument keys.
+- Use synthetic prices to trigger real automatic exits.
+- Bypass the kill switch to obtain an insufficient-funds rejection.
+- Assume zero cash means all orders must reject.
+- Auto-retry ambiguous network failures.
+- Send any real Upstox order from tests.
+- Use the real SQLite database for tests.
+- Delete existing trade history.
+- Add unrelated features or large visual redesigns.
+- Invent API response fields.
+- Write broad refactors without tests.
+- Claim success based solely on new files or comments.
+
+---
+
+## 23. Completion criteria
+
+The task is complete only if all statements are true:
+
+```text
+[ ] Paper ON + Live ON work independently.
+[ ] Broker rejection never cancels a valid paper trade.
+[ ] Broker order_id alone never creates a live position.
+[ ] Confirmed fill creates exactly one position.
+[ ] Partial fills update quantities correctly.
+[ ] SELL acknowledgment never falsely closes a position.
+[ ] EXIT_FAILED positions remain visible and recoverable.
+[ ] Old reversal position must be fully exited before new live BUY.
+[ ] Every live order uses genuine broker instrument_key and lot_size.
+[ ] BUY PE realized P&L is correct across all close paths.
+[ ] Kill switch and real exposure controls are enforced.
+[ ] Mandatory EMA API permissions are enforced.
+[ ] Mock signals cannot affect production data or live broker.
+[ ] Historical backtest uses historical, not future, information.
+[ ] Dashboard matches backend API response types.
+[ ] Automated tests use isolated DB and mocked broker.
+[ ] Lint, tests and build actually run and pass.
+[ ] No operational SQLite files or credentials are modified.
+```
+
+---
+
+## 24. Required output format — short and factual
+
+After implementation, reply with only:
+
+### 1. Commit
+`Before SHA → After SHA`
+
+### 2. Fixed
+Brief table:
+
+`Bug | Changed file | Test name | Result`
+
+### 3. Verification
+
+```text
+Lint: PASS / FAIL / NOT RUN
+Tests: X passed, Y failed
+Build: PASS / FAIL / NOT RUN
+Real broker orders sent during testing: 0
+Operational SQLite changed: NO
+```
+
+### 4. Remaining issues
+List only genuinely unresolved issues with exact file references.
+
+### 5. Final dual-mode proof
+
+Show mocked test evidence for:
+
+```text
+Paper = ON
+Live = ON
+Upstox = INSUFFICIENT_MARGIN
+
+Expected:
+Paper = OPEN, SIMULATED
+Live attempt = REJECTED
+Live filled qty = 0
+Live position = NONE
+Real SELL calls = 0
+```
+
+**Stop after providing this concise report. Do not produce a long generic explanation.**
+
+## FINAL INSTRUCTION
+
+Make targeted, correct changes to the existing implementation. Prefer verifying and fixing one concrete bug over generating large amounts of speculative code.
+
+If the current code already satisfies an item, mark it verified and do not modify it.
+
+**The highest-priority objective is preventing false broker fills, false broker closures, duplicate live orders, and accidental real exposure while preserving independent paper and real execution attempts.**

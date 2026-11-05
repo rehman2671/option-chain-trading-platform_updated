@@ -3473,11 +3473,14 @@ class DatabaseEngine {
   public logEmaExecution(log: EmaExecutionLog): void {
     if (!this.db) return;
     try {
+      const logId = log.id 
+        ? `${log.id}-${Math.random().toString(36).slice(2, 6)}` 
+        : `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.db.prepare(`
-        INSERT INTO ema_execution_logs (id, timestamp, level, stage, instrument, message, details_json)
+        INSERT OR REPLACE INTO ema_execution_logs (id, timestamp, level, stage, instrument, message, details_json)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
-        log.id || `exec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        logId,
         log.timestamp || new Date().toISOString(),
         log.level,
         log.stage,
@@ -3486,7 +3489,7 @@ class DatabaseEngine {
         log.details ? JSON.stringify(log.details) : null
       );
     } catch (err: any) {
-      console.error('[DB] Error logging EMA execution event:', err.message);
+      console.error('[DB] Error logging EMA execution log:', err.message);
     }
   }
 
@@ -3813,8 +3816,8 @@ class DatabaseEngine {
 
       const entryPrice = Number(trade.entry_price);
       const qty = Number(trade.quantity);
-      const isLong = trade.direction === 'LONG';
-      const grossPnl = Number((isLong ? (exitPrice - entryPrice) * qty : (entryPrice - exitPrice) * qty).toFixed(2));
+      // EMA15M trades are directional option buys (BUY CE / BUY PE); gross P&L is always (exit - entry) * qty
+      const grossPnl = Number(((exitPrice - entryPrice) * qty).toFixed(2));
       const brokerage = 40; // ₹40 round trip (₹20 entry + ₹20 exit)
       const netPnl = Number((grossPnl - brokerage).toFixed(2));
       const now = exitTimestamp || new Date().toISOString();
@@ -3929,8 +3932,8 @@ class DatabaseEngine {
       const toUpdate = openTrades.map(t => {
         const entryPrice = Number(t.entry_price);
         const qty = Number(t.quantity);
-        const isLong = t.direction === 'LONG';
-        const unrealizedPnl = Number((isLong ? (currentPrice - entryPrice) * qty : (entryPrice - currentPrice) * qty).toFixed(2));
+        // EMA15M trades are directional option buys (BUY CE / BUY PE); unrealized P&L is always (current - entry) * qty
+        const unrealizedPnl = Number(((currentPrice - entryPrice) * qty).toFixed(2));
         return { id: t.id, currentPrice, unrealizedPnl };
       });
 
@@ -4325,7 +4328,7 @@ class DatabaseEngine {
   public getOpenEmaLivePositions(instrument?: string): EmaLivePosition[] {
     if (!this.db) return [];
     try {
-      let query = `SELECT * FROM ema_live_positions WHERE status = 'OPEN'`;
+      let query = `SELECT * FROM ema_live_positions WHERE status IN ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')`;
       const params: any[] = [];
       if (instrument && instrument !== 'ALL') {
         query += ` AND instrument = ?`;
@@ -4380,8 +4383,58 @@ class DatabaseEngine {
     if (!this.db) return null;
     try {
       const r = this.db.prepare(`
-        SELECT * FROM ema_live_positions WHERE instrument = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1
+        SELECT * FROM ema_live_positions 
+        WHERE instrument = ? AND status IN ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED') 
+        ORDER BY created_at DESC LIMIT 1
       `).get(instrument) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        attemptId: r.attempt_id,
+        signalId: r.signal_id,
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strikePrice: Number(r.strike_price),
+        expiryDate: r.expiry_date,
+        productType: r.product_type,
+        side: r.side,
+        marketBias: r.market_bias,
+        entryBrokerOrderId: r.entry_broker_order_id,
+        entryTimestamp: r.entry_timestamp,
+        entryPrice: Number(r.entry_price),
+        quantity: Number(r.quantity),
+        lotSize: Number(r.lot_size),
+        currentPrice: Number(r.current_price),
+        unrealizedPnl: Number(r.unrealized_pnl || 0),
+        stopLoss: Number(r.stop_loss),
+        targetPrice: Number(r.target_price),
+        trailingStopLoss: r.trailing_stop_loss !== null ? Number(r.trailing_stop_loss) : undefined,
+        isTrailingActive: r.is_trailing_active === 1,
+        status: r.status,
+        exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitTimestamp: r.exit_timestamp || null,
+        exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
+        exitReason: r.exit_reason || null,
+        grossPnl: Number(r.gross_pnl || 0),
+        brokerage: Number(r.brokerage || 40),
+        netPnl: Number(r.net_pnl || 0),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public getEmaLivePositionByAttemptId(attemptId: string): EmaLivePosition | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare(`
+        SELECT * FROM ema_live_positions WHERE attempt_id = ? LIMIT 1
+      `).get(attemptId) as any;
       if (!r) return null;
       return {
         id: r.id,
@@ -4567,13 +4620,16 @@ class DatabaseEngine {
   public logEmaExecutionEvent(event: EmaExecutionEvent): void {
     if (!this.db) return;
     try {
+      const eventId = event.id
+        ? (event.id.includes('-') && event.id.length > 25 ? event.id : `${event.id}-${Math.random().toString(36).slice(2, 6)}`)
+        : `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.db.prepare(`
-        INSERT INTO ema_execution_events (
+        INSERT OR REPLACE INTO ema_execution_events (
           id, event_id, signal_id, execution_id, execution_mode, stage, status,
           instrument, broker_order_id, error_code, error_message, details_json, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        event.id || `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        eventId,
         event.eventId || null,
         event.signalId || null,
         event.executionId || null,

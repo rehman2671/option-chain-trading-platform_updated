@@ -63,7 +63,7 @@ export class PaperExecutionService {
           } catch {}
 
           dbEngine.logEmaExecutionEvent({
-            id: `evt-paper-rev-${Date.now()}`,
+            id: `evt-paper-rev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             signalId: signal.id,
             executionId: existingOpen.id,
             executionMode: 'PAPER',
@@ -78,7 +78,7 @@ export class PaperExecutionService {
         } else {
           // Same direction: maintain position invariant (Max 1 active position, no averaging, no pyramiding)
           dbEngine.logEmaExecutionEvent({
-            id: `evt-paper-hold-${Date.now()}`,
+            id: `evt-paper-hold-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             signalId: signal.id,
             executionMode: 'PAPER',
             stage: 'PAPER_ENTRY',
@@ -136,8 +136,9 @@ export class PaperExecutionService {
       dbEngine.saveEmaPaperTrade(simulatedTrade);
 
       // 4. Log structured audit event
+      const randOpen = Math.random().toString(36).slice(2, 8);
       dbEngine.logEmaExecutionEvent({
-        id: `evt-paper-open-${Date.now()}`,
+        id: `evt-paper-open-${Date.now()}-${randOpen}`,
         signalId: signal.id,
         executionId: tradeId,
         executionMode: 'PAPER',
@@ -156,7 +157,7 @@ export class PaperExecutionService {
       });
 
       dbEngine.logEmaExecution({
-        id: `exec-pt-${Date.now()}`,
+        id: `exec-pt-${Date.now()}-${randOpen}`,
         timestamp: timestampStr,
         level: 'SUCCESS',
         stage: 'PAPER_TRADE',
@@ -173,7 +174,7 @@ export class PaperExecutionService {
     } catch (err: any) {
       console.error(`[EMA PAPER] Error executing paper trade for ${inst}:`, err.message);
       dbEngine.logEmaExecutionEvent({
-        id: `evt-paper-err-${Date.now()}`,
+        id: `evt-paper-err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         signalId: signal.id,
         executionMode: 'PAPER',
         stage: 'PAPER_ENTRY',
@@ -325,7 +326,7 @@ export class PaperExecutionService {
       dbEngine.closeEmaPaperTrade(trade.id, exitPrice, 'FORCED_INTRADAY_SQUARE_OFF', new Date().toISOString());
 
       dbEngine.logEmaExecutionEvent({
-        id: `evt-paper-sq-${Date.now()}`,
+        id: `evt-paper-sq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         signalId: trade.signalId,
         executionId: trade.id,
         executionMode: 'PAPER',

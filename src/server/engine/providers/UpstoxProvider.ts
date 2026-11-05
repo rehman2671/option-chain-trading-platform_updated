@@ -390,7 +390,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         product: params.product === 'MIS' ? 'I' : 'D',
         validity: 'DAY',
         price: params.price || 0,
-        tag: 'delta_chain',
+        tag: params.tag || 'delta_chain',
         instrument_token: params.instrumentToken || params.tradingsymbol || params.symbol,
         order_type: params.orderType || 'MARKET',
         transaction_type: params.transactionType || params.action || 'BUY',
