@@ -131,7 +131,7 @@ export class LiveExecutionService {
 
     // 0. Check if there is an in-flight pending entry attempt for this instrument
     const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 10);
-    const inFlightAttempt = recentAttempts.find(a => a.orderStatus === 'SUBMITTED' || a.orderStatus === 'OPEN');
+    const inFlightAttempt = recentAttempts.find(a => ['CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
     if (inFlightAttempt) {
       console.log(`[EMA LIVE] In-flight entry attempt ${inFlightAttempt.id} exists for ${inst}. Suppressing duplicate entry.`);
       return {
@@ -309,11 +309,15 @@ export class LiveExecutionService {
       // In production Upstox, placeOrder returns { order_id: "..." } for acknowledgment.
       // Order status is SUBMITTED with 0 filledQty until authoritative fill confirmation is received.
       const brokerStatusStr = (brokerRes?.status || brokerRes?.order_status || '').toUpperCase();
+      const brokerFilledQty = Number(brokerRes?.filled_quantity ?? brokerRes?.filledQuantity ?? 0);
+      const brokerFillPrice = Number(brokerRes?.average_price ?? brokerRes?.averagePrice ?? 0);
       const isConfirmedFill = (brokerStatusStr === 'COMPLETE' || brokerStatusStr === 'FILLED') &&
-        Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || 0) > 0;
+        Number.isInteger(brokerFilledQty) && brokerFilledQty > 0 && brokerFilledQty <= quantity &&
+        Number.isFinite(brokerFillPrice) && brokerFillPrice > 0;
 
-      const filledQty = isConfirmedFill ? Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || quantity) : 0;
-      const avgFillPrice = isConfirmedFill ? Number(brokerRes?.average_price || brokerRes?.averagePrice || brokerRes?.price || estimatedEntryPrice) : 0;
+      // An estimated option premium is NEVER evidence of a broker execution price.
+      const filledQty = isConfirmedFill ? brokerFilledQty : 0;
+      const avgFillPrice = isConfirmedFill ? brokerFillPrice : 0;
       const finalStatus: OrderStatus = isConfirmedFill ? 'FILLED' : 'SUBMITTED';
 
       dbEngine.updateEmaLiveOrderAttempt(attemptId, {
@@ -580,6 +584,11 @@ export class LiveExecutionService {
       return { success: false, message: `Live position ${positionId} not found or already closed.` };
     }
 
+    // An acknowledged SELL or a partial exit is still real exposure. Never submit another
+    // SELL until its broker order has been reconciled and remaining quantity verified.
+    if (!['OPEN', 'EXIT_FAILED'].includes(pos.status) || pos.exitBrokerOrderId) {
+      return { success: false, message: `Exit for live position ${positionId} is unresolved (${pos.status}). Reconcile broker first.` };
+    }
     if (this.pendingExitIds.has(pos.id)) {
       return { success: false, message: `Exit already in flight for live position ${positionId}.` };
     }
@@ -668,12 +677,15 @@ export class LiveExecutionService {
       }
 
       const exitStatusStr = (exitRes?.status || exitRes?.order_status || '').toUpperCase();
+      const brokerExitQty = Number(exitRes?.filled_quantity ?? exitRes?.filledQuantity ?? 0);
+      const brokerExitPrice = Number(exitRes?.average_price ?? exitRes?.averagePrice ?? 0);
       const isExitFilled = (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
-        Number(exitRes?.filled_quantity || exitRes?.filledQuantity || 0) > 0;
+        Number.isInteger(brokerExitQty) && brokerExitQty === Number(pos.quantity) &&
+        Number.isFinite(brokerExitPrice) && brokerExitPrice > 0;
 
       const randomSuffix = Math.random().toString(36).slice(2, 8);
       if (isExitFilled) {
-        const exitPrice = Number(exitRes?.average_price || exitRes?.price || currentOptionPrice || pos.currentPrice || pos.entryPrice);
+        const exitPrice = brokerExitPrice;
         const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, exitPrice, pos.quantity);
         const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
 
@@ -750,9 +762,11 @@ export class LiveExecutionService {
     } catch (exitErr: any) {
       console.error(`[EMA LIVE] 🔴 Error dispatching broker exit order for ${pos.tradingsymbol}:`, exitErr.message);
 
+      // Transport errors can occur AFTER a broker accepted SELL. Preserve unresolved
+      // state rather than marking it retryable and risking a duplicate real SELL.
       dbEngine.updateEmaLivePosition(pos.id, {
-        status: 'EXIT_FAILED',
-        exitReason: `Exit Failed: ${exitErr.message}`
+        status: 'EXIT_REQUESTED',
+        exitReason: `Exit submission outcome UNKNOWN: ${exitErr.message}`
       });
 
       const randomSuffix = Math.random().toString(36).slice(2, 8);
