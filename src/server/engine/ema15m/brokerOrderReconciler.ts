@@ -54,7 +54,7 @@ export class BrokerOrderReconciler {
     try {
       // 1. Reconcile pending order attempts (SUBMITTED / OPEN)
       const attempts = dbEngine.getEmaLiveOrderAttempts('ALL', 50);
-      const pendingAttempts = attempts.filter(a => a.orderStatus === 'SUBMITTED' || a.orderStatus === 'OPEN');
+      const pendingAttempts = attempts.filter(a => ['SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
 
       for (const att of pendingAttempts) {
         if (!att.brokerOrderId) continue;
@@ -64,15 +64,20 @@ export class BrokerOrderReconciler {
           if (Array.isArray(history) && history.length > 0) {
             const latest = history[history.length - 1];
             const status = (latest.status || latest.order_status || '').toUpperCase();
-            const filledQty = Number(latest.filled_quantity || latest.quantity || 0);
-            const avgPrice = Number(latest.average_price || latest.price || 0);
+            const filledQty = Number(latest.filled_quantity ?? 0);
+            const avgPrice = Number(latest.average_price ?? 0);
 
             if (status === 'COMPLETE' || status === 'FILLED') {
-              const finalQty = filledQty || att.requestedQuantity;
-              const finalPrice = avgPrice || att.averageFillPrice || 0;
+              if (!Number.isInteger(filledQty) || filledQty <= 0 ||
+                  filledQty > att.requestedQuantity || !Number.isFinite(avgPrice) || avgPrice <= 0) {
+                discrepancies.push(`Broker entry ${att.brokerOrderId}: missing or invalid actual fill quantity/average price; cannot create position.`);
+                continue;
+              }
+              const finalQty = filledQty;
+              const finalPrice = avgPrice;
 
               dbEngine.updateEmaLiveOrderAttempt(att.id, {
-                orderStatus: 'FILLED',
+                orderStatus: finalQty === att.requestedQuantity ? 'FILLED' : 'PARTIALLY_FILLED',
                 filledQuantity: finalQty,
                 averageFillPrice: finalPrice,
                 lastBrokerUpdateAt: new Date().toISOString()
@@ -104,7 +109,7 @@ export class BrokerOrderReconciler {
                   entryTimestamp: new Date().toISOString(),
                   entryPrice: finalPrice,
                   quantity: finalQty,
-                  lotSize: finalQty,
+                  lotSize: att.requestedQuantity,
                   currentPrice: finalPrice,
                   unrealizedPnl: 0,
                   stopLoss,
@@ -143,6 +148,9 @@ export class BrokerOrderReconciler {
                 });
 
                 updatedPositions++;
+              } else if (existingPos && Number(existingPos.quantity) !== finalQty) {
+                // A later fill can increase exposure. Do not silently pretend local quantity is current.
+                discrepancies.push(`Broker entry ${att.brokerOrderId}: actual filled quantity ${finalQty} differs from local position ${existingPos.quantity}; manual broker-position reconciliation required.`);
               }
 
               reconciledAttempts++;
@@ -171,7 +179,13 @@ export class BrokerOrderReconciler {
               const exitStatus = (latestExit.status || latestExit.order_status || '').toUpperCase();
 
               if (exitStatus === 'COMPLETE' || exitStatus === 'FILLED') {
-                const fillPrice = Number(latestExit.average_price || latestExit.price || pos.currentPrice || pos.entryPrice);
+                const actualExitQty = Number(latestExit.filled_quantity ?? 0);
+                const fillPrice = Number(latestExit.average_price ?? 0);
+                if (!Number.isInteger(actualExitQty) || actualExitQty !== Number(pos.quantity) ||
+                    !Number.isFinite(fillPrice) || fillPrice <= 0) {
+                  discrepancies.push(`Broker exit ${pos.exitBrokerOrderId}: unresolved quantity/price (filled=${actualExitQty}, expected=${pos.quantity}); position NOT closed.`);
+                  continue;
+                }
                 const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, fillPrice, pos.quantity);
                 const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
 
