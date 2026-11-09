@@ -14,7 +14,7 @@
 import { Ema15mSignal } from '../../../types.js';
 import { dbEngine } from '../../db.js';
 import { activeProvider } from '../providers/index.js';
-import { ResolvedContract } from './contractResolver.js';
+import { ContractResolver, ResolvedContract } from './contractResolver.js';
 import { StrategyRules } from './strategyRules.js';
 import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
@@ -124,7 +124,10 @@ export class LiveExecutionService {
   ): Promise<DualExecutionResult['live']> {
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
-    const attemptId = `att-${inst.toLowerCase()}-${Date.now()}`;
+    const attemptId = `att-${inst.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Paper and signal generation may use modelled contracts. Real BUY must use
+    // the broker's exact listed instrument key, expiry, lot size and tick size.
+    contract = await ContractResolver.verifyLiveContract(contract, activeProvider as any);
     const quantity = contract.lotSize;
     const settings = dbEngine.getEmaNotificationSettings(userId);
     const productType: 'MIS' | 'NRML' = settings.upstoxProductType || 'MIS';
