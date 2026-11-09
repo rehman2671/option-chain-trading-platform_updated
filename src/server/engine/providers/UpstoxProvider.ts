@@ -425,6 +425,25 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /** Listed, exchange-authoritative option contracts for one underlying.
+   * Live EMA entry must never use a formatted trading symbol as instrument_key.
+   */
+  public async getOptionContracts(underlyingKey: string): Promise<any[]> {
+    if (!this.isConnected || !this.accessToken) {
+      throw new Error('UPSTOX_CONTRACT_LOOKUP_DISCONNECTED');
+    }
+    const url = `https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(underlyingKey)}`;
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${this.accessToken}`, 'Accept': 'application/json' }
+    });
+    if (!res.ok) throw new Error(`UPSTOX_CONTRACT_LOOKUP_HTTP_${res.status}`);
+    const json: any = await res.json();
+    if (json?.status !== 'success' || !Array.isArray(json?.data)) {
+      throw new Error('UPSTOX_CONTRACT_LOOKUP_INVALID_RESPONSE');
+    }
+    return json.data;
+  }
+
   public async getOrderHistory(orderId: string): Promise<any[]> {
     if (!this.isConnected || !this.accessToken) return [];
 
