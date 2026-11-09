@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
@@ -23,7 +24,9 @@ export interface MigrationReport {
 class DatabaseEngine {
   private db: Database.Database | null = null;
   private isInitialized = false;
-  private dbFilePath = path.join(process.cwd(), 'option_platform.sqlite');
+  private dbFilePath = process.env.NODE_ENV === 'test'
+    ? path.join(os.tmpdir(), `ema15m-test-${process.pid}.sqlite`)
+    : path.join(process.cwd(), 'option_platform.sqlite');
   private isRecovering = false;
   private walCheckpointTimer: NodeJS.Timeout | null = null;
 
@@ -73,8 +76,8 @@ class DatabaseEngine {
       console.log('DatabaseEngine (better-sqlite3): SQLite database initialized in WAL mode with transactional disk persistence.');
       console.log('DatabaseEngine Recovery Summary:', JSON.stringify(this.migrationReport));
     } catch (err: any) {
-      console.warn('[DB INITIALIZE NOTICE] Database integrity issue detected, initiating safe salvaging & recovery:', err?.message || err);
-      this.salvageAndResetDatabase();
+      console.error('[DB INITIALIZE FATAL] Initialization failed; preserving existing SQLite/WAL files:', err?.message || err);
+      throw err;
     }
   }
 
@@ -120,7 +123,8 @@ class DatabaseEngine {
       };
 
       console.error('[DB ENGINE FATAL] Runtime SQLite corruption detected with structured diagnostics:\n' + JSON.stringify(diagnostic, null, 2));
-      this.salvageAndResetDatabase(diagnostic);
+      // Never auto-delete/recreate trading ledgers following a runtime SQLite error.
+      throw new Error('SQLITE_CORRUPTION_DETECTED: preserve database and require manual recovery');
     }
   }
 
