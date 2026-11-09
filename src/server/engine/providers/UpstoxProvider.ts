@@ -186,7 +186,12 @@ export class UpstoxProvider implements IMarketDataProvider {
                 prevClose: quote.ohlc?.close || quote.last_price,
                 volume: quote.volume || 0,
                 available: true,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                source: 'UPSTOX_LIVE',
+                exchangeTimestamp: Number.isFinite(Number(quote.last_trade_time)) &&
+                  Number(quote.last_trade_time) > 0
+                  ? new Date(Number(quote.last_trade_time)).toISOString()
+                  : undefined
               });
             }
           }
