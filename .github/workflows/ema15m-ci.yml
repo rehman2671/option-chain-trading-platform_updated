@@ -24,7 +24,9 @@ jobs:
       - run: npm ci
       - name: Static TypeScript check
         run: npm run lint
-      - name: Isolated automated tests
-        run: npm test
+      - name: Targeted EMA15M invariant tests
+        run: npx tsx --test --test-concurrency=1 src/quant/tests/ema15m_*.test.ts
       - name: Production bundle compilation
-        run: npm run build
+        run: NODE_ENV=production npm run build
+      - name: Full regression suite (must pass before merge)
+        run: npm test
