@@ -27,16 +27,19 @@ export interface ResolvedContract {
 }
 
 export class ContractResolver {
-  /** Resolve the listed broker contract before a LIVE BUY. Paper quotes remain independent. */
+  /** Check an option candidate against current exchange-listed Upstox contracts. */
   public static async verifyLiveContract(candidate: ResolvedContract, provider: any): Promise<ResolvedContract> {
-    const underlyingKey: Record<string, string> = {
+    const underlyingKeys: Record<string, string> = {
       NIFTY: 'NSE_INDEX|Nifty 50',
       BANKNIFTY: 'NSE_INDEX|Nifty Bank',
       SENSEX: 'BSE_INDEX|SENSEX'
     };
-    const key = underlyingKey[candidate.instrument];
+    const key = underlyingKeys[candidate.instrument];
     const reject = (reason: string): ResolvedContract => ({
-      ...candidate, isValid: false, brokerInstrumentKey: '', rejectionReason: reason
+      ...candidate,
+      isValid: false,
+      brokerInstrumentKey: '',
+      rejectionReason: reason
     });
     if (!key || typeof provider?.getOptionContracts !== 'function') {
       return reject('UPSTOX_LISTED_CONTRACT_LOOKUP_UNAVAILABLE');
@@ -46,15 +49,41 @@ export class ContractResolver {
       if (!Array.isArray(rows)) return reject('UPSTOX_CONTRACT_LIST_INVALID');
       const todayIST = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
       const segment = candidate.segment === 'BFO' ? 'BSE_FO' : 'NSE_FO';
-      const matches = rows.filter((c: any) =>
-        c?.underlying_symbol === candidate.instrument &&
-        c?.underlying_key === key &&
-        c?.segment === segment &&
-        c?.instrument_type === candidate.optionType &&
-        Number(c?.strike_price) === candidate.strikePrice &&
-        typeof c?.expiry === 'string' && c.expiry >= todayIST &&
-        typeof c?.instrument_key === 'string' &&
-        new RegExp('^' + segment + '\\|[0-9]+  /**
+      const matches = rows.filter((c: any) => {
+        if (c?.underlying_symbol !== candidate.instrument ||
+            c?.underlying_key !== key || c?.segment !== segment ||
+            c?.instrument_type !== candidate.optionType ||
+            Number(c?.strike_price) !== candidate.strikePrice ||
+            typeof c?.expiry !== 'string' || c.expiry < todayIST ||
+            typeof c?.instrument_key !== 'string' ||
+            typeof c?.trading_symbol !== 'string' || !c.trading_symbol ||
+            !Number.isInteger(Number(c?.lot_size)) || Number(c.lot_size) <= 0) return false;
+        const prefix = segment + '|';
+        if (!c.instrument_key.startsWith(prefix)) return false;
+        const identifier = c.instrument_key.slice(prefix.length);
+        return identifier.length > 0 && Array.from(identifier).every((ch: string) => ch >= '0' && ch <= '9');
+      }).sort((a: any, b: any) => a.expiry.localeCompare(b.expiry));
+      const c = matches[0];
+      if (!c) return reject('EXCHANGE_LISTED_CONTRACT_NOT_FOUND');
+      const rawTick = Number(c.tick_size);
+      const tickSize = rawTick >= 1 ? rawTick / 100 : rawTick;
+      if (!Number.isFinite(tickSize) || tickSize <= 0) return reject('INVALID_BROKER_TICK_SIZE');
+      return {
+        ...candidate,
+        expiryDate: c.expiry,
+        tradingsymbol: c.trading_symbol,
+        brokerInstrumentKey: c.instrument_key,
+        lotSize: Number(c.lot_size),
+        tickSize,
+        isValid: true,
+        rejectionReason: undefined
+      };
+    } catch (err: any) {
+      return reject('UPSTOX_CONTRACT_LOOKUP_FAILED: ' + (err?.message || String(err)));
+    }
+  }
+
+  /**
    * Resolves a complete, authoritative contract specification for a given signal & spot price.
    */
   public static resolveContract(
