@@ -167,7 +167,7 @@ export class LiveExecutionService {
         }
         // Verify old position is not still open before submitting new BUY
         const postExitPos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
-        if (postExitPos && (postExitPos.status === 'OPEN' || postExitPos.status === 'EXIT_FAILED')) {
+        if (postExitPos) {
           console.warn(`[EMA LIVE] Reversal exit for ${existingLivePos.id} still active or failed. Blocking new live entry.`);
           return {
             enabled: true,
