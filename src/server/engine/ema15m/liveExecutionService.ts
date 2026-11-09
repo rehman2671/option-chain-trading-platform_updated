@@ -505,18 +505,18 @@ export class LiveExecutionService {
       const entryPrice = Number(pos.entryPrice);
       const qty = Number(pos.quantity);
 
-      let currentOptionPrice = entryPrice;
-      if (pos.optionType && pos.strikePrice && pos.expiryDate) {
-        currentOptionPrice = getEstimatedOptionPrice(
-          pos.instrument,
-          pos.strikePrice,
-          pos.optionType,
-          pos.expiryDate,
-          currentSpotPrice
-        );
-      } else {
-        currentOptionPrice = currentSpotPrice;
+      // Never trigger a REAL SELL from theoretical Black-Scholes/fallback option prices.
+      // Missing/stale broker quotes require an explicit unresolved data state.
+      if (typeof (activeProvider as any)?.getLiveOptionQuote !== 'function') {
+        console.warn('[EMA LIVE] Real option quote provider unavailable for ' + pos.tradingsymbol);
+        continue;
       }
+      const quote = await (activeProvider as any).getLiveOptionQuote(pos.brokerInstrumentKey || '');
+      if (!quote || !Number.isFinite(Number(quote.price)) || Number(quote.price) <= 0) {
+        console.warn('[EMA LIVE] Skipping SL/TP evaluation: no fresh Upstox option quote for ' + pos.tradingsymbol);
+        continue;
+      }
+      const currentOptionPrice = Number(quote.price);
 
       const grossPnl = StrategyRules.calculateOptionGrossPnl(entryPrice, currentOptionPrice, qty);
       const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
