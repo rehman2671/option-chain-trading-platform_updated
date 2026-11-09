@@ -11,6 +11,9 @@ export interface UnderlyingQuote {
   volume: number;
   available: boolean;
   timestamp: string;
+  // Provenance is mandatory for any signal that can trigger a real broker order.
+  source?: 'UPSTOX_LIVE' | 'PRACTICE';
+  exchangeTimestamp?: string;
 }
 
 export interface OptionContractQuote {
