@@ -449,6 +449,33 @@ export class UpstoxProvider implements IMarketDataProvider {
     return json.data;
   }
 
+  /** Live EMA SL/TP must use a fresh quote for the exact broker contract. */
+  public async getLiveOptionQuote(instrumentKey: string): Promise<{ price: number; exchangeTimestamp: string } | null> {
+    if (!this.isConnected || !this.accessToken || !instrumentKey) return null;
+    try {
+      const url = 'https://api.upstox.com/v3/market-quote/quotes?instrument_key=' +
+        encodeURIComponent(instrumentKey);
+      const res = await fetch(url, {
+        headers: { 'Authorization': 'Bearer ' + this.accessToken, 'Accept': 'application/json' }
+      });
+      if (!res.ok) return null;
+      const payload: any = await res.json();
+      if (payload?.status !== 'success' || !payload?.data) return null;
+      const quotes: any[] = Object.values(payload.data);
+      const quote = quotes.find(q => q?.instrument_token === instrumentKey);
+      if (!quote) return null;
+      const price = Number(quote.last_price);
+      const timestamp = Number(quote.last_trade_time);
+      if (!Number.isFinite(price) || price <= 0 ||
+          !Number.isFinite(timestamp) || timestamp <= 0 ||
+          timestamp > Date.now() + 5000 || Date.now() - timestamp > 30000) return null;
+      return { price, exchangeTimestamp: new Date(timestamp).toISOString() };
+    } catch (err: any) {
+      console.warn('[UPSTOX] Exact live option quote unavailable:', err?.message || err);
+      return null;
+    }
+  }
+
   public async getOrderHistory(orderId: string): Promise<any[]> {
     if (!this.isConnected || !this.accessToken) return [];
 
