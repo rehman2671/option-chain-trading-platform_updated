@@ -380,6 +380,10 @@ export class UpstoxProvider implements IMarketDataProvider {
   }
 
   public async placeOrder(params: any): Promise<any> {
+    // Automated tests must use an injected fake broker. Never reach real Upstox orders.
+    if (process.env.NODE_ENV === 'test') {
+      throw new Error('REAL_UPSTOX_ORDER_DISABLED_IN_TEST');
+    }
     if (!this.isConnected || !this.accessToken) {
       throw new Error('Upstox API is not connected. Cannot execute live order.');
     }
