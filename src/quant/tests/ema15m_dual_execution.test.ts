@@ -444,6 +444,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     // Simulate placeOrder returning acknowledgment without fill
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    const origGetOptionContracts = (activeProvider as any).getOptionContracts;
     const origIsOpen = SessionCalendar.isExchangeOpen;
 
     SessionCalendar.isExchangeOpen = () => ({
@@ -453,9 +454,24 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       dateStr: '2026-11-05'
     });
     (activeProvider as any).isUpstoxLiveConnected = () => true;
-    (activeProvider as any).placeOrder = async () => ({
-      order_id: `241103${Date.now()}`
-    });
+    const listedExpiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    (activeProvider as any).getOptionContracts = async () => [{
+      underlying_symbol: 'SENSEX',
+      underlying_key: 'BSE_INDEX|SENSEX',
+      segment: 'BSE_FO',
+      instrument_type: 'CE',
+      strike_price: 84000,
+      expiry: listedExpiry,
+      instrument_key: 'BSE_FO|12345',
+      trading_symbol: 'SENSEX 84000 CE TEST',
+      tick_size: 5,
+      lot_size: 20
+    }];
+    (activeProvider as any).placeOrder = async (params: any) => {
+      assert.strictEqual(params.instrumentToken, 'BSE_FO|12345');
+      assert.strictEqual(params.quantity, 20);
+      return { order_id: 'TESTACK' + Date.now() };
+    };
 
     try {
       const res = await liveExecutionService.attemptLiveSignal(testSignal, contract, 150, 'GLOBAL');
@@ -466,6 +482,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     } finally {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+      (activeProvider as any).getOptionContracts = origGetOptionContracts;
       SessionCalendar.isExchangeOpen = origIsOpen;
     }
   });
