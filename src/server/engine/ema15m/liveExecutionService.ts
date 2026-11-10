@@ -461,12 +461,14 @@ export class LiveExecutionService {
           : `Live order ${brokerOrderId} submitted to Upstox. Awaiting broker execution fill.`
       };
     } catch (brokerErr: any) {
-      // 6. Handle Broker Rejection (e.g. Insufficient Margin / Funds)
-      const rejectionReason = brokerErr?.message || 'Broker order submission rejected';
-      console.warn(`[EMA LIVE] 🔴 Upstox Order Rejected: ${rejectionReason}`);
+      // A network timeout can occur after broker acceptance: never assume REJECTED.
+      const definitiveRejection = brokerErr?.isBrokerRejection === true;
+      const resultStatus: OrderStatus = definitiveRejection ? 'REJECTED' : 'UNKNOWN';
+      const rejectionReason = brokerErr?.message || 'Broker order outcome unconfirmed';
+      console.warn(`[EMA LIVE] Upstox order ${resultStatus}: ${rejectionReason}`);
 
       dbEngine.updateEmaLiveOrderAttempt(attemptId, {
-        orderStatus: 'REJECTED',
+        orderStatus: resultStatus,
         filledQuantity: 0,
         rejectionReason,
         lastBrokerUpdateAt: new Date().toISOString()
@@ -479,9 +481,9 @@ export class LiveExecutionService {
         executionId: attemptId,
         executionMode: 'LIVE',
         stage: 'LIVE_ORDER_REJECTED',
-        status: 'REJECTED',
+        status: definitiveRejection ? 'REJECTED' : 'PENDING',
         instrument: inst,
-        errorCode: 'BROKER_REJECTION',
+        errorCode: definitiveRejection ? 'BROKER_REJECTION' : 'BROKER_ORDER_OUTCOME_UNKNOWN',
         errorMessage: rejectionReason,
         details: { rejectionReason, tradingsymbol: contract.tradingsymbol },
         timestamp: new Date().toISOString()
@@ -493,18 +495,18 @@ export class LiveExecutionService {
         level: 'ERROR',
         stage: 'BROKER_RESPONSE',
         instrument: inst,
-        message: `🔴 Upstox Order Rejected: ${rejectionReason}. Live position NOT created.`,
+        message: `Upstox order ${resultStatus}: ${rejectionReason}. Position not assumed; reconcile before retry.`,
         details: { rejectionReason, tradingsymbol: contract.tradingsymbol }
       });
 
       return {
         enabled: true,
-        status: 'REJECTED',
+        status: resultStatus,
         requestedQuantity: quantity,
         filledQuantity: 0,
         positionCreated: false,
         rejectionReason,
-        message: rejectionReason
+        message: definitiveRejection ? rejectionReason : 'Broker outcome UNKNOWN; no automatic retry until reconciled.'
       };
     }
   }
