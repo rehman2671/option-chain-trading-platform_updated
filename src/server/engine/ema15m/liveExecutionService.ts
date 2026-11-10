@@ -30,6 +30,7 @@ import {
 export class LiveExecutionService {
   private static instance: LiveExecutionService;
   private pendingExitIds: Set<string> = new Set();
+  private pendingEntryInstruments: Set<string> = new Set();
 
   private constructor() {}
 
@@ -122,6 +123,33 @@ export class LiveExecutionService {
     estimatedEntryPrice: number,
     userId: string = 'GLOBAL'
   ): Promise<DualExecutionResult['live']> {
+    // Prevent simultaneous crossovers from bypassing pending-entry checks in this process.
+    // Durable multi-process idempotency must also be enforced at the DB/broker boundary.
+    const entryKey = signal.instrument;
+    if (this.pendingEntryInstruments.has(entryKey)) {
+      return {
+        enabled: true,
+        status: 'HELD',
+        requestedQuantity: contract.lotSize,
+        filledQuantity: 0,
+        positionCreated: false,
+        message: 'Another EMA live order is currently being dispatched for ' + entryKey
+      };
+    }
+    this.pendingEntryInstruments.add(entryKey);
+    try {
+      return await this.attemptLiveSignalInternal(signal, contract, estimatedEntryPrice, userId);
+    } finally {
+      this.pendingEntryInstruments.delete(entryKey);
+    }
+  }
+
+  private async attemptLiveSignalInternal(
+    signal: Ema15mSignal,
+    contract: ResolvedContract,
+    estimatedEntryPrice: number,
+    userId: string
+  ): Promise<DualExecutionResult['live']> {
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
     const attemptId = `att-${inst.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -133,7 +161,7 @@ export class LiveExecutionService {
     const productType: 'MIS' | 'NRML' = settings.upstoxProductType || 'MIS';
 
     // 0. Check if there is an in-flight pending entry attempt for this instrument
-    const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 10);
+    const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 200);
     const inFlightAttempt = recentAttempts.find(a => ['CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
     if (inFlightAttempt) {
       console.log(`[EMA LIVE] In-flight entry attempt ${inFlightAttempt.id} exists for ${inst}. Suppressing duplicate entry.`);
