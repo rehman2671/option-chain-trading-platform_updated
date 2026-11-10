@@ -48,6 +48,8 @@ export class Ema15mEngine {
   // Engine running state
   private isRunning: boolean = false;
   private intervalTimer: NodeJS.Timeout | null = null;
+  private brokerReconcileInFlight = false;
+  private lastBrokerReconcileAt = 0;
 
   // Data Provider Source Tracking
   private dataSource: 'UPSTOX_LIVE' | 'PRACTICE' | 'LIVE_DATA_UNAVAILABLE' = 'PRACTICE';
@@ -76,10 +78,9 @@ export class Ema15mEngine {
   public async initialize(): Promise<void> {
     console.log('[EMA 15M ENGINE] Initializing 15-Minute 23/50 EMA Alert System...');
 
-    // Recover and reconcile broker order state across restarts
-    brokerOrderReconciler.reconcileBrokerState().catch(err => {
-      console.warn('[EMA 15M ENGINE] Initial broker state reconciliation notice:', err?.message || err);
-    });
+    // Same non-overlapping reconciler runs at startup and throughout the trading session.
+    this.lastBrokerReconcileAt = Date.now();
+    void this.reconcileBrokerSafely();
 
     for (const inst of this.INSTRUMENTS) {
       let candles = dbEngine.getEma15mCandles(inst, 2000);
@@ -168,12 +169,32 @@ export class Ema15mEngine {
   /**
    * Starts periodic market check & candle aggregator loop (runs every 3 seconds)
    */
+  private async reconcileBrokerSafely(): Promise<void> {
+    if (this.brokerReconcileInFlight) return;
+    this.brokerReconcileInFlight = true;
+    try {
+      const result = await brokerOrderReconciler.reconcileBrokerState();
+      if (result.discrepancies.length > 0 &&
+          !result.discrepancies.every(d => d.includes('Broker not connected'))) {
+        console.warn('[EMA 15M ENGINE] Broker reconciliation discrepancies:', result.discrepancies);
+      }
+    } catch (err: any) {
+      console.error('[EMA 15M ENGINE] Broker reconciliation failed:', err?.message || err);
+    } finally {
+      this.brokerReconcileInFlight = false;
+    }
+  }
+
   private startEvaluationLoop(): void {
     if (this.intervalTimer) clearInterval(this.intervalTimer);
 
     this.intervalTimer = setInterval(() => {
       try {
         this.evaluateCandleBoundaries();
+        if (Date.now() - this.lastBrokerReconcileAt >= 15_000) {
+          this.lastBrokerReconcileAt = Date.now();
+          void this.reconcileBrokerSafely();
+        }
       } catch (err: any) {
         console.error('[EMA 15M ENGINE] Error in evaluation loop:', err.message);
       }
