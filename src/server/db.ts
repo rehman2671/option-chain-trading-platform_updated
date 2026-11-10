@@ -2676,57 +2676,76 @@ class DatabaseEngine {
    */
   public syncConfiguredUsersFromEnv(): void {
     if (!this.db) return;
+    // Fixed operator roster is configured only from environment-provided credentials.
+    // Never silently provision a well-known password or default email address.
+    const accounts: Array<{
+      id: string;
+      role: 'SUPERADMIN' | 'OPERATOR';
+      emailEnv: string;
+      passwordEnv: string;
+      nameEnv: string;
+      fallbackName: string;
+    }> = [
+      { id: 'usr-admin-master', role: 'SUPERADMIN', emailEnv: 'ADMIN_EMAIL',
+        passwordEnv: 'ADMIN_INITIAL_PASSWORD', nameEnv: 'ADMIN_NAME', fallbackName: 'Master Administrator' },
+      { id: 'usr-op-1', role: 'OPERATOR', emailEnv: 'OPERATOR_1_EMAIL',
+        passwordEnv: 'OPERATOR_1_INITIAL_PASSWORD', nameEnv: 'OPERATOR_1_NAME', fallbackName: 'Quant Operator 1' },
+      { id: 'usr-op-2', role: 'OPERATOR', emailEnv: 'OPERATOR_2_EMAIL',
+        passwordEnv: 'OPERATOR_2_INITIAL_PASSWORD', nameEnv: 'OPERATOR_2_NAME', fallbackName: 'Quant Operator 2' },
+      { id: 'usr-op-3', role: 'OPERATOR', emailEnv: 'OPERATOR_3_EMAIL',
+        passwordEnv: 'OPERATOR_3_INITIAL_PASSWORD', nameEnv: 'OPERATOR_3_NAME', fallbackName: 'Risk Operator 3' },
+      { id: 'usr-op-4', role: 'OPERATOR', emailEnv: 'OPERATOR_4_EMAIL',
+        passwordEnv: 'OPERATOR_4_INITIAL_PASSWORD', nameEnv: 'OPERATOR_4_NAME', fallbackName: 'Execution Operator 4' }
+    ];
+
     try {
-      const adminEmail = (process.env.ADMIN_EMAIL || 'vinuparab86@gmail.com').trim().toLowerCase();
-      const adminName = process.env.ADMIN_NAME || 'Master Admin (Vinu)';
-      const adminPass = process.env.ADMIN_INITIAL_PASSWORD || 'Admin@Trading2026!';
-
-      const op1Email = (process.env.OPERATOR_1_EMAIL || 'operator1@trading.internal').trim().toLowerCase();
-      const op1Name = process.env.OPERATOR_1_NAME || 'Quant Operator 1';
-      const op1Pass = process.env.OPERATOR_1_INITIAL_PASSWORD || 'Operator1@Trading2026!';
-
-      const op2Email = (process.env.OPERATOR_2_EMAIL || 'operator2@trading.internal').trim().toLowerCase();
-      const op2Name = process.env.OPERATOR_2_NAME || 'Quant Operator 2';
-      const op2Pass = process.env.OPERATOR_2_INITIAL_PASSWORD || 'Operator2@Trading2026!';
-
-      const op3Email = (process.env.OPERATOR_3_EMAIL || 'operator3@trading.internal').trim().toLowerCase();
-      const op3Name = process.env.OPERATOR_3_NAME || 'Risk Operator 3';
-      const op3Pass = process.env.OPERATOR_3_INITIAL_PASSWORD || 'Operator3@Trading2026!';
-
-      const op4Email = (process.env.OPERATOR_4_EMAIL || 'operator4@trading.internal').trim().toLowerCase();
-      const op4Name = process.env.OPERATOR_4_NAME || 'Execution Operator 4';
-      const op4Pass = process.env.OPERATOR_4_INITIAL_PASSWORD || 'Operator4@Trading2026!';
-
-      const roster = [
-        { id: 'usr-admin-master', email: adminEmail, name: adminName, role: 'SUPERADMIN', pass: adminPass },
-        { id: 'usr-op-1', email: op1Email, name: op1Name, role: 'OPERATOR', pass: op1Pass },
-        { id: 'usr-op-2', email: op2Email, name: op2Name, role: 'OPERATOR', pass: op2Pass },
-        { id: 'usr-op-3', email: op3Email, name: op3Name, role: 'OPERATOR', pass: op3Pass },
-        { id: 'usr-op-4', email: op4Email, name: op4Name, role: 'OPERATOR', pass: op4Pass }
-      ];
-
       const now = new Date().toISOString();
-      for (const u of roster) {
-        const existing = this.db.prepare(`SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?`).get(u.email, u.id) as any;
+      for (const account of accounts) {
+        const email = (process.env[account.emailEnv] || '').trim().toLowerCase();
+        const password = process.env[account.passwordEnv] || '';
+        const name = process.env[account.nameEnv] || account.fallbackName;
+        const valid = email.includes('@') && password.length >= 12;
+
+        if (!valid) {
+          // Existing bootstrap identities must not remain enabled when their
+          // authoritative environment credentials are missing.
+          if (process.env.NODE_ENV === 'production') {
+            this.db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(account.id);
+          }
+          console.warn('[DB] Skipping user roster entry ' + account.id +
+            ': missing/invalid ' + account.emailEnv + ' or ' + account.passwordEnv);
+          continue;
+        }
+
+        const existing = this.db.prepare(
+          'SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?'
+        ).get(email, account.id) as any;
+
+        // Env credentials are authoritative for this managed roster. Updating
+        // a configured password rotates any previously seeded/known password.
+        const currentHash = existing?.password_hash as string | undefined;
+        const passwordHash = currentHash && bcrypt.compareSync(password, currentHash)
+          ? currentHash
+          : bcrypt.hashSync(password, 12);
+
         if (existing) {
-          // If existing account has no password_hash, initialize with environment initial password hash
-          const passHash = existing.password_hash || bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            UPDATE users 
-            SET email = lower(?), name = COALESCE(?, name), role = ?, email_verified = 1,
-                password_hash = ?
+            UPDATE users
+            SET email = lower(?), name = ?, role = ?, email_verified = 1,
+                password_hash = ?, is_active = 1
             WHERE id = ?
-          `).run(u.email, u.name, u.role, passHash, existing.id);
+          `).run(email, name, account.role, passwordHash, existing.id);
         } else {
-          const passHash = bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            INSERT INTO users (id, email, name, role, is_active, password_hash, email_verified, created_at)
+            INSERT INTO users (id, email, name, role, is_active, password_hash,
+                               email_verified, created_at)
             VALUES (?, lower(?), ?, ?, 1, ?, 1, ?)
-          `).run(u.id, u.email, u.name, u.role, passHash, now);
+          `).run(account.id, email, name, account.role, passwordHash, now);
         }
       }
     } catch (err: any) {
-      console.warn('[DB] User env sync warning:', err.message);
+      console.error('[DB] User env sync failed:', err.message);
+      if (process.env.NODE_ENV === 'production') throw err;
     }
   }
 
