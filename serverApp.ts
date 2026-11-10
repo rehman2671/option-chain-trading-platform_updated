@@ -24,7 +24,7 @@ import { globalEma15mEngine } from './src/server/engine/ema15mEngine.js';
 import { globalNotificationService } from './src/server/engine/notificationService.js';
 import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
-import { authRouter, attachUser, getUserFromRequest, requireAuth } from './src/server/auth.js';
+import { authRouter, attachUser, getUserFromRequest, requireAuth, requireSuperAdmin } from './src/server/auth.js';
 import { quantRouter } from './src/quant/api/quantRouter.js';
 import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron, setManualAccessToken } from './src/server/engine/upstoxAuthService.js';
 import { globalUpstoxStreamer } from './src/server/engine/upstoxStreamerV3.js';
@@ -41,7 +41,9 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(attachUser);
 app.use('/api/auth', authRouter);
-app.use('/api/quant', quantRouter);
+// Quant actions and EMA trade/account data require a verified login.
+app.use('/api/quant', requireAuth as any, quantRouter);
+app.use('/api/ema15m', requireAuth as any);
 
 // Authenticate and attach user (with guest/session fallback for paper trading)
 app.use(['/api/basket', '/api/autonomous'], requireAuth as any);
@@ -363,7 +365,7 @@ async function startServer() {
   };
 
   // Upstox Login Redirect Handler
-  app.get('/api/upstox/login', (req, res) => {
+  app.get('/api/upstox/login', requireSuperAdmin as any, (req, res) => {
     const apiKey = process.env.UPSTOX_API_KEY;
     const baseUrl = getEffectiveBaseUrl(req);
     const redirectUri = process.env.UPSTOX_REDIRECT_URI || `${baseUrl}/api/upstox/callback`;
@@ -390,7 +392,7 @@ async function startServer() {
   });
 
   // Upstox Login Callback Handler
-  app.get('/api/upstox/callback', async (req, res) => {
+  app.get('/api/upstox/callback', requireSuperAdmin as any, async (req, res) => {
     const code = req.query.code as string;
     const apiKey = process.env.UPSTOX_API_KEY;
     const apiSecret = process.env.UPSTOX_API_SECRET;
@@ -551,7 +553,7 @@ async function startServer() {
   });
 
   // Upstox Automated TOTP Login Trigger (Executes headless TOTP refresh)
-  app.all('/api/upstox/auto-login', async (req, res) => {
+  app.post('/api/upstox/auto-login', requireSuperAdmin as any, async (req, res) => {
     try {
       const serverBaseUrl = getEffectiveBaseUrl(req);
       const result = await performUpstoxTOTPLogin(serverBaseUrl);
@@ -559,15 +561,13 @@ async function startServer() {
         res.json({
           status: 'success',
           message: result.message,
-          expiresAt: result.expiresAt,
-          totpCode: result.totpCode
+          expiresAt: result.expiresAt
         });
       } else {
         res.status(result.error === 'MISSING_API_CREDENTIALS' || result.error === 'MISSING_TOTP_CREDENTIALS' ? 400 : 422).json({
           status: 'error',
           message: result.message,
           error: result.error,
-          totpCode: result.totpCode,
           fallbackUrl: result.fallbackUrl
         });
       }
@@ -580,7 +580,7 @@ async function startServer() {
   });
 
   // Upstox Set Token Endpoint (Sync token from residential bridge daemon or manual input)
-  app.post('/api/upstox/set-token', async (req, res) => {
+  app.post('/api/upstox/set-token', requireSuperAdmin as any, async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       const token = req.body.accessToken || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
@@ -1435,7 +1435,7 @@ async function startServer() {
   });
 
   // 6. Save Notification Settings (Strictly requires authenticated user)
-  app.post('/api/ema15m/settings', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/settings', requireSuperAdmin as any, (req, res) => {
     try {
       const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
@@ -1570,12 +1570,13 @@ async function startServer() {
   });
 
   // 13. Toggle EMA Automatic Paper Trading Setting
-  app.post('/api/ema15m/paper-trades/toggle', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/paper-trades/toggle', requireSuperAdmin as any, (req, res) => {
     try {
       const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = dbEngine.getEmaNotificationSettings(userId);
-      const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !settings.autoPaperTradingEnabled;
+      const enabled = req.body?.enabled === undefined ? !settings.autoPaperTradingEnabled : req.body.enabled;
+      if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
       settings.autoPaperTradingEnabled = enabled;
       dbEngine.saveEmaNotificationSettings(settings, userId);
       if (userId !== 'GLOBAL') {
@@ -1595,12 +1596,13 @@ async function startServer() {
   });
 
   // 14. Toggle Live Upstox Broker Execution (Independent pipeline - does not turn off paper trading)
-  app.post('/api/ema15m/live-trading/toggle', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/live-trading/toggle', requireSuperAdmin as any, (req, res) => {
     try {
       const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = dbEngine.getEmaNotificationSettings(userId);
-      const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !settings.liveBrokerExecutionEnabled;
+      const enabled = req.body?.enabled === undefined ? !settings.liveBrokerExecutionEnabled : req.body.enabled;
+      if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
       settings.liveBrokerExecutionEnabled = enabled;
       dbEngine.saveEmaNotificationSettings(settings, userId);
       if (userId !== 'GLOBAL') {
@@ -1642,7 +1644,7 @@ async function startServer() {
   });
 
   // 16. Clear EMA Execution Audit Logs
-  app.post('/api/ema15m/execution-logs/clear', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/execution-logs/clear', requireSuperAdmin as any, (req, res) => {
     try {
       dbEngine.clearEmaExecutionLogs();
       res.json({ success: true, message: 'Execution logs cleared' });
@@ -1690,7 +1692,7 @@ async function startServer() {
   });
 
   // 20. Manual Square-Off for Live Upstox Position (Executes real broker exit order)
-  app.post('/api/ema15m/live-positions/close', requireAuth as any, async (req, res) => {
+  app.post('/api/ema15m/live-positions/close', requireSuperAdmin as any, async (req, res) => {
     try {
       const { id, reason } = req.body;
       if (!id) {
