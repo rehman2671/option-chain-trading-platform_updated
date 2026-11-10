@@ -422,7 +422,14 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (json.status === 'success') {
         return json.data;
       } else {
-        throw new Error(json.errors?.[0]?.message || 'Upstox order placement failed');
+        const err: any = new Error(json.errors?.[0]?.message || 'Upstox order placement failed');
+        // Only an explicit broker-side terminal error is evidence of rejection.
+        // Timeouts, rate limits and unexpected gateway failures have UNKNOWN outcome.
+        err.isBrokerRejection = res.status >= 400 && res.status < 500 &&
+          ![408, 409, 425, 429].includes(res.status) &&
+          Array.isArray(json.errors) && json.errors.length > 0;
+        err.httpStatus = res.status;
+        throw err;
       }
     } catch (err: any) {
       console.error('[UPSTOX PROVIDER] placeOrder error:', err.message || err);
