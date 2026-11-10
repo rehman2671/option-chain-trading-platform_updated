@@ -52,12 +52,26 @@ export class BrokerOrderReconciler {
     }
 
     try {
-      // 1. Reconcile pending order attempts (SUBMITTED / OPEN)
-      const attempts = dbEngine.getEmaLiveOrderAttempts('ALL', 50);
-      const pendingAttempts = attempts.filter(a => ['SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
+      // Scan all reasonably recent attempts, not just the latest 50;
+      // older unresolved broker orders are safety critical after a restart.
+      const attempts: EmaLiveOrderAttempt[] = [];
+      for (let offset = 0; offset < 5000; offset += 200) {
+        const page = dbEngine.getEmaLiveOrderAttempts('ALL', 200, offset);
+        attempts.push(...page);
+        if (page.length < 200) break;
+        if (offset === 4800) {
+          discrepancies.push('More than 5000 EMA order attempts: reconciliation scan truncated');
+        }
+      }
+      const pendingAttempts = attempts.filter(a =>
+        ['SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
 
       for (const att of pendingAttempts) {
-        if (!att.brokerOrderId) continue;
+        if (!att.brokerOrderId) {
+          discrepancies.push('Unresolved live order ' + att.id +
+            ' has no broker order ID: verify broker order/trade book before any retry');
+          continue;
+        }
 
         try {
           const history = await (activeProvider as any).getOrderHistory(att.brokerOrderId);
@@ -171,6 +185,10 @@ export class BrokerOrderReconciler {
       // 2. Reconcile active positions (including EXIT_PENDING, EXIT_REQUESTED, EXIT_FAILED)
       const openPositions = dbEngine.getOpenEmaLivePositions();
       for (const pos of openPositions) {
+        if ((pos.status === 'EXIT_PENDING' || pos.status === 'EXIT_REQUESTED') && !pos.exitBrokerOrderId) {
+          discrepancies.push('Live exit for position ' + pos.id +
+            ' has unknown broker outcome: manual broker book reconciliation required');
+        }
         if ((pos.status === 'EXIT_PENDING' || pos.status === 'EXIT_REQUESTED') && pos.exitBrokerOrderId) {
           try {
             const exitHistory = await (activeProvider as any).getOrderHistory(pos.exitBrokerOrderId);
