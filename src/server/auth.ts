@@ -9,9 +9,15 @@ import QRCode from 'qrcode';
 import { dbEngine } from './db.js';
 import { User } from '../types.js';
 
-const JWT_SECRET = (process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 32)
-  ? process.env.JWT_SECRET
-  : 'option-platform-jwt-secret-secure-32chars-min-key';
+const JWT_SECRET = (() => {
+  const configured = process.env.JWT_SECRET;
+  if (configured && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be set to a strong secret in production');
+  }
+  // Development/test sessions never share a predictable hardcoded signing key.
+  return crypto.randomBytes(48).toString('hex');
+})();
 const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
 
 export interface AuthenticatedRequest extends Request {
@@ -81,15 +87,7 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
       }
     }
 
-    // Fallback strictly in read-only iframe sandbox environments if explicitly enabled:
-    // Never allow fallback for state-changing or mutating requests (POST, PUT, DELETE, PATCH)
-    const isSafeMethod = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
-    if (allowFallback && isSafeMethod) {
-      const recentUser = dbEngine.getMostRecentUser();
-      if (recentUser && recentUser.isActive !== false && recentUser.is_active !== 0) {
-        return recentUser;
-      }
-    }
+    // Never impersonate the most recently authenticated user for an anonymous request.
 
     return null;
   } catch (err) {
@@ -101,7 +99,7 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
  * Express middleware to attach user to request
  */
 export function attachUser(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  req.user = getUserFromRequest(req, true);
+  req.user = getUserFromRequest(req, false);
   next();
 }
 
@@ -159,7 +157,7 @@ async function sendEmail(to: string, subject: string, htmlContent: string, linkF
         secure: smtpPort === 465,
         auth: { user: smtpUser, pass: smtpPass },
         tls: {
-          rejectUnauthorized: false
+          rejectUnauthorized: true
         }
       });
 
