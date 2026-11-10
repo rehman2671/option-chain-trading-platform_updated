@@ -17,6 +17,7 @@
  */
 
 import { dbEngine } from '../../server/db.js';
+import crypto from 'crypto';
 
 export type KillSwitchStatus = 'ARMED' | 'HALTED' | 'MANUAL_HALTED';
 
@@ -296,8 +297,14 @@ export class KillSwitchEngine {
     reason: string,
     userId?: string | null
   ): { success: boolean; message: string; state: KillSwitchState } {
-    const validKeys = ['RESET_RISK_AUTH', 'OVERRIDE_OK', 'USER_MANUAL_RESET'];
-    if (!validKeys.includes(supervisorKey)) {
+    const configuredKey = process.env.QUANT_SUPERVISOR_RESET_KEY;
+    const supplied = typeof supervisorKey === 'string' ? supervisorKey : '';
+    const expectedBytes = Buffer.from(configuredKey || '', 'utf8');
+    const suppliedBytes = Buffer.from(supplied, 'utf8');
+    const validKey = Boolean(configuredKey && configuredKey.length >= 32 &&
+      expectedBytes.length === suppliedBytes.length &&
+      crypto.timingSafeEqual(expectedBytes, suppliedBytes));
+    if (!validKey) {
       return {
         success: false,
         message: 'Invalid supervisor key. Reset denied.',
