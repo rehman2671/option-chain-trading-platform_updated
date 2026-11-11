@@ -600,14 +600,22 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
     const origVerifiedQty = (activeProvider as any).getVerifiedLivePositionQuantity;
     (activeProvider as any).isUpstoxLiveConnected = () => true;
-    (activeProvider as any).getVerifiedLivePositionQuantity = async () => 50;
-    (activeProvider as any).placeOrder = async () => ({
-      order_id: `EXIT-ORD-${Date.now()}`
-    });
+    let verifiedBrokerQty = 49;
+    let liveSellCalls = 0;
+    (activeProvider as any).getVerifiedLivePositionQuantity = async () => verifiedBrokerQty;
+    (activeProvider as any).placeOrder = async () => {
+      liveSellCalls++;
+      return { order_id: `EXIT-ORD-${Date.now()}` };
+    };
 
     try {
+      const mismatched = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(mismatched.success, false, 'Mismatched broker net quantity must block SELL');
+      assert.strictEqual(liveSellCalls, 0, 'No broker SELL may be dispatched on quantity mismatch');
+      verifiedBrokerQty = 50;
       const exitRes = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
       assert.strictEqual(exitRes.success, true);
+      assert.strictEqual(liveSellCalls, 1);
 
       // Verify position status is EXIT_PENDING, NOT CLOSED!
       const activePositions = dbEngine.getOpenEmaLivePositions('NIFTY');
