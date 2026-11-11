@@ -572,6 +572,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       signalId: `sig-${Date.now()}`,
       instrument: 'NIFTY',
       tradingsymbol: 'NIFTY26NOV25200CE',
+      brokerInstrumentKey: 'NSE_FO|123456',
       optionType: 'CE',
       strikePrice: 25200,
       expiryDate: '2026-11-05',
@@ -597,7 +598,9 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
 
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    const origVerifiedQty = (activeProvider as any).getVerifiedLivePositionQuantity;
     (activeProvider as any).isUpstoxLiveConnected = () => true;
+    (activeProvider as any).getVerifiedLivePositionQuantity = async () => 50;
     (activeProvider as any).placeOrder = async () => ({
       order_id: `EXIT-ORD-${Date.now()}`
     });
@@ -614,6 +617,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     } finally {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+      (activeProvider as any).getVerifiedLivePositionQuantity = origVerifiedQty;
     }
   });
 
