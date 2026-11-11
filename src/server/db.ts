@@ -4056,6 +4056,33 @@ class DatabaseEngine {
   // 15-MINUTE 23/50 EMA LIVE BROKER EXECUTION PERSISTENCE
   // ========================================================
 
+  /**
+   * Atomic SQLite claim for ONE active EMA BUY per instrument. BEGIN IMMEDIATE
+   * serializes concurrent workers using the same durable SQLite database.
+   */
+  public claimEmaLiveEntryAttempt(attempt: EmaLiveOrderAttempt): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveEntryAttempt');
+    const claim = db.transaction(() => {
+      const pending = db.prepare(`
+        SELECT id FROM ema_live_order_attempts
+        WHERE instrument = ? AND order_status IN
+          ('CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      const position = db.prepare(`
+        SELECT id FROM ema_live_positions
+        WHERE instrument = ? AND status IN
+          ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      if (pending || position) return false;
+      this.saveEmaLiveOrderAttempt(attempt);
+      return true;
+    });
+    return claim.immediate();
+  }
+
   public saveEmaLiveOrderAttempt(attempt: EmaLiveOrderAttempt): void {
     if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLiveOrderAttempt');
     try {
@@ -4332,6 +4359,19 @@ class DatabaseEngine {
       console.error('[DB] Error saving EMA live position:', err.message);
     throw err;
     }
+  }
+
+  /** Atomic claim: only one worker may transition an eligible position to EXIT_REQUESTED. */
+  public claimEmaLiveExit(positionId: string): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveExit');
+    const updated = db.prepare(`
+      UPDATE ema_live_positions
+      SET status = 'EXIT_REQUESTED', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status IN ('OPEN', 'EXIT_FAILED')
+        AND exit_broker_order_id IS NULL
+    `).run(positionId);
+    return updated.changes === 1;
   }
 
   public updateEmaLivePosition(id: string, updates: Partial<EmaLivePosition>): void {
