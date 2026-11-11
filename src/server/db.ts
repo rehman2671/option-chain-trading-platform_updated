@@ -4225,6 +4225,39 @@ class DatabaseEngine {
     }
   }
 
+  public getEmaLiveOrderAttemptById(attemptId: string): EmaLiveOrderAttempt | null {
+    if (!this.db) return null;
+    try {
+      const r = this.db.prepare('SELECT * FROM ema_live_order_attempts WHERE id = ? LIMIT 1').get(attemptId) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        signalId: r.signal_id,
+        executionMode: 'LIVE',
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: r.expiry,
+        requestedQuantity: Number(r.requested_quantity),
+        filledQuantity: Number(r.filled_quantity || 0),
+        averageFillPrice: r.average_fill_price !== null ? Number(r.average_fill_price) : undefined,
+        orderStatus: r.order_status,
+        brokerOrderId: r.broker_order_id || undefined,
+        rejectionReason: r.rejection_reason || undefined,
+        submittedAt: r.submitted_at || undefined,
+        lastBrokerUpdateAt: r.last_broker_update_at || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch (err: any) {
+      console.error('[DB] Unable to query EMA live entry attempt:', err.message);
+      return null;
+    }
+  }
+
   public saveEmaLivePosition(pos: EmaLivePosition): void {
     if (!this.db) return;
     try {
