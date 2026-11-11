@@ -425,6 +425,37 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /**
+   * Fail-closed exchange quantity lookup for EMA real SELL. This is intentionally
+   * NOT the UI's getPositions() method, which returns [] on transport errors.
+   */
+  public async getVerifiedLivePositionQuantity(
+    instrumentKey: string, product: 'MIS' | 'NRML'
+  ): Promise<number | null> {
+    if (!this.isConnected || !this.accessToken || !instrumentKey) return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if (json?.status !== 'success' || !Array.isArray(json?.data)) return null;
+      const expectedProduct = product === 'MIS' ? 'I' : 'D';
+      let quantity = 0;
+      for (const p of json.data) {
+        if (p?.instrument_token !== instrumentKey || p?.product !== expectedProduct) continue;
+        if (p.net_quantity === undefined || p.net_quantity === null) return null;
+        const q = Number(p.net_quantity);
+        if (!Number.isInteger(q)) return null;
+        quantity += q;
+      }
+      return quantity;
+    } catch (err: any) {
+      console.warn('[EMA BROKER] Verified position lookup unavailable:', err?.message || String(err));
+      return null;
+    }
+  }
+
   public async getPositions(): Promise<any> {
     if (!this.isConnected || !this.accessToken) return [];
 
