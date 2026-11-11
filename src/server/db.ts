@@ -4057,7 +4057,7 @@ class DatabaseEngine {
   // ========================================================
 
   public saveEmaLiveOrderAttempt(attempt: EmaLiveOrderAttempt): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLiveOrderAttempt');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_order_attempts (
@@ -4098,11 +4098,12 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public updateEmaLiveOrderAttempt(id: string, updates: Partial<EmaLiveOrderAttempt>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLiveOrderAttempt');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
@@ -4136,11 +4137,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_order_attempts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public getEmaLiveOrderAttempts(instrument?: string, limit: number = 50, offset: number = 0): EmaLiveOrderAttempt[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttempts');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
@@ -4177,12 +4179,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error fetching EMA live order attempts:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getLatestEmaLiveOrderAttempt(signalId?: string, instrument?: string): EmaLiveOrderAttempt | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getLatestEmaLiveOrderAttempt');
     try {
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
       const params: any[] = [];
@@ -4220,13 +4223,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLiveOrderAttemptById(attemptId: string): EmaLiveOrderAttempt | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttemptById');
     try {
       const r = this.db.prepare('SELECT * FROM ema_live_order_attempts WHERE id = ? LIMIT 1').get(attemptId) as any;
       if (!r) return null;
@@ -4254,12 +4257,13 @@ class DatabaseEngine {
       };
     } catch (err: any) {
       console.error('[DB] Unable to query EMA live entry attempt:', err.message);
-      return null;
+      throw err;
+      
     }
   }
 
   public saveEmaLivePosition(pos: EmaLivePosition): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLivePosition');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_positions (
@@ -4326,11 +4330,12 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live position:', err.message);
+    throw err;
     }
   }
 
   public updateEmaLivePosition(id: string, updates: Partial<EmaLivePosition>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLivePosition');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
@@ -4404,11 +4409,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_positions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live position:', err.message);
+    throw err;
     }
   }
 
   public getOpenEmaLivePositions(instrument?: string): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositions');
     try {
       let query = `SELECT * FROM ema_live_positions WHERE status IN ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')`;
       const params: any[] = [];
@@ -4458,12 +4464,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting open EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getOpenEmaLivePositionByInstrument(instrument: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositionByInstrument');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions 
@@ -4508,13 +4515,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositionByAttemptId(attemptId: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositionByAttemptId');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions WHERE attempt_id = ? LIMIT 1
@@ -4557,13 +4564,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositions(instrument?: string, status?: string, limit: number = 50, offset: number = 0): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositions');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_positions WHERE 1=1`;
@@ -4619,7 +4626,8 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
