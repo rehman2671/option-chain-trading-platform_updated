@@ -315,7 +315,16 @@ export class LiveExecutionService {
       createdAt: timestampStr,
       updatedAt: timestampStr
     };
-    dbEngine.saveEmaLiveOrderAttempt(orderAttempt);
+    if (!dbEngine.claimEmaLiveEntryAttempt(orderAttempt)) {
+      return {
+        enabled: true,
+        status: 'HELD',
+        requestedQuantity: quantity,
+        filledQuantity: 0,
+        positionCreated: false,
+        message: 'Another EMA live BUY or position was already claimed in the shared SQLite ledger.'
+      };
+    }
 
     dbEngine.logEmaExecutionEvent({
       id: `evt-live-sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -652,9 +661,19 @@ export class LiveExecutionService {
     this.pendingExitIds.add(pos.id);
     const timestampStr = new Date().toISOString();
 
-    dbEngine.updateEmaLivePosition(pos.id, {
-      status: 'EXIT_REQUESTED'
-    });
+    // Compare-and-swap prevents two independent workers from SELLing the same
+    // quantity when they share the same durable SQLite ledger.
+    let claimedExit = false;
+    try {
+      claimedExit = dbEngine.claimEmaLiveExit(pos.id);
+    } catch (err) {
+      this.pendingExitIds.delete(pos.id);
+      throw err;
+    }
+    if (!claimedExit) {
+      this.pendingExitIds.delete(pos.id);
+      return { success: false, message: 'Another worker already claimed this live exit; reconcile broker first.' };
+    }
 
     dbEngine.logEmaExecutionEvent({
       id: `evt-live-exit-req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
