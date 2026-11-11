@@ -4289,6 +4289,23 @@ class DatabaseEngine {
     }
   }
 
+  /**
+   * One authoritative live position per broker BUY attempt, even when multiple
+   * reconcilers poll simultaneously on workers sharing this SQLite database.
+   */
+  public tryCreateEmaLivePositionIfAbsent(pos: EmaLivePosition): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: tryCreateEmaLivePositionIfAbsent');
+    const create = db.transaction(() => {
+      const existing = db.prepare('SELECT id FROM ema_live_positions WHERE attempt_id = ? LIMIT 1')
+        .get(pos.attemptId);
+      if (existing) return false;
+      this.saveEmaLivePosition(pos);
+      return true;
+    });
+    return create.immediate();
+  }
+
   public saveEmaLivePosition(pos: EmaLivePosition): void {
     if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLivePosition');
     try {
