@@ -2291,6 +2291,20 @@ class DatabaseEngine {
       console.log('DatabaseEngine: Applied Migration 018 - Independent Dual Execution Tables.');
     }
 
+    // Migration 019: Persist cumulative confirmed broker SELL fills across restarts.
+    if (!appliedVersions.has(19)) {
+      const positionCols = new Set(
+        (this.db.prepare('PRAGMA table_info(ema_live_positions)').all() as any[]).map(c => c.name)
+      );
+      if (!positionCols.has('exit_filled_quantity')) {
+        this.db.exec('ALTER TABLE ema_live_positions ADD COLUMN exit_filled_quantity INTEGER NOT NULL DEFAULT 0');
+      }
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version, description) VALUES (19, 'EMA live cumulative exit fill tracking')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 019 - EMA live exit fill quantity.');
+    }
+
     // Safeguard: Ensure all modern columns exist on ema_notification_settings
     try {
       const settingsCols = new Set(
@@ -4288,6 +4302,18 @@ class DatabaseEngine {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
 
+      if (updates.quantity !== undefined) {
+        sets.push('quantity = ?');
+        values.push(updates.quantity);
+      }
+      if (updates.entryPrice !== undefined) {
+        sets.push('entry_price = ?');
+        values.push(updates.entryPrice);
+      }
+      if (updates.exitFilledQuantity !== undefined) {
+        sets.push('exit_filled_quantity = ?');
+        values.push(updates.exitFilledQuantity);
+      }
       if (updates.currentPrice !== undefined) {
         sets.push('current_price = ?');
         values.push(updates.currentPrice);
@@ -4387,6 +4413,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4438,6 +4465,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4486,6 +4514,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4545,6 +4574,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
