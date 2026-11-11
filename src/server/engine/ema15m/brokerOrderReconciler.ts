@@ -81,7 +81,7 @@ export class BrokerOrderReconciler {
             const filledQty = Number(latest.filled_quantity ?? 0);
             const avgPrice = Number(latest.average_price ?? 0);
 
-            if (status === 'COMPLETE' || status === 'FILLED') {
+            if (filledQty > 0) {
               if (!Number.isInteger(filledQty) || filledQty <= 0 ||
                   filledQty > att.requestedQuantity || !Number.isFinite(avgPrice) || avgPrice <= 0) {
                 discrepancies.push(`Broker entry ${att.brokerOrderId}: missing or invalid actual fill quantity/average price; cannot create position.`);
@@ -91,7 +91,11 @@ export class BrokerOrderReconciler {
               const finalPrice = avgPrice;
 
               dbEngine.updateEmaLiveOrderAttempt(att.id, {
-                orderStatus: finalQty === att.requestedQuantity ? 'FILLED' : 'PARTIALLY_FILLED',
+                orderStatus: (status === 'COMPLETE' || status === 'FILLED') && finalQty === att.requestedQuantity
+                  ? 'FILLED'
+                  : (status === 'CANCELLED' || status === 'REJECTED')
+                    ? status
+                    : 'PARTIALLY_FILLED',
                 filledQuantity: finalQty,
                 averageFillPrice: finalPrice,
                 lastBrokerUpdateAt: new Date().toISOString()
@@ -162,12 +166,29 @@ export class BrokerOrderReconciler {
                 });
 
                 updatedPositions++;
-              } else if (existingPos && Number(existingPos.quantity) !== finalQty) {
-                // A later fill can increase exposure. Do not silently pretend local quantity is current.
-                discrepancies.push(`Broker entry ${att.brokerOrderId}: actual filled quantity ${finalQty} differs from local position ${existingPos.quantity}; manual broker-position reconciliation required.`);
+              } else if (existingPos && finalQty > Number(existingPos.quantity)) {
+                if (existingPos.exitBrokerOrderId || existingPos.status !== 'OPEN') {
+                  discrepancies.push(`Broker entry ${att.brokerOrderId} has additional fills during exit; manual account reconciliation required.`);
+                  continue;
+                }
+                // Upstox average_price is the cumulative VWAP across this BUY order.
+                // Updating only after the broker reports a larger cumulative fill
+                // makes repeated reconciliation idempotent.
+                dbEngine.updateEmaLivePosition(existingPos.id, {
+                  quantity: finalQty,
+                  entryPrice: finalPrice,
+                  stopLoss: StrategyRules.calculateStopLoss(finalPrice),
+                  targetPrice: StrategyRules.calculateTargetPrice(finalPrice),
+                  unrealizedPnl: StrategyRules.calculateOptionGrossPnl(finalPrice, existingPos.currentPrice, finalQty)
+                });
+                updatedPositions++;
+              } else if (existingPos && finalQty < Number(existingPos.quantity)) {
+                discrepancies.push(`Broker entry ${att.brokerOrderId} fill quantity regressed from local ${existingPos.quantity} to ${finalQty}; ignored.`);
               }
 
               reconciledAttempts++;
+            } else if (status === 'COMPLETE' || status === 'FILLED') {
+              discrepancies.push(`Broker entry ${att.brokerOrderId} marked complete without positive confirmed filled_quantity.`);
             } else if (status === 'REJECTED' || status === 'CANCELLED') {
               dbEngine.updateEmaLiveOrderAttempt(att.id, {
                 orderStatus: status === 'CANCELLED' ? 'CANCELLED' : 'REJECTED',
