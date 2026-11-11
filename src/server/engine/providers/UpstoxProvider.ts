@@ -11,6 +11,7 @@ import {
   OptionContractQuote
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
+import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 
 export const COMMODITY_SYMBOLS = new Set(['GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER']);
 
@@ -361,6 +362,67 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
 
     return { available: 1000000, source: 'PRACTICE' };
+  }
+
+  /**
+   * Strict account snapshot for REAL EMA BUY gating. Unlike UI margin helpers,
+   * this method NEVER substitutes practice funds or an empty portfolio on error.
+   */
+  public async getEmaBrokerRiskSnapshot(
+    instrumentKey: string, quantity: number, product: 'MIS' | 'NRML'
+  ): Promise<BrokerRiskSnapshot | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !instrumentKey || !Number.isInteger(quantity) || quantity <= 0) return null;
+    const headers = {
+      Authorization: 'Bearer ' + this.accessToken,
+      Accept: 'application/json'
+    };
+    try {
+      const [fundsRes, marginRes, positionsRes] = await Promise.all([
+        fetch('https://api.upstox.com/v2/user/get-funds-and-margin', { headers }),
+        fetch('https://api.upstox.com/v2/charges/margin', {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instruments: [{
+            instrument_key: instrumentKey, quantity, transaction_type: 'BUY',
+            product: product === 'MIS' ? 'I' : 'D'
+          }] })
+        }),
+        fetch('https://api.upstox.com/v2/portfolio/short-term-positions', { headers })
+      ]);
+      if (!fundsRes.ok || !marginRes.ok || !positionsRes.ok) {
+        console.warn('[EMA BROKER RISK] Upstox live account API unavailable:', fundsRes.status, marginRes.status, positionsRes.status);
+        return null;
+      }
+      const [funds, margin, portfolio]: any[] = await Promise.all([
+        fundsRes.json(), marginRes.json(), positionsRes.json()
+      ]);
+      if (funds?.status !== 'success' || margin?.status !== 'success' ||
+          portfolio?.status !== 'success' || !Array.isArray(portfolio?.data)) return null;
+      const availableMargin = Number(funds?.data?.equity?.available_margin);
+      const usedMargin = Number(funds?.data?.equity?.used_margin);
+      const requiredMargin = Number(margin?.data?.final_margin);
+      if (![availableMargin, usedMargin, requiredMargin].every(Number.isFinite)) return null;
+      let portfolioPnl = 0;
+      let activePositions = 0;
+      for (const p of portfolio.data) {
+        if (p?.pnl === null || p?.pnl === undefined ||
+            p?.net_quantity === null || p?.net_quantity === undefined) return null;
+        const pnl = Number(p.pnl);
+        const netQuantity = Number(p.net_quantity);
+        if (!Number.isFinite(pnl) || !Number.isInteger(netQuantity)) return null;
+        portfolioPnl += pnl;
+        if (netQuantity !== 0) activePositions++;
+      }
+      return {
+        source: 'UPSTOX_LIVE',
+        checkedAt: new Date().toISOString(),
+        availableMargin, usedMargin, requiredMargin, portfolioPnl, activePositions
+      };
+    } catch (err: any) {
+      console.warn('[EMA BROKER RISK] Live broker account lookup failed:', err?.message || String(err));
+      return null;
+    }
   }
 
   public async getPositions(): Promise<any> {
