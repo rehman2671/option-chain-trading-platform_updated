@@ -38,7 +38,12 @@ describe('EMA15M durable SQLite broker dispatch claims', () => {
       status: 'OPEN', grossPnl: 0, brokerage: 40, netPnl: 0,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     };
-    dbEngine.saveEmaLivePosition(position);
+    assert.equal(dbEngine.tryCreateEmaLivePositionIfAbsent(position), true);
+    assert.equal(
+      dbEngine.tryCreateEmaLivePositionIfAbsent({ ...position, id: position.id + '-duplicate' }),
+      false,
+      'Two reconcilers must not create separate positions for one BUY'
+    );
     assert.equal(dbEngine.claimEmaLiveEntryAttempt({ ...attempt, id: attempt.id + '-later' }), false,
       'New BUY must not bypass durable open-position guard');
     assert.equal(dbEngine.claimEmaLiveExit(position.id), true);
