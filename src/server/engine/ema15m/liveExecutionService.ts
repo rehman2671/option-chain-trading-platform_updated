@@ -18,7 +18,7 @@ import { ContractResolver, ResolvedContract } from './contractResolver.js';
 import { StrategyRules } from './strategyRules.js';
 import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
-import { exposureController } from '../../../quant/risk/exposureController.js';
+import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
@@ -63,11 +63,8 @@ export class LiveExecutionService {
       return { passed: false, failureReason: `Unified Risk Control: Kill Switch is active (${haltReason})` };
     }
 
-    // 3. Exposure Controller Check
-    const exposureCheck = exposureController.checkOrderGating();
-    if (!exposureCheck.passed) {
-      return { passed: false, failureReason: exposureCheck.reason || 'Portfolio exposure / margin limit exceeded' };
-    }
+    // Broker account funds, positions and exact order margin are checked
+    // asynchronously before any REAL BUY; never use synthetic risk defaults here.
 
     // 4. Contract Validity Check
     if (!contract.isValid) {
@@ -78,6 +75,9 @@ export class LiveExecutionService {
     const exchangeStatus = SessionCalendar.isExchangeOpen();
     if (!exchangeStatus.isOpen) {
       return { passed: false, failureReason: `Indian exchange is currently closed: ${exchangeStatus.reason}` };
+    }
+    if (SessionCalendar.isAtOrPastForcedSquareOff()) {
+      return { passed: false, failureReason: 'MIS live entry blocked at/after forced square-off cutoff.' };
     }
 
     // 6. Broker Provider Connection Check
@@ -223,8 +223,20 @@ export class LiveExecutionService {
       }
     }
 
-    // 2. Pre-Trade Safety Verification
-    const preCheck = this.validatePreTrade(signal, contract, userId);
+    // 2. Pre-Trade Safety Verification. All account values are broker-origin.
+    const staticCheck = this.validatePreTrade(signal, contract, userId);
+    let preCheck = staticCheck;
+    if (staticCheck.passed) {
+      try {
+        const snapshot = typeof (activeProvider as any)?.getEmaBrokerRiskSnapshot === 'function'
+          ? await (activeProvider as any).getEmaBrokerRiskSnapshot(contract.brokerInstrumentKey, quantity, productType)
+          : null;
+        preCheck = evaluateEmaBrokerRisk(snapshot, settings.maxDailyLossLimit ?? 5000);
+      } catch (riskErr: any) {
+        preCheck = { passed: false, failureReason: 'Unable to validate real broker account risk: ' +
+          (riskErr?.message || String(riskErr)) };
+      }
+    }
 
     if (!preCheck.passed) {
       const orderAttempt: EmaLiveOrderAttempt = {
