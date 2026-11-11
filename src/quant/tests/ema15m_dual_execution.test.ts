@@ -445,7 +445,9 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
     const origGetOptionContracts = (activeProvider as any).getOptionContracts;
+    const origGetRiskSnapshot = (activeProvider as any).getEmaBrokerRiskSnapshot;
     const origIsOpen = SessionCalendar.isExchangeOpen;
+    const origSquareOff = SessionCalendar.isAtOrPastForcedSquareOff;
 
     SessionCalendar.isExchangeOpen = () => ({
       isOpen: true,
@@ -454,6 +456,16 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       dateStr: '2026-11-05'
     });
     (activeProvider as any).isUpstoxLiveConnected = () => true;
+    SessionCalendar.isAtOrPastForcedSquareOff = () => false;
+    (activeProvider as any).getEmaBrokerRiskSnapshot = async () => ({
+      source: 'UPSTOX_LIVE',
+      checkedAt: new Date().toISOString(),
+      availableMargin: 290000,
+      usedMargin: 10000,
+      requiredMargin: 1500,
+      portfolioPnl: 0,
+      activePositions: 0
+    });
     const listedExpiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
     (activeProvider as any).getOptionContracts = async () => [{
       underlying_symbol: 'SENSEX',
@@ -483,7 +495,9 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
       (activeProvider as any).getOptionContracts = origGetOptionContracts;
+      (activeProvider as any).getEmaBrokerRiskSnapshot = origGetRiskSnapshot;
       SessionCalendar.isExchangeOpen = origIsOpen;
+      SessionCalendar.isAtOrPastForcedSquareOff = origSquareOff;
     }
   });
 
