@@ -658,6 +658,22 @@ export class LiveExecutionService {
       return { success: false, message: `Exit already in flight for live position ${positionId}.` };
     }
 
+    // A manual/external broker exit can make the local position stale. Never
+    // SELL the old local quantity without a fresh authoritative broker match.
+    const remainingQty = Number(pos.quantity) - Number(pos.exitFilledQuantity ?? 0);
+    const provider = activeProvider as any;
+    const brokerQty = pos.brokerInstrumentKey &&
+      typeof provider?.getVerifiedLivePositionQuantity === 'function'
+      ? await provider.getVerifiedLivePositionQuantity(pos.brokerInstrumentKey, pos.productType)
+      : null;
+    if (!Number.isInteger(remainingQty) || remainingQty <= 0 ||
+        !Number.isInteger(brokerQty) || brokerQty !== remainingQty) {
+      return {
+        success: false,
+        message: `Live SELL blocked: verified broker quantity ${brokerQty ?? 'unavailable'} does not match ledger remaining quantity ${remainingQty}. Reconcile in Upstox first.`
+      };
+    }
+
     this.pendingExitIds.add(pos.id);
     const timestampStr = new Date().toISOString();
 
