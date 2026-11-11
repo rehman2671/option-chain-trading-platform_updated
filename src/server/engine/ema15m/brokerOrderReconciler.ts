@@ -210,31 +210,45 @@ export class BrokerOrderReconciler {
           discrepancies.push('Live exit for position ' + pos.id +
             ' has unknown broker outcome: manual broker book reconciliation required');
         }
-        if ((pos.status === 'EXIT_PENDING' || pos.status === 'EXIT_REQUESTED') && pos.exitBrokerOrderId) {
+        if (['EXIT_PENDING', 'EXIT_REQUESTED', 'PARTIALLY_CLOSED', 'EXIT_FAILED'].includes(pos.status) && pos.exitBrokerOrderId) {
           try {
             const exitHistory = await (activeProvider as any).getOrderHistory(pos.exitBrokerOrderId);
             if (Array.isArray(exitHistory) && exitHistory.length > 0) {
               const latestExit = exitHistory[exitHistory.length - 1];
               const exitStatus = (latestExit.status || latestExit.order_status || '').toUpperCase();
 
-              if (exitStatus === 'COMPLETE' || exitStatus === 'FILLED') {
-                const actualExitQty = Number(latestExit.filled_quantity ?? 0);
-                const fillPrice = Number(latestExit.average_price ?? 0);
-                if (!Number.isInteger(actualExitQty) || actualExitQty !== Number(pos.quantity) ||
-                    !Number.isFinite(fillPrice) || fillPrice <= 0) {
-                  discrepancies.push(`Broker exit ${pos.exitBrokerOrderId}: unresolved quantity/price (filled=${actualExitQty}, expected=${pos.quantity}); position NOT closed.`);
+              const cumulativeExitQty = Number(latestExit.filled_quantity ?? 0);
+              const fillPrice = Number(latestExit.average_price ?? 0);
+              const previousExitQty = Number(pos.exitFilledQuantity ?? 0);
+              const initialQty = Number(pos.quantity);
+              if (!Number.isInteger(cumulativeExitQty) || cumulativeExitQty < 0 ||
+                  cumulativeExitQty > initialQty || cumulativeExitQty < previousExitQty) {
+                discrepancies.push(`Broker exit ${pos.exitBrokerOrderId}: invalid/regressed cumulative filled quantity ${cumulativeExitQty}; previous=${previousExitQty}, total=${initialQty}`);
+                continue;
+              }
+
+              if (cumulativeExitQty > previousExitQty) {
+                if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+                  discrepancies.push(`Broker exit ${pos.exitBrokerOrderId}: cumulative SELL fill missing real average execution price`);
                   continue;
                 }
-                const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, fillPrice, pos.quantity);
+                const remainingQty = initialQty - cumulativeExitQty;
+                const isFullyClosed = remainingQty === 0;
+                const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, fillPrice, cumulativeExitQty);
                 const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
+                const unrealizedPnl = isFullyClosed ? 0 :
+                  StrategyRules.calculateOptionGrossPnl(pos.entryPrice, pos.currentPrice, remainingQty);
 
+                // Broker filled_quantity and average_price are CUMULATIVE. Persist
+                // the cumulative filled amount so repeated polls cannot double count.
                 dbEngine.updateEmaLivePosition(pos.id, {
-                  status: 'CLOSED',
-                  exitTimestamp: new Date().toISOString(),
+                  status: isFullyClosed ? 'CLOSED' : 'PARTIALLY_CLOSED',
+                  exitFilledQuantity: cumulativeExitQty,
+                  ...(isFullyClosed ? { exitTimestamp: new Date().toISOString() } : {}),
                   exitPrice: fillPrice,
                   grossPnl,
                   netPnl,
-                  unrealizedPnl: 0
+                  unrealizedPnl
                 });
 
                 const randExit = Math.random().toString(36).slice(2, 8);
@@ -244,27 +258,31 @@ export class BrokerOrderReconciler {
                   executionId: pos.id,
                   executionMode: 'LIVE',
                   stage: 'LIVE_EXIT_FILLED',
-                  status: 'SUCCESS',
+                  status: isFullyClosed ? 'SUCCESS' : 'PENDING',
                   instrument: pos.instrument,
                   brokerOrderId: pos.exitBrokerOrderId,
-                  details: { posId: pos.id, fillPrice, grossPnl, netPnl, reconciled: true },
+                  details: { posId: pos.id, cumulativeExitQty, remainingQty, fillPrice, grossPnl, netPnl, reconciled: true },
                   timestamp: new Date().toISOString()
                 });
 
                 dbEngine.logEmaExecution({
                   id: `exec-reconcile-exit-${Date.now()}-${randExit}`,
                   timestamp: new Date().toISOString(),
-                  level: 'SUCCESS',
+                  level: isFullyClosed ? 'SUCCESS' : 'WARN',
                   stage: 'EXIT',
                   instrument: pos.instrument,
-                  message: `🔄 Reconciler confirmed exit fill for position ${pos.id} (Order: ${pos.exitBrokerOrderId}) @ ₹${fillPrice} | Net P&L: ₹${netPnl}`,
-                  details: { posId: pos.id, exitBrokerOrderId: pos.exitBrokerOrderId, fillPrice, netPnl }
+                  message: `Broker SELL cumulative fill ${cumulativeExitQty}/${initialQty} for ${pos.id}. Remaining exposure: ${remainingQty}.`,
+                  details: { posId: pos.id, exitBrokerOrderId: pos.exitBrokerOrderId, fillPrice, cumulativeExitQty, remainingQty, netPnl }
                 });
-
+                if (!isFullyClosed) {
+                  discrepancies.push(`Live position ${pos.id} partially exited ${cumulativeExitQty}/${initialQty}; ${remainingQty} still exposed, do not submit duplicate SELL`);
+                }
                 updatedPositions++;
+              } else if ((exitStatus === 'COMPLETE' || exitStatus === 'FILLED') && cumulativeExitQty === 0) {
+                discrepancies.push(`Broker exit ${pos.exitBrokerOrderId} complete with no confirmed filled quantity; exposure unresolved`);
               } else if (exitStatus === 'REJECTED' || exitStatus === 'CANCELLED') {
                 dbEngine.updateEmaLivePosition(pos.id, {
-                  status: 'EXIT_FAILED',
+                  status: previousExitQty > 0 ? 'PARTIALLY_CLOSED' : 'EXIT_FAILED',
                   exitReason: latestExit.status_message || latestExit.rejection_reason || 'Broker exit order rejected'
                 });
                 discrepancies.push(`Live position ${pos.id} exit order ${pos.exitBrokerOrderId} rejected by broker`);
