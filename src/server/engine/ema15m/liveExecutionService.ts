@@ -76,7 +76,7 @@ export class LiveExecutionService {
     if (!exchangeStatus.isOpen) {
       return { passed: false, failureReason: `Indian exchange is currently closed: ${exchangeStatus.reason}` };
     }
-    if (SessionCalendar.isAtOrPastForcedSquareOff()) {
+    if (SessionCalendar.isAtOrPastForcedSquareOff(new Date(), settings.forceSquareOffTime || '15:15')) {
       return { passed: false, failureReason: 'MIS live entry blocked at/after forced square-off cutoff.' };
     }
 
