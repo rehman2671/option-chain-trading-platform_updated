@@ -6,6 +6,7 @@ import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { dbEngine } from '../../server/db.js';
 import { brokerOrderReconciler } from '../../server/engine/ema15m/brokerOrderReconciler.js';
+import { liveExecutionService } from '../../server/engine/ema15m/liveExecutionService.js';
 import { activeProvider } from '../../server/engine/providers/index.js';
 
 describe('EMA15M broker cumulative partial fill reconciliation', () => {
@@ -43,6 +44,9 @@ describe('EMA15M broker cumulative partial fill reconciliation', () => {
       assert.equal(position.quantity, 4);
       assert.equal(position.entryPrice, 100);
       assert.equal(dbEngine.getEmaLiveOrderAttempts('NIFTY', 200).find(a => a.id === attemptId)?.orderStatus, 'PARTIALLY_FILLED');
+      const exitDuringPendingBuy = await liveExecutionService.requestLiveExit(position.id, 'PARTIAL_BUY_TEST');
+      assert.equal(exitDuringPendingBuy.success, false, 'Must not sell while BUY remainder may still fill');
+      assert.match(exitDuringPendingBuy.message, /unresolved remaining quantity/);
 
       buy = { status: 'complete', filled_quantity: 10, average_price: 110 };
       await brokerOrderReconciler.reconcileBrokerState();
