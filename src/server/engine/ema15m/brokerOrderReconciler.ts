@@ -140,7 +140,10 @@ export class BrokerOrderReconciler {
                   updatedAt: new Date().toISOString()
                 };
 
-                dbEngine.saveEmaLivePosition(livePosition);
+                if (!dbEngine.tryCreateEmaLivePositionIfAbsent(livePosition)) {
+                  discrepancies.push(`Broker BUY attempt ${att.id}: another reconciler already persisted its confirmed position.`);
+                  continue;
+                }
 
                 dbEngine.logEmaExecutionEvent({
                   id: `evt-reconcile-fill-${Date.now()}-${randSuffix}`,
