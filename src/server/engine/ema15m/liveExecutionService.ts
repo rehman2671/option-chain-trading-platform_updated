@@ -629,6 +629,17 @@ export class LiveExecutionService {
       return { success: false, message: `Live position ${positionId} not found or already closed.` };
     }
 
+    // Partial BUY fills are genuine exposure, but the unfilled remainder could
+    // execute AFTER a SELL. Until BUY is terminal/cancelled, prevent unmatched
+    // exit orders and require an explicit broker-side order reconciliation.
+    const entryAttempt = dbEngine.getEmaLiveOrderAttemptById(pos.attemptId);
+    if (entryAttempt && ['CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(entryAttempt.orderStatus)) {
+      return {
+        success: false,
+        message: `Cannot dispatch SELL: entry BUY ${entryAttempt.brokerOrderId || entryAttempt.id} has unresolved remaining quantity. Cancel/reconcile BUY first.`
+      };
+    }
+
     // An acknowledged SELL or a partial exit is still real exposure. Never submit another
     // SELL until its broker order has been reconciled and remaining quantity verified.
     if (!['OPEN', 'EXIT_FAILED'].includes(pos.status) || pos.exitBrokerOrderId) {
