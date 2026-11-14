@@ -600,10 +600,16 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
     const origVerifiedQty = (activeProvider as any).getVerifiedLivePositionQuantity;
     const origGetOrderBook = (activeProvider as any).getOrderBook;
+    const origGetGttOrders = (activeProvider as any).getGttOrders;
     (activeProvider as any).isUpstoxLiveConnected = () => true;
     let verifiedBrokerQty = 49;
     let nativeStopStatus = 'trigger pending';
+    let gttStopStatus = 'SCHEDULED';
     let liveSellCalls = 0;
+    (activeProvider as any).getGttOrders = async () => [{
+      gtt_order_id: 'GTT-TEST-PENDING', instrument_token: 'NSE_FO|123456',
+      product: 'I', rules: [{ strategy: 'ENTRY', transaction_type: 'SELL', status: gttStopStatus }]
+    }];
     (activeProvider as any).getOrderBook = async () => [{
       order_id: 'NATIVE-SL-TEST', instrument_token: 'NSE_FO|123456',
       product: 'I', transaction_type: 'SELL', order_type: 'SL',
@@ -628,6 +634,10 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       assert.strictEqual(cancelling.success, false, 'Cancellation acknowledgment is NOT confirmed');
       assert.strictEqual(liveSellCalls, 0);
       nativeStopStatus = 'cancelled';
+      const blockedByGtt = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(blockedByGtt.success, false, 'Untriggered GTT SELL must block market SELL');
+      assert.strictEqual(liveSellCalls, 0);
+      gttStopStatus = 'CANCELLED';
       const exitRes = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
       assert.strictEqual(exitRes.success, true);
       assert.strictEqual(liveSellCalls, 1);
@@ -642,6 +652,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
       (activeProvider as any).getVerifiedLivePositionQuantity = origVerifiedQty;
       (activeProvider as any).getOrderBook = origGetOrderBook;
+      (activeProvider as any).getGttOrders = origGetGttOrders;
     }
   });
 
