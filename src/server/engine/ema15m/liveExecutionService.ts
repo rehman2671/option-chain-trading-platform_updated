@@ -19,6 +19,7 @@ import { StrategyRules } from './strategyRules.js';
 import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
 import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
+import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
 import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
@@ -349,7 +350,7 @@ export class LiveExecutionService {
         tradingsymbol: contract.tradingsymbol,
         symbol: contract.tradingsymbol,
         instrumentToken: contract.brokerInstrumentKey,
-        tag: 'ema15m_live'
+        tag: emaBrokerOrderTag('BUY', attemptId)
       });
 
       const brokerOrderId = brokerRes?.order_id || brokerRes?.orderId;
@@ -759,7 +760,7 @@ export class LiveExecutionService {
         tradingsymbol: pos.tradingsymbol,
         symbol: pos.tradingsymbol,
         instrumentToken: pos.brokerInstrumentKey,
-        tag: 'ema15m_exit'
+        tag: emaBrokerOrderTag('SELL', pos.id)
       });
 
       const exitBrokerOrderId = exitRes?.order_id || exitRes?.orderId;
