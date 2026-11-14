@@ -576,6 +576,42 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /**
+   * Authoritative CURRENT-DAY broker order book; returns null on any error.
+   * Never interpret transport failure as an empty exchange order book.
+   */
+  public async getOrderBook(): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken) return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/order/retrieve-all', {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+    } catch (err: any) {
+      console.warn('[UPSTOX] Order book unavailable:', err?.message || err);
+      return null;
+    }
+  }
+
+  /** Individual exchange executions for an order; unavailable is null, not []. */
+  public async getOrderTrades(orderId: string): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken || !orderId) return null;
+    try {
+      const res = await fetch(
+        'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
+        { headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' } }
+      );
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+    } catch (err: any) {
+      console.warn('[UPSTOX] Order trades unavailable for ' + orderId + ':', err?.message || err);
+      return null;
+    }
+  }
+
   public async getOrderHistory(orderId: string): Promise<any[]> {
     if (!this.isConnected || !this.accessToken) return [];
 
