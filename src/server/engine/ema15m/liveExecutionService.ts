@@ -20,6 +20,7 @@ import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
 import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
+import { assessBrokerSellInterlock } from './protectiveExitSafety.js';
 import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
@@ -673,6 +674,24 @@ export class LiveExecutionService {
         success: false,
         message: `Live SELL blocked: verified broker quantity ${brokerQty ?? 'unavailable'} does not match ledger remaining quantity ${remainingQty}. Reconcile in Upstox first.`
       };
+    }
+
+    // Any native exchange SL / existing pending SELL must first be cancelled
+    // and its terminal status verified. A cancellation ACK alone is NOT proof.
+    // A missing broker order book fails closed rather than risking a duplicate SELL.
+    let liveBook: unknown = null;
+    try {
+      liveBook = typeof provider?.getOrderBook === 'function'
+        ? await provider.getOrderBook()
+        : null;
+    } catch (err: any) {
+      console.warn('[EMA LIVE] Unable to verify native protective SELLs:', err?.message || err);
+    }
+    const orderSafety = assessBrokerSellInterlock(
+      liveBook, pos.brokerInstrumentKey || '', pos.productType
+    );
+    if (!orderSafety.safe) {
+      return { success: false, message: 'Live SELL blocked: ' + orderSafety.reason };
     }
 
     this.pendingExitIds.add(pos.id);
