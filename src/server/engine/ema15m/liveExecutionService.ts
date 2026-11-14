@@ -690,7 +690,7 @@ export class LiveExecutionService {
     const orderSafety = assessBrokerSellInterlock(
       liveBook, pos.brokerInstrumentKey || '', pos.productType
     );
-    if (!orderSafety.safe) {
+    if (orderSafety.safe === false) {
       return { success: false, message: 'Live SELL blocked: ' + orderSafety.reason };
     }
 
