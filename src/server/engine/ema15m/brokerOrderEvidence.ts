@@ -56,8 +56,12 @@ export function aggregateOrderTrades(
   for (const trade of rows as any[]) {
     if (trade?.order_id !== orderId) return null;
     if (String(trade?.transaction_type || '').toUpperCase() !== action) return null;
-    // Trade payloads sometimes omit instrument_token. If present it must match.
-    if (trade.instrument_token && trade.instrument_token !== instrumentKey) return null;
+    // Some Upstox trade endpoints expose the exchange's numeric token rather
+    // than the full segment|instrument_key. Compare only full segment keys;
+    // the order_id + BUY/SELL side are still required on every trade row.
+    if (typeof trade.instrument_token === 'string' &&
+        trade.instrument_token.includes('|') &&
+        trade.instrument_token !== instrumentKey) return null;
     const tradeId = String(trade.trade_id || '');
     if (!tradeId || seen.has(tradeId)) return null;
     seen.add(tradeId);
