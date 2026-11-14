@@ -7,12 +7,44 @@ import { dbEngine } from '../../db.js';
 import { activeProvider } from '../providers/index.js';
 import { StrategyRules } from './strategyRules.js';
 import { EmaLiveOrderAttempt, EmaLivePosition } from './types.js';
-import { emaBrokerOrderTag, findUniqueBrokerOrderId } from './brokerOrderEvidence.js';
+import { emaBrokerOrderTag, findUniqueBrokerOrderId, aggregateOrderTrades } from './brokerOrderEvidence.js';
 
 export class BrokerOrderReconciler {
   private static instance: BrokerOrderReconciler;
 
   private constructor() {}
+
+  /**
+   * Cross-check current-day exchange trade executions when the API returns
+   * authoritative rows. A transient trades API outage does not rewrite a valid
+   * broker order-history fill; contradictory evidence DOES block ledger writes.
+   */
+  private async verifyTradeEvidence(
+    orderId: string, action: 'BUY' | 'SELL', instrumentKey: string,
+    cumulativeQty: number, cumulativeAvg: number, discrepancies: string[]
+  ): Promise<boolean> {
+    const provider = activeProvider as any;
+    if (typeof provider?.getOrderTrades !== 'function') return true;
+    let trades: any[] | null;
+    try {
+      trades = await provider.getOrderTrades(orderId);
+    } catch (err: any) {
+      discrepancies.push('Trade evidence API error for ' + orderId + ': ' + (err?.message || err));
+      return true; // broker order history is still authoritative
+    }
+    if (trades === null) {
+      discrepancies.push('Trade evidence temporarily unavailable for ' + orderId + '; relying on broker order history');
+      return true;
+    }
+    const evidence = aggregateOrderTrades(trades, orderId, action, instrumentKey);
+    if (!evidence || evidence.filledQuantity !== cumulativeQty ||
+        Math.abs(evidence.averagePrice - cumulativeAvg) > 0.10) {
+      discrepancies.push('Broker order ' + orderId +
+        ': trade book and order history disagree or trade book has not caught up; fill is unresolved');
+      return false;
+    }
+    return true;
+  }
 
   public static getInstance(): BrokerOrderReconciler {
     if (!BrokerOrderReconciler.instance) {
@@ -118,6 +150,10 @@ export class BrokerOrderReconciler {
               }
               const finalQty = filledQty;
               const finalPrice = avgPrice;
+              if (!(await this.verifyTradeEvidence(
+                brokerOrderId, 'BUY', att.brokerInstrumentKey || '',
+                finalQty, finalPrice, discrepancies
+              ))) continue;
 
               dbEngine.updateEmaLiveOrderAttempt(att.id, {
                 orderStatus: (status === 'COMPLETE' || status === 'FILLED') && finalQty === att.requestedQuantity
@@ -277,9 +313,13 @@ export class BrokerOrderReconciler {
 
               if (cumulativeExitQty > previousExitQty) {
                 if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
-                  discrepancies.push(`Broker exit ${pos.exitBrokerOrderId}: cumulative SELL fill missing real average execution price`);
+                  discrepancies.push(`Broker exit ${exitOrderId}: cumulative SELL fill missing real average execution price`);
                   continue;
                 }
+                if (!(await this.verifyTradeEvidence(
+                  exitOrderId, 'SELL', pos.brokerInstrumentKey || '',
+                  cumulativeExitQty, fillPrice, discrepancies
+                ))) continue;
                 const remainingQty = initialQty - cumulativeExitQty;
                 const isFullyClosed = remainingQty === 0;
                 const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, fillPrice, cumulativeExitQty);
