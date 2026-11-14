@@ -599,9 +599,16 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
     const origVerifiedQty = (activeProvider as any).getVerifiedLivePositionQuantity;
+    const origGetOrderBook = (activeProvider as any).getOrderBook;
     (activeProvider as any).isUpstoxLiveConnected = () => true;
     let verifiedBrokerQty = 49;
+    let nativeStopStatus = 'trigger pending';
     let liveSellCalls = 0;
+    (activeProvider as any).getOrderBook = async () => [{
+      order_id: 'NATIVE-SL-TEST', instrument_token: 'NSE_FO|123456',
+      product: 'I', transaction_type: 'SELL', order_type: 'SL',
+      status: nativeStopStatus
+    }];
     (activeProvider as any).getVerifiedLivePositionQuantity = async () => verifiedBrokerQty;
     (activeProvider as any).placeOrder = async () => {
       liveSellCalls++;
@@ -613,6 +620,14 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       assert.strictEqual(mismatched.success, false, 'Mismatched broker net quantity must block SELL');
       assert.strictEqual(liveSellCalls, 0, 'No broker SELL may be dispatched on quantity mismatch');
       verifiedBrokerQty = 50;
+      const blockedByStop = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(blockedByStop.success, false, 'A pending native stop must block another live SELL');
+      assert.strictEqual(liveSellCalls, 0);
+      nativeStopStatus = 'cancel pending';
+      const cancelling = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(cancelling.success, false, 'Cancellation acknowledgment is NOT confirmed');
+      assert.strictEqual(liveSellCalls, 0);
+      nativeStopStatus = 'cancelled';
       const exitRes = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
       assert.strictEqual(exitRes.success, true);
       assert.strictEqual(liveSellCalls, 1);
@@ -626,6 +641,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
       (activeProvider as any).getVerifiedLivePositionQuantity = origVerifiedQty;
+      (activeProvider as any).getOrderBook = origGetOrderBook;
     }
   });
 
