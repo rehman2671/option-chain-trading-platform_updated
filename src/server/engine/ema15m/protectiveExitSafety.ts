@@ -74,3 +74,51 @@ export function isBrokerSellCancellationConfirmed(
       String(matches[0].status || '').toLowerCase().trim()
     );
 }
+
+/**
+ * Pending GTT SELL rules do NOT necessarily appear in the ordinary order book.
+ * GTT MULTIPLE TARGET/STOPLOSS legs may be INACTIVE yet activate later.
+ * A completed SELL rule also needs position reconciliation, not another SELL.
+ */
+export function assessGttSellInterlock(
+  gttOrders: unknown,
+  instrumentKey: string,
+  product: 'MIS' | 'NRML'
+): BrokerSellInterlockResult {
+  const fail = (reason: string, blockerOrderId?: string): BrokerSellInterlockResult =>
+    ({ safe: false, reason, ...(blockerOrderId ? { blockerOrderId } : {}) });
+  if (!instrumentKey || !['MIS', 'NRML'].includes(product))
+    return fail('Invalid contract/product for GTT protection check');
+  if (!Array.isArray(gttOrders))
+    return fail('Upstox GTT order list unavailable: possible untriggered SELL protection');
+  const expectedProduct = product === 'MIS' ? 'I' : 'D';
+  const cancelled = new Set(['cancelled', 'canceled', 'expired', 'failed']);
+  for (const order of gttOrders) {
+    if (!order || typeof order !== 'object')
+      return fail('Malformed broker GTT entry; cannot verify pending protective SELL');
+    const o = order as Record<string, unknown>;
+    if (typeof o.instrument_token !== 'string' || typeof o.product !== 'string')
+      return fail('Broker GTT entry has unknown instrument/product');
+    if (o.instrument_token !== instrumentKey || o.product !== expectedProduct) continue;
+    if (!Array.isArray(o.rules))
+      return fail('Matching broker GTT has missing rule details');
+    for (const rule of o.rules) {
+      if (!rule || typeof rule !== 'object')
+        return fail('Malformed broker GTT leg');
+      const leg = rule as Record<string, unknown>;
+      const side = String(leg.transaction_type || '').toUpperCase();
+      if (side === 'BUY') continue;
+      if (side !== 'SELL')
+        return fail('Matching GTT leg has unknown transaction side');
+      const status = String(leg.status || '').toLowerCase().trim();
+      if (!cancelled.has(status)) {
+        return fail(
+          'Broker GTT SELL rule remains potentially executable (' +
+          (status || 'UNKNOWN') + '); verify cancellation and broker position before any MARKET SELL.',
+          typeof o.gtt_order_id === 'string' ? o.gtt_order_id : undefined
+        );
+      }
+    }
+  }
+  return { safe: true };
+}
