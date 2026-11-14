@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  assessBrokerSellInterlock, isBrokerSellCancellationConfirmed
+  assessBrokerSellInterlock, isBrokerSellCancellationConfirmed, assessGttSellInterlock
 } from '../../server/engine/ema15m/protectiveExitSafety.js';
 
 describe('EMA15M broker-native SELL / protective stop interlock', () => {
@@ -38,6 +38,29 @@ describe('EMA15M broker-native SELL / protective stop interlock', () => {
     assert.equal(isBrokerSellCancellationConfirmed([row('cancelled', 'other')], '123456', key), false);
     assert.equal(isBrokerSellCancellationConfirmed([row('cancelled'), row('cancelled')], '123456', key), false);
     assert.equal(isBrokerSellCancellationConfirmed([{ ...row('cancelled'), instrument_token: 'NSE_FO|9' }], '123456', key), false);
+  });
+
+  it('blocks active, dormant and completed GTT SELL legs for the same contract', () => {
+    const gtt = (status: string) => ({
+      gtt_order_id: 'GTT-TEST-123', instrument_token: key, product: 'I',
+      quantity: 50, rules: [
+        { strategy: 'ENTRY', status: 'COMPLETED', transaction_type: 'BUY' },
+        { strategy: 'STOPLOSS', status, transaction_type: 'SELL' }
+      ]
+    });
+    assert.equal(assessGttSellInterlock(null, key, 'MIS').safe, false);
+    for (const status of ['SCHEDULED', 'INACTIVE', 'OPEN', 'PENDING', 'TRIGGERED', 'COMPLETED']) {
+      const result = assessGttSellInterlock([gtt(status)], key, 'MIS');
+      assert.equal(result.safe, false, 'GTT SELL status ' + status + ' must block');
+      assert.equal(result.safe ? undefined : result.blockerOrderId, 'GTT-TEST-123');
+    }
+    assert.equal(assessGttSellInterlock([gtt('CANCELLED')], key, 'MIS').safe, true);
+    assert.equal(assessGttSellInterlock([gtt('EXPIRED')], key, 'MIS').safe, true);
+    assert.equal(assessGttSellInterlock([{ ...gtt('SCHEDULED'), instrument_token: 'NSE_FO|9' }], key, 'MIS').safe, true);
+    assert.equal(assessGttSellInterlock([{
+      ...gtt('SCHEDULED'),
+      rules: [{ strategy: 'ENTRY', transaction_type: 'BUY', status: 'SCHEDULED' }]
+    }], key, 'MIS').safe, true);
   });
 
   it('permits clear book, unrelated instrument, cancelled/rejected/full SELL orders', () => {
