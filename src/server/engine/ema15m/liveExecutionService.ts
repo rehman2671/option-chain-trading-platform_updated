@@ -20,7 +20,7 @@ import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
 import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
-import { assessBrokerSellInterlock } from './protectiveExitSafety.js';
+import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveExitSafety.js';
 import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
@@ -692,6 +692,23 @@ export class LiveExecutionService {
     );
     if (orderSafety.safe === false) {
       return { success: false, message: 'Live SELL blocked: ' + orderSafety.reason };
+    }
+
+    // GTT is a separate broker subsystem: untriggered GTT SELL legs may
+    // not be in the ordinary exchange order book above.
+    let liveGttOrders: unknown = null;
+    try {
+      liveGttOrders = typeof provider?.getGttOrders === 'function'
+        ? await provider.getGttOrders()
+        : null;
+    } catch (err: any) {
+      console.warn('[EMA LIVE] Unable to verify broker GTT SELL protection:', err?.message || err);
+    }
+    const gttSafety = assessGttSellInterlock(
+      liveGttOrders, pos.brokerInstrumentKey || '', pos.productType
+    );
+    if (gttSafety.safe === false) {
+      return { success: false, message: 'Live SELL blocked: ' + gttSafety.reason };
     }
 
     this.pendingExitIds.add(pos.id);
