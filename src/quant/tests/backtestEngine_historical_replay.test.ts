@@ -32,26 +32,24 @@ describe('BacktestEngine Historical Replay & Real Data Validation', () => {
 
   it('correctly reports data availability range from SQLite tables', () => {
     const availability = backtestEngine.getHistoricalDataAvailability('NIFTY');
-    assert.ok(availability.minDate, 'minDate must be populated');
-    assert.ok(availability.maxDate, 'maxDate must be populated');
-    assert.strictEqual(availability.hasCandles, true, 'ema_15m_candles must be detected');
-    assert.strictEqual(availability.hasOptionSnapshots, true, 'quant_option_chain_snapshots must be detected');
+    // CI uses a fresh isolated SQLite DB, not committed production trading data.
+    assert.strictEqual(availability.hasCandles, false, 'Fresh fixture DB must not contain production candles');
+    assert.strictEqual(availability.hasOptionSnapshots, false, 'Fresh fixture DB must not contain real option snapshots');
   });
 
-  it('replays real underlying 15m candles with MODELED_OPTIONS_ON_REAL_UNDERLYING label', () => {
+  it('rejects a replay range that has no candles in the isolated test DB', () => {
     const strategy = CANONICAL_STRATEGIES[0];
-    // This period has 1,500 real 15m candles in SQLite
     const result = backtestEngine.runBacktest({
       strategy,
       periodStart: '2026-10-01T00:00:00.000Z',
       periodEnd: '2026-10-25T23:59:59.000Z'
     });
 
-    assert.strictEqual(result.status, 'COMPLETED');
-    assert.strictEqual(result.dataSource, 'MODELED_OPTIONS_ON_REAL_UNDERLYING');
-    assert.ok(result.sampleSize > 0, `Expected trades from 15m candles, got ${result.sampleSize}`);
-    assert.ok(result.trades && result.trades.length > 0, 'Trades array must not be empty');
-    assert.ok(result.totalTransactionCosts > 0, 'Transaction costs must be realistically modeled');
+    assert.strictEqual(result.status, 'INSUFFICIENT_HISTORICAL_DATA');
+    assert.strictEqual(result.dataSource, 'INSUFFICIENT_HISTORICAL_DATA');
+    assert.strictEqual(result.sampleSize, 0);
+    assert.strictEqual(result.trades?.length, 0);
+    assert.strictEqual(result.totalNetPnl, 0);
   });
 
   it('replays seeded dataset with exact hand-calculated expected outcome', () => {

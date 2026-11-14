@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
@@ -23,7 +24,9 @@ export interface MigrationReport {
 class DatabaseEngine {
   private db: Database.Database | null = null;
   private isInitialized = false;
-  private dbFilePath = path.join(process.cwd(), 'option_platform.sqlite');
+  private dbFilePath = process.env.NODE_ENV === 'test'
+    ? path.join(os.tmpdir(), `ema15m-test-${process.pid}.sqlite`)
+    : path.join(process.cwd(), 'option_platform.sqlite');
   private isRecovering = false;
   private walCheckpointTimer: NodeJS.Timeout | null = null;
 
@@ -73,8 +76,8 @@ class DatabaseEngine {
       console.log('DatabaseEngine (better-sqlite3): SQLite database initialized in WAL mode with transactional disk persistence.');
       console.log('DatabaseEngine Recovery Summary:', JSON.stringify(this.migrationReport));
     } catch (err: any) {
-      console.warn('[DB INITIALIZE NOTICE] Database integrity issue detected, initiating safe salvaging & recovery:', err?.message || err);
-      this.salvageAndResetDatabase();
+      console.error('[DB INITIALIZE FATAL] Initialization failed; preserving existing SQLite/WAL files:', err?.message || err);
+      throw err;
     }
   }
 
@@ -120,7 +123,8 @@ class DatabaseEngine {
       };
 
       console.error('[DB ENGINE FATAL] Runtime SQLite corruption detected with structured diagnostics:\n' + JSON.stringify(diagnostic, null, 2));
-      this.salvageAndResetDatabase(diagnostic);
+      // Never auto-delete/recreate trading ledgers following a runtime SQLite error.
+      throw new Error('SQLITE_CORRUPTION_DETECTED: preserve database and require manual recovery');
     }
   }
 
@@ -2287,6 +2291,20 @@ class DatabaseEngine {
       console.log('DatabaseEngine: Applied Migration 018 - Independent Dual Execution Tables.');
     }
 
+    // Migration 019: Persist cumulative confirmed broker SELL fills across restarts.
+    if (!appliedVersions.has(19)) {
+      const positionCols = new Set(
+        (this.db.prepare('PRAGMA table_info(ema_live_positions)').all() as any[]).map(c => c.name)
+      );
+      if (!positionCols.has('exit_filled_quantity')) {
+        this.db.exec('ALTER TABLE ema_live_positions ADD COLUMN exit_filled_quantity INTEGER NOT NULL DEFAULT 0');
+      }
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version, description) VALUES (19, 'EMA live cumulative exit fill tracking')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 019 - EMA live exit fill quantity.');
+    }
+
     // Safeguard: Ensure all modern columns exist on ema_notification_settings
     try {
       const settingsCols = new Set(
@@ -2672,57 +2690,76 @@ class DatabaseEngine {
    */
   public syncConfiguredUsersFromEnv(): void {
     if (!this.db) return;
+    // Fixed operator roster is configured only from environment-provided credentials.
+    // Never silently provision a well-known password or default email address.
+    const accounts: Array<{
+      id: string;
+      role: 'SUPERADMIN' | 'OPERATOR';
+      emailEnv: string;
+      passwordEnv: string;
+      nameEnv: string;
+      fallbackName: string;
+    }> = [
+      { id: 'usr-admin-master', role: 'SUPERADMIN', emailEnv: 'ADMIN_EMAIL',
+        passwordEnv: 'ADMIN_INITIAL_PASSWORD', nameEnv: 'ADMIN_NAME', fallbackName: 'Master Administrator' },
+      { id: 'usr-op-1', role: 'OPERATOR', emailEnv: 'OPERATOR_1_EMAIL',
+        passwordEnv: 'OPERATOR_1_INITIAL_PASSWORD', nameEnv: 'OPERATOR_1_NAME', fallbackName: 'Quant Operator 1' },
+      { id: 'usr-op-2', role: 'OPERATOR', emailEnv: 'OPERATOR_2_EMAIL',
+        passwordEnv: 'OPERATOR_2_INITIAL_PASSWORD', nameEnv: 'OPERATOR_2_NAME', fallbackName: 'Quant Operator 2' },
+      { id: 'usr-op-3', role: 'OPERATOR', emailEnv: 'OPERATOR_3_EMAIL',
+        passwordEnv: 'OPERATOR_3_INITIAL_PASSWORD', nameEnv: 'OPERATOR_3_NAME', fallbackName: 'Risk Operator 3' },
+      { id: 'usr-op-4', role: 'OPERATOR', emailEnv: 'OPERATOR_4_EMAIL',
+        passwordEnv: 'OPERATOR_4_INITIAL_PASSWORD', nameEnv: 'OPERATOR_4_NAME', fallbackName: 'Execution Operator 4' }
+    ];
+
     try {
-      const adminEmail = (process.env.ADMIN_EMAIL || 'vinuparab86@gmail.com').trim().toLowerCase();
-      const adminName = process.env.ADMIN_NAME || 'Master Admin (Vinu)';
-      const adminPass = process.env.ADMIN_INITIAL_PASSWORD || 'Admin@Trading2026!';
-
-      const op1Email = (process.env.OPERATOR_1_EMAIL || 'operator1@trading.internal').trim().toLowerCase();
-      const op1Name = process.env.OPERATOR_1_NAME || 'Quant Operator 1';
-      const op1Pass = process.env.OPERATOR_1_INITIAL_PASSWORD || 'Operator1@Trading2026!';
-
-      const op2Email = (process.env.OPERATOR_2_EMAIL || 'operator2@trading.internal').trim().toLowerCase();
-      const op2Name = process.env.OPERATOR_2_NAME || 'Quant Operator 2';
-      const op2Pass = process.env.OPERATOR_2_INITIAL_PASSWORD || 'Operator2@Trading2026!';
-
-      const op3Email = (process.env.OPERATOR_3_EMAIL || 'operator3@trading.internal').trim().toLowerCase();
-      const op3Name = process.env.OPERATOR_3_NAME || 'Risk Operator 3';
-      const op3Pass = process.env.OPERATOR_3_INITIAL_PASSWORD || 'Operator3@Trading2026!';
-
-      const op4Email = (process.env.OPERATOR_4_EMAIL || 'operator4@trading.internal').trim().toLowerCase();
-      const op4Name = process.env.OPERATOR_4_NAME || 'Execution Operator 4';
-      const op4Pass = process.env.OPERATOR_4_INITIAL_PASSWORD || 'Operator4@Trading2026!';
-
-      const roster = [
-        { id: 'usr-admin-master', email: adminEmail, name: adminName, role: 'SUPERADMIN', pass: adminPass },
-        { id: 'usr-op-1', email: op1Email, name: op1Name, role: 'OPERATOR', pass: op1Pass },
-        { id: 'usr-op-2', email: op2Email, name: op2Name, role: 'OPERATOR', pass: op2Pass },
-        { id: 'usr-op-3', email: op3Email, name: op3Name, role: 'OPERATOR', pass: op3Pass },
-        { id: 'usr-op-4', email: op4Email, name: op4Name, role: 'OPERATOR', pass: op4Pass }
-      ];
-
       const now = new Date().toISOString();
-      for (const u of roster) {
-        const existing = this.db.prepare(`SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?`).get(u.email, u.id) as any;
+      for (const account of accounts) {
+        const email = (process.env[account.emailEnv] || '').trim().toLowerCase();
+        const password = process.env[account.passwordEnv] || '';
+        const name = process.env[account.nameEnv] || account.fallbackName;
+        const valid = email.includes('@') && password.length >= 12;
+
+        if (!valid) {
+          // Existing bootstrap identities must not remain enabled when their
+          // authoritative environment credentials are missing.
+          if (process.env.NODE_ENV === 'production') {
+            this.db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(account.id);
+          }
+          console.warn('[DB] Skipping user roster entry ' + account.id +
+            ': missing/invalid ' + account.emailEnv + ' or ' + account.passwordEnv);
+          continue;
+        }
+
+        const existing = this.db.prepare(
+          'SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?'
+        ).get(email, account.id) as any;
+
+        // Env credentials are authoritative for this managed roster. Updating
+        // a configured password rotates any previously seeded/known password.
+        const currentHash = existing?.password_hash as string | undefined;
+        const passwordHash = currentHash && bcrypt.compareSync(password, currentHash)
+          ? currentHash
+          : bcrypt.hashSync(password, 12);
+
         if (existing) {
-          // If existing account has no password_hash, initialize with environment initial password hash
-          const passHash = existing.password_hash || bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            UPDATE users 
-            SET email = lower(?), name = COALESCE(?, name), role = ?, email_verified = 1,
-                password_hash = ?
+            UPDATE users
+            SET email = lower(?), name = ?, role = ?, email_verified = 1,
+                password_hash = ?, is_active = 1
             WHERE id = ?
-          `).run(u.email, u.name, u.role, passHash, existing.id);
+          `).run(email, name, account.role, passwordHash, existing.id);
         } else {
-          const passHash = bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            INSERT INTO users (id, email, name, role, is_active, password_hash, email_verified, created_at)
+            INSERT INTO users (id, email, name, role, is_active, password_hash,
+                               email_verified, created_at)
             VALUES (?, lower(?), ?, ?, 1, ?, 1, ?)
-          `).run(u.id, u.email, u.name, u.role, passHash, now);
+          `).run(account.id, email, name, account.role, passwordHash, now);
         }
       }
     } catch (err: any) {
-      console.warn('[DB] User env sync warning:', err.message);
+      console.error('[DB] User env sync failed:', err.message);
+      if (process.env.NODE_ENV === 'production') throw err;
     }
   }
 
@@ -4019,8 +4056,35 @@ class DatabaseEngine {
   // 15-MINUTE 23/50 EMA LIVE BROKER EXECUTION PERSISTENCE
   // ========================================================
 
+  /**
+   * Atomic SQLite claim for ONE active EMA BUY per instrument. BEGIN IMMEDIATE
+   * serializes concurrent workers using the same durable SQLite database.
+   */
+  public claimEmaLiveEntryAttempt(attempt: EmaLiveOrderAttempt): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveEntryAttempt');
+    const claim = db.transaction(() => {
+      const pending = db.prepare(`
+        SELECT id FROM ema_live_order_attempts
+        WHERE instrument = ? AND order_status IN
+          ('CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      const position = db.prepare(`
+        SELECT id FROM ema_live_positions
+        WHERE instrument = ? AND status IN
+          ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      if (pending || position) return false;
+      this.saveEmaLiveOrderAttempt(attempt);
+      return true;
+    });
+    return claim.immediate();
+  }
+
   public saveEmaLiveOrderAttempt(attempt: EmaLiveOrderAttempt): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLiveOrderAttempt');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_order_attempts (
@@ -4061,11 +4125,12 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public updateEmaLiveOrderAttempt(id: string, updates: Partial<EmaLiveOrderAttempt>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLiveOrderAttempt');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
@@ -4099,11 +4164,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_order_attempts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public getEmaLiveOrderAttempts(instrument?: string, limit: number = 50, offset: number = 0): EmaLiveOrderAttempt[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttempts');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
@@ -4140,12 +4206,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error fetching EMA live order attempts:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getLatestEmaLiveOrderAttempt(signalId?: string, instrument?: string): EmaLiveOrderAttempt | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getLatestEmaLiveOrderAttempt');
     try {
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
       const params: any[] = [];
@@ -4183,13 +4250,64 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
+  public getEmaLiveOrderAttemptById(attemptId: string): EmaLiveOrderAttempt | null {
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttemptById');
+    try {
+      const r = this.db.prepare('SELECT * FROM ema_live_order_attempts WHERE id = ? LIMIT 1').get(attemptId) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        signalId: r.signal_id,
+        executionMode: 'LIVE',
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: r.expiry,
+        requestedQuantity: Number(r.requested_quantity),
+        filledQuantity: Number(r.filled_quantity || 0),
+        averageFillPrice: r.average_fill_price !== null ? Number(r.average_fill_price) : undefined,
+        orderStatus: r.order_status,
+        brokerOrderId: r.broker_order_id || undefined,
+        rejectionReason: r.rejection_reason || undefined,
+        submittedAt: r.submitted_at || undefined,
+        lastBrokerUpdateAt: r.last_broker_update_at || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch (err: any) {
+      console.error('[DB] Unable to query EMA live entry attempt:', err.message);
+      throw err;
+      
+    }
+  }
+
+  /**
+   * One authoritative live position per broker BUY attempt, even when multiple
+   * reconcilers poll simultaneously on workers sharing this SQLite database.
+   */
+  public tryCreateEmaLivePositionIfAbsent(pos: EmaLivePosition): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: tryCreateEmaLivePositionIfAbsent');
+    const create = db.transaction(() => {
+      const existing = db.prepare('SELECT id FROM ema_live_positions WHERE attempt_id = ? LIMIT 1')
+        .get(pos.attemptId);
+      if (existing) return false;
+      this.saveEmaLivePosition(pos);
+      return true;
+    });
+    return create.immediate();
+  }
+
   public saveEmaLivePosition(pos: EmaLivePosition): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLivePosition');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_positions (
@@ -4256,15 +4374,41 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live position:', err.message);
+    throw err;
     }
   }
 
+  /** Atomic claim: only one worker may transition an eligible position to EXIT_REQUESTED. */
+  public claimEmaLiveExit(positionId: string): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveExit');
+    const updated = db.prepare(`
+      UPDATE ema_live_positions
+      SET status = 'EXIT_REQUESTED', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status IN ('OPEN', 'EXIT_FAILED')
+        AND exit_broker_order_id IS NULL
+    `).run(positionId);
+    return updated.changes === 1;
+  }
+
   public updateEmaLivePosition(id: string, updates: Partial<EmaLivePosition>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLivePosition');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
 
+      if (updates.quantity !== undefined) {
+        sets.push('quantity = ?');
+        values.push(updates.quantity);
+      }
+      if (updates.entryPrice !== undefined) {
+        sets.push('entry_price = ?');
+        values.push(updates.entryPrice);
+      }
+      if (updates.exitFilledQuantity !== undefined) {
+        sets.push('exit_filled_quantity = ?');
+        values.push(updates.exitFilledQuantity);
+      }
       if (updates.currentPrice !== undefined) {
         sets.push('current_price = ?');
         values.push(updates.currentPrice);
@@ -4322,11 +4466,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_positions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live position:', err.message);
+    throw err;
     }
   }
 
   public getOpenEmaLivePositions(instrument?: string): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositions');
     try {
       let query = `SELECT * FROM ema_live_positions WHERE status IN ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')`;
       const params: any[] = [];
@@ -4364,6 +4509,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4375,12 +4521,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting open EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getOpenEmaLivePositionByInstrument(instrument: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositionByInstrument');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions 
@@ -4415,6 +4562,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4424,13 +4572,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositionByAttemptId(attemptId: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositionByAttemptId');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions WHERE attempt_id = ? LIMIT 1
@@ -4463,6 +4611,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4472,13 +4621,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositions(instrument?: string, status?: string, limit: number = 50, offset: number = 0): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositions');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_positions WHERE 1=1`;
@@ -4522,6 +4671,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4533,7 +4683,8 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 

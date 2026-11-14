@@ -55,11 +55,12 @@ describe('Quant Background Learning Scheduler & Research Cycle (Section 51 & 69)
 
     assert.ok(summary, 'Must return summary object');
     assert.ok(summary.cycleId.startsWith('CYCLE-'), 'Cycle ID must start with CYCLE-');
-    assert.strictEqual(summary.status, 'COMPLETED');
+    assert.strictEqual(summary.status, summary.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
     assert.ok(typeof summary.tradesAnalyzedCount === 'number');
     assert.ok(typeof summary.totalNetPnlReviewed === 'number');
     assert.ok(typeof summary.winRateRealizedPct === 'number');
     assert.strictEqual(summary.hypothesesGeneratedCount, 2);
+    assert.ok(summary.tradesAnalyzedCount >= 0, 'Research must report actual review sample size');
     assert.strictEqual(summary.topGeneratedHypotheses.length, 2);
     assert.ok(summary.regimePerformanceSummary, 'Must contain regime performance summary');
 
@@ -92,14 +93,14 @@ describe('Quant Background Learning Scheduler & Research Cycle (Section 51 & 69)
     assert.strictEqual(matchingCycle.winRateRealizedPct, summary.winRateRealizedPct);
     assert.strictEqual(matchingCycle.hypothesesGeneratedCount, summary.hypothesesGeneratedCount);
     assert.deepStrictEqual(matchingCycle.topGeneratedHypotheses, summary.topGeneratedHypotheses);
-    assert.strictEqual(matchingCycle.status, 'COMPLETED');
+    assert.strictEqual(matchingCycle.status, summary.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
 
     // Confirm direct raw SQL query on quant_research_cycles matches
     const rawDb = dbEngine.getRawDatabase();
     const rawRow = rawDb.prepare(`SELECT * FROM quant_research_cycles WHERE cycle_id = ?`).get(summary.cycleId) as any;
     assert.ok(rawRow, 'Raw SQLite row must exist');
     assert.strictEqual(rawRow.cycle_id, summary.cycleId);
-    assert.strictEqual(rawRow.status, 'COMPLETED');
+    assert.strictEqual(rawRow.status, summary.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
   });
 
   it('verifies quantScheduler initializes and accurately calculates IST time and market phase', async () => {
@@ -137,7 +138,7 @@ describe('Quant Background Learning Scheduler & Research Cycle (Section 51 & 69)
     // However, with force=true (like the manual UI button), it must allow execution
     const forcedResult = await quantScheduler.runDailyResearchCycle('MANUAL', { force: true });
     assert.ok(forcedResult, 'Forced execution must succeed even if run earlier today');
-    assert.strictEqual(forcedResult.status, 'COMPLETED');
+    assert.strictEqual(forcedResult.status, forcedResult.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
   });
 
   it('verifies scheduled path and manual UI path call the exact same underlying function and output consistent format', async () => {
@@ -147,12 +148,12 @@ describe('Quant Background Learning Scheduler & Research Cycle (Section 51 & 69)
     const scheduledSummary = await quantScheduler.runDailyResearchCycle('SCHEDULED');
     assert.ok(scheduledSummary, 'Scheduled run must return a valid summary');
     assert.strictEqual(scheduledSummary.triggerSource, 'SCHEDULED');
-    assert.strictEqual(scheduledSummary.status, 'COMPLETED');
+    assert.strictEqual(scheduledSummary.status, scheduledSummary.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
 
     const manualSummary = continuousResearchEngine.runPostMarketCycle({ triggerSource: 'MANUAL', force: true });
     assert.ok(manualSummary, 'Manual run must return a valid summary');
     assert.strictEqual(manualSummary.triggerSource, 'MANUAL');
-    assert.strictEqual(manualSummary.status, 'COMPLETED');
+    assert.strictEqual(manualSummary.status, manualSummary.tradesAnalyzedCount === 0 ? 'INSUFFICIENT_DATA' : 'COMPLETED');
 
     // Compare keys between scheduled and manual summaries
     const scheduledKeys = Object.keys(scheduledSummary).sort();

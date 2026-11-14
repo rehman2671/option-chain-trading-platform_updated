@@ -444,7 +444,10 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     // Simulate placeOrder returning acknowledgment without fill
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    const origGetOptionContracts = (activeProvider as any).getOptionContracts;
+    const origGetRiskSnapshot = (activeProvider as any).getEmaBrokerRiskSnapshot;
     const origIsOpen = SessionCalendar.isExchangeOpen;
+    const origSquareOff = SessionCalendar.isAtOrPastForcedSquareOff;
 
     SessionCalendar.isExchangeOpen = () => ({
       isOpen: true,
@@ -453,9 +456,34 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       dateStr: '2026-11-05'
     });
     (activeProvider as any).isUpstoxLiveConnected = () => true;
-    (activeProvider as any).placeOrder = async () => ({
-      order_id: `241103${Date.now()}`
+    SessionCalendar.isAtOrPastForcedSquareOff = () => false;
+    (activeProvider as any).getEmaBrokerRiskSnapshot = async () => ({
+      source: 'UPSTOX_LIVE',
+      checkedAt: new Date().toISOString(),
+      availableMargin: 290000,
+      usedMargin: 10000,
+      requiredMargin: 1500,
+      portfolioPnl: 0,
+      activePositions: 0
     });
+    const listedExpiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    (activeProvider as any).getOptionContracts = async () => [{
+      underlying_symbol: 'SENSEX',
+      underlying_key: 'BSE_INDEX|SENSEX',
+      segment: 'BSE_FO',
+      instrument_type: 'CE',
+      strike_price: 84000,
+      expiry: listedExpiry,
+      instrument_key: 'BSE_FO|12345',
+      trading_symbol: 'SENSEX 84000 CE TEST',
+      tick_size: 5,
+      lot_size: 20
+    }];
+    (activeProvider as any).placeOrder = async (params: any) => {
+      assert.strictEqual(params.instrumentToken, 'BSE_FO|12345');
+      assert.strictEqual(params.quantity, 20);
+      return { order_id: 'TESTACK' + Date.now() };
+    };
 
     try {
       const res = await liveExecutionService.attemptLiveSignal(testSignal, contract, 150, 'GLOBAL');
@@ -466,7 +494,10 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     } finally {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+      (activeProvider as any).getOptionContracts = origGetOptionContracts;
+      (activeProvider as any).getEmaBrokerRiskSnapshot = origGetRiskSnapshot;
       SessionCalendar.isExchangeOpen = origIsOpen;
+      SessionCalendar.isAtOrPastForcedSquareOff = origSquareOff;
     }
   });
 
@@ -541,6 +572,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       signalId: `sig-${Date.now()}`,
       instrument: 'NIFTY',
       tradingsymbol: 'NIFTY26NOV25200CE',
+      brokerInstrumentKey: 'NSE_FO|123456',
       optionType: 'CE',
       strikePrice: 25200,
       expiryDate: '2026-11-05',
@@ -566,14 +598,49 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
 
     const origPlaceOrder = (activeProvider as any).placeOrder;
     const origIsConnected = (activeProvider as any).isUpstoxLiveConnected;
+    const origVerifiedQty = (activeProvider as any).getVerifiedLivePositionQuantity;
+    const origGetOrderBook = (activeProvider as any).getOrderBook;
+    const origGetGttOrders = (activeProvider as any).getGttOrders;
     (activeProvider as any).isUpstoxLiveConnected = () => true;
-    (activeProvider as any).placeOrder = async () => ({
-      order_id: `EXIT-ORD-${Date.now()}`
-    });
+    let verifiedBrokerQty = 49;
+    let nativeStopStatus = 'trigger pending';
+    let gttStopStatus = 'SCHEDULED';
+    let liveSellCalls = 0;
+    (activeProvider as any).getGttOrders = async () => [{
+      gtt_order_id: 'GTT-TEST-PENDING', instrument_token: 'NSE_FO|123456',
+      product: 'I', rules: [{ strategy: 'ENTRY', transaction_type: 'SELL', status: gttStopStatus }]
+    }];
+    (activeProvider as any).getOrderBook = async () => [{
+      order_id: 'NATIVE-SL-TEST', instrument_token: 'NSE_FO|123456',
+      product: 'I', transaction_type: 'SELL', order_type: 'SL',
+      status: nativeStopStatus
+    }];
+    (activeProvider as any).getVerifiedLivePositionQuantity = async () => verifiedBrokerQty;
+    (activeProvider as any).placeOrder = async () => {
+      liveSellCalls++;
+      return { order_id: `EXIT-ORD-${Date.now()}` };
+    };
 
     try {
+      const mismatched = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(mismatched.success, false, 'Mismatched broker net quantity must block SELL');
+      assert.strictEqual(liveSellCalls, 0, 'No broker SELL may be dispatched on quantity mismatch');
+      verifiedBrokerQty = 50;
+      const blockedByStop = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(blockedByStop.success, false, 'A pending native stop must block another live SELL');
+      assert.strictEqual(liveSellCalls, 0);
+      nativeStopStatus = 'cancel pending';
+      const cancelling = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(cancelling.success, false, 'Cancellation acknowledgment is NOT confirmed');
+      assert.strictEqual(liveSellCalls, 0);
+      nativeStopStatus = 'cancelled';
+      const blockedByGtt = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
+      assert.strictEqual(blockedByGtt.success, false, 'Untriggered GTT SELL must block market SELL');
+      assert.strictEqual(liveSellCalls, 0);
+      gttStopStatus = 'CANCELLED';
       const exitRes = await liveExecutionService.requestLiveExit(testPosId, 'TEST_EXIT');
       assert.strictEqual(exitRes.success, true);
+      assert.strictEqual(liveSellCalls, 1);
 
       // Verify position status is EXIT_PENDING, NOT CLOSED!
       const activePositions = dbEngine.getOpenEmaLivePositions('NIFTY');
@@ -583,6 +650,9 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     } finally {
       (activeProvider as any).placeOrder = origPlaceOrder;
       (activeProvider as any).isUpstoxLiveConnected = origIsConnected;
+      (activeProvider as any).getVerifiedLivePositionQuantity = origVerifiedQty;
+      (activeProvider as any).getOrderBook = origGetOrderBook;
+      (activeProvider as any).getGttOrders = origGetGttOrders;
     }
   });
 

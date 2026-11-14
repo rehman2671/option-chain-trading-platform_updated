@@ -80,6 +80,8 @@ export interface EmaLivePosition {
   isTrailingActive?: boolean;
   status: PositionStatus;
   exitBrokerOrderId?: string;
+  /** Cumulative broker-confirmed SELL fills for the current exit order. */
+  exitFilledQuantity?: number;
   exitTimestamp?: string | null;
   exitPrice?: number | null;
   exitReason?: string | null;

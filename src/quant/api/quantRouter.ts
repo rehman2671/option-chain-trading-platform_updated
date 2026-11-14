@@ -5,6 +5,7 @@
  */
 
 import { Router } from 'express';
+import { requireAuth, requireSuperAdmin } from '../../server/auth.js';
 import { QuantUnderlying, QuantExecutionMode, QuantUserSettings } from '../types.js';
 import { getComputedMarketContext, getHistoricalCandles } from '../context/marketContext.js';
 import { marketDataAdapter } from '../adapters/marketDataAdapter.js';
@@ -63,6 +64,37 @@ import { qualityGatesEngine } from '../research/qualityGatesEngine.js';
 import { ALL_CONFIGURED_SYMBOLS } from '../../shared/marketConfig.js';
 
 export const quantRouter = Router();
+
+// Apply authentication even if the router is mounted outside serverApp.
+quantRouter.use(requireAuth as any);
+
+// State-changing endpoints that can arm live trading, dispatch orders, or
+// override risk controls are restricted to the authenticated supervisor.
+quantRouter.use((req, res, next) => {
+  const privilegedRoutes = new Set([
+    'POST /order-submit', 'POST /settings', 'POST /decision-cycle/trigger',
+    'POST /kill-switch/reset', 'POST /kill-switch/halt',
+    'POST /kill-switch/trigger', 'PUT /config',
+    'POST /drawdown/reset', 'POST /strategies/promote',
+    'POST /strategy-lifecycle/promote'
+  ]);
+  if (privilegedRoutes.has(req.method + ' ' + req.path)) {
+    return requireSuperAdmin(req as any, res, next);
+  }
+  next();
+});
+
+// Prevent users from selecting another person's trading/risk account.
+quantRouter.use((req, res, next) => {
+  const requestedId = typeof req.body?.userId === 'string'
+    ? req.body.userId
+    : typeof req.query.userId === 'string' ? req.query.userId : null;
+  if (requestedId && requestedId !== (req as any).user?.id &&
+      (req as any).user?.role !== 'SUPERADMIN') {
+    return res.status(403).json({ error: 'Cross-account access denied' });
+  }
+  next();
+});
 
 // Helper to resolve underlying safely across all 17 canonical symbols
 export function resolveUnderlying(req: any): QuantUnderlying {
@@ -866,7 +898,7 @@ quantRouter.post('/kill-switch/halt', (req, res) => {
 quantRouter.post('/kill-switch/reset', (req, res) => {
   try {
     const userId = (req as any).user?.id || req.body.userId || 'GLOBAL';
-    const supervisorKey = req.body.supervisorKey || 'RESET_RISK_AUTH';
+    const supervisorKey = typeof req.body?.supervisorKey === 'string' ? req.body.supervisorKey : '';
     const reason = req.body.reason || 'Manual emergency reset requested via quant API';
     const result = killSwitchEngine.resetKillSwitch(supervisorKey, reason, userId);
     res.json(result);
