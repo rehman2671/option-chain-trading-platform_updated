@@ -7,6 +7,7 @@ import { dbEngine } from '../../db.js';
 import { activeProvider } from '../providers/index.js';
 import { StrategyRules } from './strategyRules.js';
 import { EmaLiveOrderAttempt, EmaLivePosition } from './types.js';
+import { emaBrokerOrderTag, findUniqueBrokerOrderId } from './brokerOrderEvidence.js';
 
 export class BrokerOrderReconciler {
   private static instance: BrokerOrderReconciler;
@@ -52,6 +53,18 @@ export class BrokerOrderReconciler {
     }
 
     try {
+      // Query the broker order book at most once per run, and only for
+      // unresolved orders without an ID. Transport failure stays UNKNOWN.
+      let cachedOrderBook: any[] | null | undefined;
+      const getCurrentOrderBook = async (): Promise<any[] | null> => {
+        if (cachedOrderBook === undefined) {
+          cachedOrderBook = typeof (activeProvider as any).getOrderBook === 'function'
+            ? await (activeProvider as any).getOrderBook()
+            : null;
+        }
+        return cachedOrderBook ?? null;
+      };
+
       // Scan all reasonably recent attempts, not just the latest 50;
       // older unresolved broker orders are safety critical after a restart.
       const attempts: EmaLiveOrderAttempt[] = [];
@@ -67,14 +80,30 @@ export class BrokerOrderReconciler {
         ['SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
 
       for (const att of pendingAttempts) {
-        if (!att.brokerOrderId) {
-          discrepancies.push('Unresolved live order ' + att.id +
-            ' has no broker order ID: verify broker order/trade book before any retry');
-          continue;
+        let brokerOrderId = att.brokerOrderId;
+        if (!brokerOrderId) {
+          const currentBook = await getCurrentOrderBook();
+          const recovered = findUniqueBrokerOrderId(currentBook, {
+            tag: emaBrokerOrderTag('BUY', att.id),
+            instrumentKey: att.brokerInstrumentKey || '',
+            transactionType: 'BUY',
+            requestedQuantity: att.requestedQuantity
+          });
+          if (!recovered) {
+            discrepancies.push('Live BUY ' + att.id +
+              ' remains UNKNOWN: no unique verified broker order-book match; no retry permitted');
+            continue;
+          }
+          dbEngine.updateEmaLiveOrderAttempt(att.id, {
+            brokerOrderId: recovered,
+            orderStatus: 'SUBMITTED',
+            lastBrokerUpdateAt: new Date().toISOString()
+          });
+          brokerOrderId = recovered;
         }
 
         try {
-          const history = await (activeProvider as any).getOrderHistory(att.brokerOrderId);
+          const history = await (activeProvider as any).getOrderHistory(brokerOrderId);
           if (Array.isArray(history) && history.length > 0) {
             const latest = history[history.length - 1];
             const status = (latest.status || latest.order_status || '').toUpperCase();
@@ -123,7 +152,7 @@ export class BrokerOrderReconciler {
                   productType: 'MIS',
                   side: 'BUY',
                   marketBias: att.optionType === 'CE' ? 'BULLISH' : 'BEARISH',
-                  entryBrokerOrderId: att.brokerOrderId,
+                  entryBrokerOrderId: brokerOrderId,
                   entryTimestamp: new Date().toISOString(),
                   entryPrice: finalPrice,
                   quantity: finalQty,
@@ -209,13 +238,29 @@ export class BrokerOrderReconciler {
       // 2. Reconcile active positions (including EXIT_PENDING, EXIT_REQUESTED, EXIT_FAILED)
       const openPositions = dbEngine.getOpenEmaLivePositions();
       for (const pos of openPositions) {
-        if ((pos.status === 'EXIT_PENDING' || pos.status === 'EXIT_REQUESTED') && !pos.exitBrokerOrderId) {
-          discrepancies.push('Live exit for position ' + pos.id +
-            ' has unknown broker outcome: manual broker book reconciliation required');
+        let exitOrderId = pos.exitBrokerOrderId;
+        if (['EXIT_PENDING', 'EXIT_REQUESTED'].includes(pos.status) && !exitOrderId) {
+          const currentBook = await getCurrentOrderBook();
+          const recovered = findUniqueBrokerOrderId(currentBook, {
+            tag: emaBrokerOrderTag('SELL', pos.id),
+            instrumentKey: pos.brokerInstrumentKey || '',
+            transactionType: 'SELL',
+            requestedQuantity: pos.quantity
+          });
+          if (!recovered) {
+            discrepancies.push('Live SELL for position ' + pos.id +
+              ' remains UNKNOWN: no unique verified broker order-book match; do NOT retry');
+          } else {
+            dbEngine.updateEmaLivePosition(pos.id, {
+              exitBrokerOrderId: recovered,
+              status: 'EXIT_PENDING'
+            });
+            exitOrderId = recovered;
+          }
         }
-        if (['EXIT_PENDING', 'EXIT_REQUESTED', 'PARTIALLY_CLOSED', 'EXIT_FAILED'].includes(pos.status) && pos.exitBrokerOrderId) {
+        if (['EXIT_PENDING', 'EXIT_REQUESTED', 'PARTIALLY_CLOSED', 'EXIT_FAILED'].includes(pos.status) && exitOrderId) {
           try {
-            const exitHistory = await (activeProvider as any).getOrderHistory(pos.exitBrokerOrderId);
+            const exitHistory = await (activeProvider as any).getOrderHistory(exitOrderId);
             if (Array.isArray(exitHistory) && exitHistory.length > 0) {
               const latestExit = exitHistory[exitHistory.length - 1];
               const exitStatus = (latestExit.status || latestExit.order_status || '').toUpperCase();
