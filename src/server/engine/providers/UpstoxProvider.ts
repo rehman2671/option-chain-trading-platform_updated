@@ -580,6 +580,24 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Authoritative CURRENT-DAY broker order book; returns null on any error.
    * Never interpret transport failure as an empty exchange order book.
    */
+  /** Broker ACTIVE GTT rules are separate from normal exchange orders.
+   * Null means unavailable/ambiguous: real MARKET SELL must fail closed.
+   */
+  public async getGttOrders(): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken) return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v3/order/gtt', {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+    } catch (err: any) {
+      console.warn('[UPSTOX] Current GTT order state unavailable:', err?.message || err);
+      return null;
+    }
+  }
+
   public async getOrderBook(): Promise<any[] | null> {
     if (!this.isConnected || !this.accessToken) return null;
     try {
