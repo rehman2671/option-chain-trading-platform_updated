@@ -194,6 +194,28 @@ describe('Adaptive Phase 5 event-time ingestion and OOS cost sensitivity',()=>{
     y.sessions[0].underlyingCandles[0].high=1;
     assert.ok(ingestVendorHistoricalBundle(y).errors.includes('INCOMPLETE_OR_LOOKAHEAD_UNDERLYING_CANDLES'));
   });
+  it('rejects omitted Greeks and malformed null OHLC instead of defaulting to zeros',()=>{
+    const missingGreek=fixture();
+    const row:any=missingGreek.sessions[0].chains[0].data.rows[0];
+    row.call_options.option_greeks.iv=null;
+    const bad=ingestVendorHistoricalBundle(missingGreek);
+    assert.equal(bad.status,'REJECTED');
+    assert.ok(bad.errors.includes('MISSING_OR_INVALID_HISTORICAL_L1_GREEKS'));
+    const malformed=fixture();
+    (malformed.sessions[0].underlyingCandles as any)[0]=null;
+    assert.doesNotThrow(()=>ingestVendorHistoricalBundle(malformed));
+    assert.equal(ingestVendorHistoricalBundle(malformed).status,'REJECTED');
+  });
+  it('rejects distinct events incorrectly assigned one original availability timestamp',()=>{
+    const x=fixture();
+    const first=x.executionL1[0];
+    x.executionL1.push({
+      ...first,sourceRecordId:'ADDITIONAL_SAME_AVAIL',
+      eventAt:at(Date.parse(first.eventAt)+500)
+    });
+    assert.ok(ingestVendorHistoricalBundle(x).errors.includes(
+      'DUPLICATED_OR_CONFLICTING_L1_EVENT'));
+  });
   it('does not let synthetic test output masquerade as empirically proven strategy',()=>{
     const x=fixture();
     x.provenance.synthetic=false; // an untrusted declaration is NOT authentication
