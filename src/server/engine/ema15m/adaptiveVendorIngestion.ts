@@ -335,9 +335,9 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
     seenQuotes.add(duplicateKey);
     register(q.sourceRecordId,'EXECUTION_L1');
     quotes.push({
-      // Event time is retained for replay; original recorded availableAt must
-      // be near this time, per policy. Real fills still are NOT guaranteed.
-      observedAt:q.eventAt,instrumentKey:q.instrumentKey,
+      // Only the originally recorded AVAILABLE time can enter the replay.
+      // Event time is validated against it, not treated as immediate fill.
+      observedAt:q.availableAt,instrumentKey:q.instrumentKey,
       bid:q.bid,ask:q.ask,bidQty:q.bidQty,askQty:q.askQty
     });
   });
@@ -350,7 +350,7 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
       datasetId:p.datasetId,source:p.vendor,calendarSource:p.calendarSource,
       expectedSessions:p.expectedSessions,
       synthetic:p.synthetic,
-      quoteTimestampQuality:'VERIFIED_EVENT_TIME' // source-attested, not independently proven
+      quoteTimestampQuality:'SOURCE_ATTESTED_EVENT_TIME' // claim only; never independently proven
     },
     instrument:x.instrument,underlyingKey:x.underlyingKey,
     decisions,executionQuotes:quotes,policy:x.policy
