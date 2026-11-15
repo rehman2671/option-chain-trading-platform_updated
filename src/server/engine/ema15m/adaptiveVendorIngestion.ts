@@ -249,6 +249,11 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
   if (!Array.isArray(x.sessions) || !Array.isArray(x.executionL1) ||
       x.sessions.length !== p?.expectedSessions?.length)
     err(errors,'INCOMPLETE_SESSION_OR_QUOTE_SERIES');
+  if (Array.isArray(x.policy?.folds) && Array.isArray(p?.expectedSessions) &&
+      x.policy.folds.some(f => !f ||
+        !p.expectedSessions.some(d => d >= f.trainStart && d <= f.trainEnd) ||
+        !p.expectedSessions.some(d => d >= f.testStart && d <= f.testEnd)))
+    err(errors,'FOLD_OUTSIDE_DECLARED_SESSION_COVERAGE');
   if (errors.length) return reject();
 
   const latencyMs = x.maximumOriginalFeedLatencySeconds * 1000;
