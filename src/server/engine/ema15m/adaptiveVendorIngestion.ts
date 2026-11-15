@@ -191,14 +191,15 @@ function validateChain(
       }
       knownSide = true;
       const m = side.market_data, g = side.option_greeks;
-      // Absence of a quote is not invented. Optional missing fields flow through
-      // to the ranker as non-liquid, but explicitly malformed values are rejected.
-      for (const value of [m?.bid_price,m?.ask_price,m?.bid_qty,m?.ask_qty,
-        m?.volume,m?.oi,g?.delta,g?.theta,g?.iv]) {
-        if (value !== undefined && value !== null &&
-            (typeof value !== 'number' || !Number.isFinite(value))) {
-          err(errors,'INVALID_HISTORICAL_CHAIN_QUOTE_OR_GREEKS'); return false;
-        }
+      // A genuine zero/illiquid price is valid market evidence, but a missing
+      // L1 or Greek field is an INCOMPLETE dataset, not equivalent to zero.
+      const fields=[m?.bid_price,m?.ask_price,m?.bid_qty,m?.ask_qty,
+        m?.volume,m?.oi,g?.delta,g?.theta,g?.iv];
+      if (fields.some(v=>typeof v!=='number' || !Number.isFinite(v)) ||
+          [m?.bid_price,m?.ask_price,m?.bid_qty,m?.ask_qty,m?.volume,m?.oi]
+            .some(v=>v<0) ||
+          !Number.isInteger(m?.bid_qty) || !Number.isInteger(m?.ask_qty)) {
+        err(errors,'MISSING_OR_INVALID_HISTORICAL_L1_GREEKS'); return false;
       }
     }
     if (!knownSide) { err(errors,'HISTORICAL_CHAIN_CONTRACT_MISMATCH'); return false; }
@@ -315,6 +316,7 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
   });
   const quotes: HistoricalExecutableQuote[] = [];
   const seenQuotes = new Set<string>();
+  const seenAvailableQuotes = new Set<string>();
   x.executionL1.forEach(q=>{
     counts.optionL1Observations++;
     if (!validateClocked({
@@ -329,10 +331,15 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
       err(errors,'INVALID_OR_UNLISTED_OPTION_L1_QUOTE'); return;
     }
     const duplicateKey = q.instrumentKey+':'+q.eventAt;
-    if (seenQuotes.has(duplicateKey)) {
+    const availableKey = q.instrumentKey+':'+q.availableAt;
+    if (seenQuotes.has(duplicateKey) || seenAvailableQuotes.has(availableKey)) {
       err(errors,'DUPLICATED_OR_CONFLICTING_L1_EVENT');return;
     }
     seenQuotes.add(duplicateKey);
+    seenAvailableQuotes.add(availableKey);
+    if (canonicalDay(q.availableAt) > allKeys.get(q.instrumentKey)!.expiry) {
+      err(errors,'OPTION_L1_AFTER_CONTRACT_EXPIRY'); return;
+    }
     register(q.sourceRecordId,'EXECUTION_L1');
     quotes.push({
       // Only the originally recorded AVAILABLE time can enter the replay.
