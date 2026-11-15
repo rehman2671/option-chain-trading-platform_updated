@@ -9,7 +9,7 @@
     "start": "node server.ts",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 src/quant/tests/*.test.ts src/server/tests/*.test.ts",
+    "test": "NODE_ENV=test tsx --test --test-concurrency=1 src/quant/tests/*.test.ts src/server/tests/*.test.ts",
     "auth:local": "node scripts/upstox_zero_click.js"
   },
   "dependencies": {

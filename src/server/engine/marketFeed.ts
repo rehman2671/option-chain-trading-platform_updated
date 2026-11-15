@@ -379,7 +379,20 @@ export class MarketFeedEngine {
 
           // Ingest into 15m EMA Engine for NIFTY, BANKNIFTY, SENSEX
           if (sym === 'NIFTY' || sym === 'BANKNIFTY' || sym === 'SENSEX') {
-            globalEma15mEngine.ingestTick(sym, spot, uq.volume || 0);
+            const providerIsLive = activeProvider.getProviderMode() === 'LIVE';
+            const exchangeMs = uq.exchangeTimestamp ? Date.parse(uq.exchangeTimestamp) : NaN;
+            const brokerQuoteIsFresh = uq.source === 'UPSTOX_LIVE' &&
+              Number.isFinite(exchangeMs) &&
+              exchangeMs <= Date.now() + 5000 &&
+              Date.now() - exchangeMs <= 30000;
+
+            // A fallback/practice quote must never contribute to a live-orderable EMA crossover.
+            if (!providerIsLive || brokerQuoteIsFresh) {
+              globalEma15mEngine.ingestTick(sym, spot, uq.volume || 0,
+                providerIsLive ? new Date(exchangeMs) : new Date());
+            } else {
+              console.warn('[EMA15M] Skipping simulated, unverified, or stale broker quote for ' + sym);
+            }
           }
 
           // Track historical IVs

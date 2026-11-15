@@ -83,7 +83,7 @@ export const Ema15mDashboardView: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   // Active view tab inside EMA dashboard (CHART, PAPER_TRADES, LIVE_EXECUTION, EXECUTION_LOGS, HISTORY, BACKTEST)
-  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'PAPER_TRADES' | 'LIVE_EXECUTION' | 'EXECUTION_LOGS' | 'HISTORY' | 'BACKTEST'>('CHART');
+  const [activeSubTab, setActiveSubTab] = useState<'CHART' | 'ADAPTIVE_RESEARCH' | 'PAPER_TRADES' | 'LIVE_EXECUTION' | 'EXECUTION_LOGS' | 'HISTORY' | 'BACKTEST'>('CHART');
   const [executionLogs, setExecutionLogs] = useState<EmaExecutionLog[]>([]);
   const [logFilterStage, setLogFilterStage] = useState<string>('ALL');
   const [logFilterLevel, setLogFilterLevel] = useState<string>('ALL');
@@ -119,6 +119,34 @@ export const Ema15mDashboardView: React.FC = () => {
   const [backtestInstrument, setBacktestInstrument] = useState<Ema15mInstrument>('NIFTY');
   const [backtestResult, setBacktestResult] = useState<Ema15mBacktestResult | null>(null);
   const [isBacktesting, setIsBacktesting] = useState<boolean>(false);
+
+  // Adaptive Swing v2 is an explicitly read-only research preview, NOT a trade toggle.
+  const [adaptiveScenario, setAdaptiveScenario] = useState<'AUTO' | 'BULLISH' | 'BEARISH'>('AUTO');
+  const [adaptivePreview, setAdaptivePreview] = useState<any | null>(null);
+  const [adaptiveLoading, setAdaptiveLoading] = useState(false);
+  const [adaptiveError, setAdaptiveError] = useState<string | null>(null);
+  const loadAdaptivePreview = async () => {
+    setAdaptiveLoading(true);
+    setAdaptiveError(null);
+    setAdaptivePreview(null);
+    try {
+      const params = new URLSearchParams({ instrument: selectedSymbol });
+      if (adaptiveScenario !== 'AUTO') params.set('bias', adaptiveScenario);
+      const response = await fetch('/api/ema15m/adaptive-preview?' + params.toString(), {
+        credentials: 'same-origin'
+      });
+      if (!response.ok) throw new Error('Adaptive research unavailable: HTTP ' + response.status);
+      const data = await response.json();
+      if (data.mode !== 'RESEARCH_ONLY' || data.executionAuthorized !== false) {
+        throw new Error('Invalid research-only response');
+      }
+      setAdaptivePreview(data);
+    } catch (error: any) {
+      setAdaptiveError(error?.message || 'Unable to run research preview');
+    } finally {
+      setAdaptiveLoading(false);
+    }
+  };
 
   // Hovered Candle for Tooltip
   const [hoveredCandle, setHoveredCandle] = useState<Ema15mCandle | null>(null);
@@ -856,6 +884,18 @@ export const Ema15mDashboardView: React.FC = () => {
           >
             <BarChart2 className="w-4 h-4" />
             <span>15m Candlestick & EMA Chart</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('ADAPTIVE_RESEARCH')}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeSubTab === 'ADAPTIVE_RESEARCH'
+                ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>Adaptive Research (Preview)</span>
           </button>
 
           <button
@@ -1782,6 +1822,102 @@ export const Ema15mDashboardView: React.FC = () => {
           ) : (
             <div className="py-16 text-center text-slate-500 text-xs">
               No crossover signals detected matching current filters.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Adaptive Swing v2 comparison: NO broker order or position side effects. */}
+      {activeSubTab === 'ADAPTIVE_RESEARCH' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div>
+            <h2 className="font-bold text-slate-100 text-base">Market-Adaptive Swing Research</h2>
+            <p className="text-xs text-amber-300 mt-1">
+              RESEARCH ONLY — does not change EMA23/50 entries, Paper positions, Live orders,
+              product MIS/NRML, square-off, or risk settings.
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              Closed 15m market regime + completed 1h/daily structure; only verified
+              broker-listed CE/PE quotes with Delta, IV, spread and liquidity.
+              1/2/4/8 weeks are expiry buckets, not promised holding periods.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3 items-center">
+            <select
+              className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100"
+              value={selectedSymbol}
+              onChange={e => { setSelectedSymbol(e.target.value as Ema15mInstrument); setAdaptivePreview(null); }}
+            >
+              <option value="NIFTY">NIFTY 50</option>
+              <option value="BANKNIFTY">BANK NIFTY</option>
+              <option value="SENSEX">SENSEX</option>
+            </select>
+            <select
+              className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100"
+              value={adaptiveScenario}
+              onChange={e => { setAdaptiveScenario(e.target.value as 'AUTO' | 'BULLISH' | 'BEARISH'); setAdaptivePreview(null); }}
+            >
+              <option value="AUTO">Market-inferred direction</option>
+              <option value="BULLISH">CE scenario (research only)</option>
+              <option value="BEARISH">PE scenario (research only)</option>
+            </select>
+            <button
+              onClick={loadAdaptivePreview} disabled={adaptiveLoading}
+              className="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs rounded-lg px-4 py-2 font-bold"
+            >
+              {adaptiveLoading ? 'Reading broker data...' : 'Analyze Regime & Expiries'}
+            </button>
+          </div>
+          {adaptiveError && <p className="text-rose-300 text-xs">{adaptiveError}</p>}
+          {adaptivePreview && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-950 rounded-xl p-3 border border-slate-800">
+                  <p className="text-slate-400 text-[10px]">Market regime</p>
+                  <p className="text-cyan-300 text-sm font-bold">{adaptivePreview.regime?.regime || '--'}</p>
+                </div>
+                <div className="bg-slate-950 rounded-xl p-3 border border-slate-800">
+                  <p className="text-slate-400 text-[10px]">Research signal</p>
+                  <p className="text-slate-100 text-sm font-bold">{adaptivePreview.regime?.candidateSignal || 'NO_TRADE'}</p>
+                </div>
+                <div className="bg-slate-950 rounded-xl p-3 border border-slate-800">
+                  <p className="text-slate-400 text-[10px]">1h trend</p>
+                  <p className="text-slate-100 text-sm font-bold">{adaptivePreview.regime?.metrics?.hourlyTrend || '--'}</p>
+                </div>
+                <div className="bg-slate-950 rounded-xl p-3 border border-slate-800">
+                  <p className="text-slate-400 text-[10px]">Daily trend</p>
+                  <p className="text-slate-100 text-sm font-bold">{adaptivePreview.regime?.metrics?.dailyTrend || '--'}</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400">
+                Status: {adaptivePreview.reason}. {adaptivePreview.regime?.reasonCodes?.join(', ') || ''}
+                {adaptivePreview.directionSource === 'SCENARIO'
+                  ? ' Scenario mode does not override a NO_TRADE market assessment.' : ''}
+              </p>
+              {adaptivePreview.optionResearch?.options?.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {adaptivePreview.optionResearch.options.map((bucket: any) => (
+                    <div key={bucket.horizon} className="border border-slate-700 bg-slate-950 rounded-xl p-3 space-y-2">
+                      <div className="flex justify-between gap-2 text-xs">
+                        <span className="font-bold text-cyan-300">{bucket.horizon} expiry research</span>
+                        <span className="text-slate-400">{bucket.expiry || 'No listed expiry'} ({bucket.status})</span>
+                      </div>
+                      {bucket.candidates?.length ? bucket.candidates.map((c: any) => (
+                        <div key={c.instrumentKey} className="border-t border-slate-800 pt-2 text-[11px] text-slate-200">
+                          <p className="font-semibold">{c.tradingSymbol} — {c.optionType} {c.strike}</p>
+                          <p className="text-slate-400">Bid ₹{c.bid} / Ask ₹{c.ask} · Spread {c.spreadPercent}%</p>
+                          <p className="text-slate-400">Delta {c.delta} · Theta {c.theta} · IV {c.iv} · OI {c.openInterest}</p>
+                          <p className="text-slate-400">1-lot ask cost ₹{c.oneLotAskNotional} · Heuristic {c.researchScore}/100</p>
+                        </div>
+                      )) : <p className="text-xs text-amber-300">{bucket.reason}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-amber-300">
+                Quote snapshot age is not independently verified. Scores are unvalidated research heuristics,
+                not probabilities, returns, trade advice or live execution permissions.
+              </p>
             </div>
           )}
         </div>
