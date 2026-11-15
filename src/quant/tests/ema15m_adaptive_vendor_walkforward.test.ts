@@ -216,6 +216,14 @@ describe('Adaptive Phase 5 event-time ingestion and OOS cost sensitivity',()=>{
     assert.ok(ingestVendorHistoricalBundle(x).errors.includes(
       'DUPLICATED_OR_CONFLICTING_L1_EVENT'));
   });
+  it('rejects folds with no declared training or testing observations',()=>{
+    const x=fixture();
+    x.policy.folds[0].trainStart='2026-05-01';
+    x.policy.folds[0].trainEnd='2026-05-15';
+    const result=ingestVendorHistoricalBundle(x);
+    assert.equal(result.input,null);
+    assert.ok(result.errors.includes('FOLD_OUTSIDE_DECLARED_SESSION_COVERAGE'));
+  });
   it('does not let synthetic test output masquerade as empirically proven strategy',()=>{
     const x=fixture();
     x.provenance.synthetic=false; // an untrusted declaration is NOT authentication
