@@ -61,7 +61,7 @@ describe('Adaptive positional shadow policy is NOT a broker order engine', () =>
     const expiry = evalShadow({ ...p, expiry: '2026-12-03' });
     assert.equal(expiry.recommendation, 'RAISE_EXIT_REVIEW');
     assert.ok(expiry.reasons.some(v => v.includes('EXPIRY')));
-    const risk = evalShadow(p, o, { ...c, maximumStressedLossINR: 500 });
+    const risk = evalShadow(p, o, { ...c, maximumStressedLossINR: 500, overnightGapStressPercent: 40 });
     assert.equal(risk.recommendation, 'RAISE_EXIT_REVIEW');
     assert.ok(risk.reasons.some(v => v.includes('GAP')));
   });
