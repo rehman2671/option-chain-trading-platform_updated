@@ -3,7 +3,7 @@
  * sourced exchange calendar. No session dates or missing bars are synthesized.
  * Even perfect REST receipt coverage cannot prove historical L1 event freshness.
  */
-import { verifyAdaptiveCapture, type AdaptiveCaptureRecord,
+import { hasValidL1AndGreeks, verifyAdaptiveCapture, type AdaptiveCaptureRecord,
   type CaptureInstrument } from './adaptiveEvidenceCapture.js';
 import type { HorizonBucket } from './adaptiveOptionRanker.js';
 
@@ -29,6 +29,7 @@ export interface AdaptiveEvidenceAudit {
   duplicateCaptureTimes: string[];
   corruptedRecords: number[];
   testOnlyRecords: number[];
+  partialCaptureRecords: number[];
   capturedByHorizon: Record<HorizonBucket, number>;
   warnings: string[];
 }
@@ -48,6 +49,7 @@ export function auditAdaptiveEvidence(input: {
     expectedSessions: 0, actualCapturedSessions: 0,
     missingSessions: [], underSampledSessions: [],
     duplicateCaptureTimes: [], corruptedRecords: [], testOnlyRecords: [],
+    partialCaptureRecords: [],
     capturedByHorizon: { '1W': 0, '2W': 0, '4W': 0, '8W': 0 }, warnings: []
   };
   if (!input || !['NIFTY','BANKNIFTY','SENSEX'].includes(input.instrument) ||
@@ -64,7 +66,7 @@ export function auditAdaptiveEvidence(input: {
   const perDay = new Map<string, number>();
   const seen = new Set<string>();
   const duplicates = new Set<string>();
-  const corrupted: number[] = [], testOnly: number[] = [];
+  const corrupted: number[] = [], testOnly: number[] = [], partial: number[] = [];
   const counts: Record<HorizonBucket, number> = {
     '1W': 0, '2W': 0, '4W': 0, '8W': 0
   };
@@ -75,6 +77,7 @@ export function auditAdaptiveEvidence(input: {
       return;
     }
     if (record.payload.synthetic) { testOnly.push(idx); return; }
+    if (record.payload.evidenceStatus === 'PARTIAL_SNAPSHOT') partial.push(idx);
     const day = istDay(record.payload.collectedAt);
     // Off-calendar data are NOT silently assigned to another session.
     if (!declared.has(day)) { corrupted.push(idx); return; }
@@ -88,21 +91,27 @@ export function auditAdaptiveEvidence(input: {
       if (record.payload.buckets.some(b =>
         b.horizon === h && b.expiry !== null &&
         record.payload.chains.some(c => c.expiry === b.expiry &&
-          c.status === 'CAPTURED' && c.validSidesWithL1AndGreeks > 0))) counts[h]++;
+          c.status === 'CAPTURED' && c.rows.some(row =>
+            hasValidL1AndGreeks(
+              b.side === 'CE' ? row.call_options : row.put_options,
+              b.side
+            ))))) counts[h]++;
     }
   });
   const missing = input.expectedSessionDates.filter(day => !perDay.has(day));
   const underSampled = input.expectedSessionDates.filter(day =>
     perDay.has(day) && perDay.get(day)! < input.minimumCapturesPerSession);
   const gaps = missing.length > 0 || underSampled.length > 0 ||
-    corrupted.length > 0 || testOnly.length > 0 || duplicates.size > 0 ||
+    corrupted.length > 0 || testOnly.length > 0 || partial.length > 0 ||
+    duplicates.size > 0 ||
     HORIZONS.some(h => counts[h] === 0);
   return {
     ...base, status: gaps ? 'COLLECTION_GAPS' : 'CAPTURED_BUT_UNVERIFIED_EVENT_TIME',
     expectedSessions: declared.size, actualCapturedSessions: perDay.size,
     missingSessions: missing, underSampledSessions: underSampled,
     duplicateCaptureTimes: [...duplicates], corruptedRecords: corrupted,
-    testOnlyRecords: testOnly, capturedByHorizon: counts,
+    testOnlyRecords: testOnly, partialCaptureRecords: partial,
+    capturedByHorizon: counts,
     warnings: [
       'REST_CAPTURE_RECEIPT_TIME_NOT_VERIFIED_EXCHANGE_EVENT_TIME',
       'NO_HISTORICAL_UNDERLYING_15M_CLOSED_CANDLE_SERIES_ATTACHED',
