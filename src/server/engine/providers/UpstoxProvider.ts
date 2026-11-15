@@ -549,6 +549,35 @@ export class UpstoxProvider implements IMarketDataProvider {
     return json.data;
   }
 
+  /**
+   * Research-only broker option-chain snapshot for a verified listed expiry.
+   * This is a GET; it cannot place, modify or cancel any Upstox order.
+   * WARNING: API chain does not include a verified exchange snapshot age.
+   */
+  public async getAdaptiveOptionChain(underlyingKey: string, expiryDate: string): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(expiryDate)) return null;
+    const permittedKeys = new Set([
+      'NSE_INDEX|Nifty 50', 'NSE_INDEX|Nifty Bank', 'BSE_INDEX|SENSEX'
+    ]);
+    if (!permittedKeys.has(underlyingKey)) return null;
+    try {
+      const url = 'https://api.upstox.com/v2/option/chain?instrument_key=' +
+        encodeURIComponent(underlyingKey) + '&expiry_date=' + encodeURIComponent(expiryDate);
+      const res = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' },
+        signal: AbortSignal.timeout(7000)
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+    } catch (err: any) {
+      console.warn('[EMA ADAPTIVE] Read-only option-chain snapshot unavailable:',
+        err?.message || String(err));
+      return null;
+    }
+  }
+
   /** Live EMA SL/TP must use a fresh quote for the exact broker contract. */
   public async getLiveOptionQuote(instrumentKey: string): Promise<{ price: number; exchangeTimestamp: string } | null> {
     if (!this.isConnected || !this.accessToken || !instrumentKey) return null;
