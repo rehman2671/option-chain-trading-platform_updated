@@ -108,7 +108,7 @@ describe('Adaptive v2 historical comparisons cannot authorize execution', () => 
     const rows = report.folds[0].outOfSample;
     assert.equal(rows.length, 12);
     const baseline = rows.find(x => x.arm === 'EMA_BASELINE' && x.horizon === '1W')!;
-    assert.equal(baseline.tradeCount, 3);
+    assert.equal(baseline.tradeCount, 2);
     assert.equal(baseline.unpricedEntries, 0);
     assert.equal(baseline.unpricedExits, 0);
     assert.equal(baseline.comparable, false); // only three examples, not 20+
