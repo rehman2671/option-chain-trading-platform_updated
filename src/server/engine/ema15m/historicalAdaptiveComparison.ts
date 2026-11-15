@@ -142,6 +142,9 @@ function validate(input: HistoricalComparisonInput): string[] {
         !Array.isArray(d.listedContracts) || !Array.isArray(d.chains) ||
         !Array.isArray(d.candles) || d.candles.length < 100 ||
         d.candles.some((bar, j) => !finite(time(bar.timestamp)) || bar.isClosed === false ||
+          ![bar.open, bar.high, bar.low, bar.close].every(v => finite(v) && v > 0) ||
+          bar.high < Math.max(bar.open, bar.close, bar.low) ||
+          bar.low > Math.min(bar.open, bar.close, bar.high) ||
           time(bar.timestamp) + 15 * 60_000 > time(d.decisionAt) ||
           (j > 0 && time(bar.timestamp) <= time(d.candles[j-1].timestamp))))) {
     errors.push('INCOMPLETE_OR_LOOKAHEAD_DECISION_HISTORY');
@@ -161,6 +164,14 @@ function validate(input: HistoricalComparisonInput): string[] {
       !finite(c.maxExitDelayDays) || c.maxExitDelayDays <= 0 || c.maxExitDelayDays > 7 ||
       !Number.isInteger(c.minCalendarDaysBeforeExpiry) || c.minCalendarDaysBeforeExpiry < 1)
     errors.push('INVALID_COST_OR_HOLD_POLICY');
+  if (Array.isArray(c.folds) && c.folds.length && HORIZONS.every(h => Number.isInteger(c.holdCalendarDays?.[h]))) {
+    const embargoMs = (Math.max(...HORIZONS.map(h => c.holdCalendarDays[h])) +
+      c.maxExitDelayDays) * DAY;
+    if (c.folds.some(f => dateKey(f.trainEnd) && dateKey(f.testStart) &&
+        time(f.trainEnd + 'T00:00:00Z') + embargoMs >=
+        time(f.testStart + 'T00:00:00Z')))
+      errors.push('TRAIN_TEST_EMBARGO_INSUFFICIENT_FOR_HOLD_AND_EXIT');
+  }
   if (!Array.isArray(c.folds) || !c.folds.length ||
       c.folds.some((f, i) => ![f.trainStart, f.trainEnd, f.testStart, f.testEnd].every(dateKey) ||
         f.trainStart > f.trainEnd || f.trainEnd >= f.testStart || f.testStart > f.testEnd ||
