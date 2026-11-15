@@ -66,8 +66,8 @@ export interface AdaptiveCapturePayload {
   schemaVersion: 'ADAPTIVE_OPTION_EVIDENCE_V1';
   mode: 'RESEARCH_ONLY';
   executionAuthorized: false;
-  synthetic: false;
-  source: 'UPSTOX_V2_READ_ONLY_REST';
+  synthetic: boolean;
+  source: 'UPSTOX_V2_READ_ONLY_REST' | 'MOCK_HTTP_TEST';
   instrument: CaptureInstrument;
   underlyingKey: string;
   collectedAt: string;
@@ -290,7 +290,9 @@ export async function collectAdaptiveOptionEvidence(input: {
     chains.length > 0 && chains.every(x => x.status === 'CAPTURED');
   const payload: AdaptiveCapturePayload = {
     schemaVersion: 'ADAPTIVE_OPTION_EVIDENCE_V1', mode: 'RESEARCH_ONLY',
-    executionAuthorized: false, synthetic: false, source: 'UPSTOX_V2_READ_ONLY_REST',
+    executionAuthorized: false,
+    synthetic: input.transport !== undefined,
+    source: input.transport ? 'MOCK_HTTP_TEST' : 'UPSTOX_V2_READ_ONLY_REST',
     instrument: input.instrument, underlyingKey: key,
     collectedAt: safeNow(now), quoteTimeQuality: 'RECEIPT_ONLY_EXCHANGE_TIME_UNVERIFIED',
     exchangeTimeVerified: false, marketSessionVerified: false,
@@ -327,7 +329,9 @@ export function verifyAdaptiveCapture(record: unknown): {
   const p = r.payload;
   if (!p || p.schemaVersion !== 'ADAPTIVE_OPTION_EVIDENCE_V1' ||
       p.mode !== 'RESEARCH_ONLY' || p.executionAuthorized !== false ||
-      p.synthetic !== false || p.historicalBacktestAuthorized !== false ||
+      (p.synthetic !== true && p.synthetic !== false) ||
+      ((p.source === 'MOCK_HTTP_TEST') !== p.synthetic) ||
+      p.historicalBacktestAuthorized !== false ||
       p.exchangeTimeVerified !== false || p.marketSessionVerified !== false ||
       p.quoteTimeQuality !== 'RECEIPT_ONLY_EXCHANGE_TIME_UNVERIFIED' ||
       !Object.prototype.hasOwnProperty.call(CAPTURE_KEYS, p.instrument) ||
