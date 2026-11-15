@@ -32,6 +32,7 @@ import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
 import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
 import { liveExecutionService } from './src/server/engine/ema15m/liveExecutionService.js';
+import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -1384,6 +1385,31 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Adaptive Swing v2 RESEARCH PREVIEW: bounded, read-only, no broker order actions.
+  // Returns explicit NO_TRADE when sideways/uncertain; scenarios cannot arm LIVE.
+  app.get('/api/ema15m/adaptive-preview', requireAuth as any, async (req, res) => {
+    const instrument = String(req.query.instrument || 'NIFTY').toUpperCase();
+    const scenario = req.query.bias === undefined ? undefined : String(req.query.bias).toUpperCase();
+    if (!['NIFTY', 'BANKNIFTY', 'SENSEX'].includes(instrument) ||
+        (scenario !== undefined && !['BULLISH', 'BEARISH'].includes(scenario))) {
+      return res.status(400).json({ error: 'Invalid instrument or research scenario bias' });
+    }
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      const preview = await getAdaptiveResearchPreview(
+        instrument as AdaptiveInstrument,
+        scenario as 'BULLISH' | 'BEARISH' | undefined
+      );
+      res.json(preview);
+    } catch (err: any) {
+      console.error('[EMA ADAPTIVE] Read-only research preview failed:', err?.message || err);
+      res.status(503).json({
+        mode: 'RESEARCH_ONLY', executionAuthorized: false,
+        error: 'Adaptive research temporarily unavailable'
+      });
     }
   });
 
