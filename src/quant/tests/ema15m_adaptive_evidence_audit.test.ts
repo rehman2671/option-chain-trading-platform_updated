@@ -32,7 +32,26 @@ function evidence(at = '2026-11-16T06:00:00.000Z'): AdaptiveCaptureRecord {
       rows: [{
         expiry: '2026-12-15', underlying_key: 'NSE_INDEX|Nifty 50',
         underlying_spot_price: 25000, strike_price: 25000,
-        call_options: null, put_options: null
+        call_options: {
+          instrument_key: 'NSE_FO|101',
+          market_data: {
+            bid_price: 95, ask_price: 100, bid_qty: 1000, ask_qty: 1000,
+            volume: 5000, oi: 10000
+          },
+          option_greeks: {
+            delta: 0.6, theta: -4, iv: 18, gamma: 0.01, vega: 2
+          }
+        },
+        put_options: {
+          instrument_key: 'NSE_FO|102',
+          market_data: {
+            bid_price: 96, ask_price: 101, bid_qty: 1000, ask_qty: 1000,
+            volume: 5500, oi: 11000
+          },
+          option_greeks: {
+            delta: -0.6, theta: -4, iv: 18, gamma: 0.01, vega: 2
+          }
+        }
       }]
     }],
     evidenceStatus: 'SNAPSHOT_CAPTURED_UNVERIFIED_TIME', warnings: []
