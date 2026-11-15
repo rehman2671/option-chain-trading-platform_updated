@@ -43,11 +43,11 @@ export interface HistoricalComparisonInput {
     expectedSessions: string[];
     synthetic: boolean;
     /**
-     * Historical non-synthetic performance needs a verified vendor/exchange
-     * EVENT timestamp for each actual L1 observation. REST receipt time alone
-     * is NOT that timestamp. This is a declared provenance gate, not a proof.
+     * Historical non-synthetic replay needs a source-attested original
+     * EVENT timestamp and recorded ORIGINAL availability for each L1 observation. REST receipt time alone
+     * is NOT that timestamp. This is a SOURCE-ATTESTED provenance gate, never independent verification.
      */
-    quoteTimestampQuality?: 'VERIFIED_EVENT_TIME' | 'RECEIPT_ONLY_UNVERIFIED';
+    quoteTimestampQuality?: 'SOURCE_ATTESTED_EVENT_TIME' | 'RECEIPT_ONLY_UNVERIFIED';
   };
   instrument: 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
   underlyingKey: string;
@@ -133,7 +133,7 @@ function validate(input: HistoricalComparisonInput): string[] {
   const { provenance: p, policy: c } = input;
   if (!p.datasetId?.trim() || !p.source?.trim() || !p.calendarSource?.trim() ||
       typeof p.synthetic !== 'boolean') errors.push('MISSING_PROVENANCE');
-  if (p.synthetic === false && p.quoteTimestampQuality !== 'VERIFIED_EVENT_TIME') {
+  if (p.synthetic === false && p.quoteTimestampQuality !== 'SOURCE_ATTESTED_EVENT_TIME') {
     errors.push('HISTORICAL_L1_EVENT_TIME_UNVERIFIED');
   }
   if (!['NIFTY','BANKNIFTY','SENSEX'].includes(input.instrument) ||
