@@ -8,3 +8,6 @@ coverage/
 !.env.example
 .backups/
 *.corrupt.*
+
+# Local market evidence: may be licensed or sensitive, never commit capture archives
+research-data/

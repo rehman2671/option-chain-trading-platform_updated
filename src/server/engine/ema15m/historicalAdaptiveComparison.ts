@@ -42,6 +42,12 @@ export interface HistoricalComparisonInput {
     /** Declare all expected market session dates, not just days with winning signals. */
     expectedSessions: string[];
     synthetic: boolean;
+    /**
+     * Historical non-synthetic performance needs a verified vendor/exchange
+     * EVENT timestamp for each actual L1 observation. REST receipt time alone
+     * is NOT that timestamp. This is a declared provenance gate, not a proof.
+     */
+    quoteTimestampQuality?: 'VERIFIED_EVENT_TIME' | 'RECEIPT_ONLY_UNVERIFIED';
   };
   instrument: 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
   underlyingKey: string;
@@ -127,6 +133,9 @@ function validate(input: HistoricalComparisonInput): string[] {
   const { provenance: p, policy: c } = input;
   if (!p.datasetId?.trim() || !p.source?.trim() || !p.calendarSource?.trim() ||
       typeof p.synthetic !== 'boolean') errors.push('MISSING_PROVENANCE');
+  if (p.synthetic === false && p.quoteTimestampQuality !== 'VERIFIED_EVENT_TIME') {
+    errors.push('HISTORICAL_L1_EVENT_TIME_UNVERIFIED');
+  }
   if (!['NIFTY','BANKNIFTY','SENSEX'].includes(input.instrument) ||
       !input.underlyingKey?.trim()) errors.push('INVALID_INSTRUMENT');
   const sessions = p.expectedSessions;
