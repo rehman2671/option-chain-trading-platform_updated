@@ -272,7 +272,7 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
     let priorTime = -Infinity;
     for (const c of session.underlyingCandles) {
       const at = Date.parse(c?.timestamp ?? '');
-      if (!Number.isFinite(at) || at <= priorTime ||
+      if (!c || !Number.isFinite(at) || at <= priorTime ||
           c.isClosed === false || at+15*60_000>Date.parse(session.decisionAt) ||
           ![c.open,c.high,c.low,c.close].every(positive) ||
           c.high<Math.max(c.open,c.close,c.low) ||
