@@ -16,7 +16,7 @@ function historicalFixture(): HistoricalComparisonInput {
   const expectedSessions: string[] = [];
   let previous = 25000;
   // All fixture prices/Greeks are SYNTHETIC; no real-world PnL inference.
-  for (let day = 0; day < 13; day++) {
+  for (let day = 0; day < 14; day++) {
     const date = new Date(Date.UTC(2026, 8, day + 1));
     const sessionDate = date.toISOString().slice(0, 10);
     for (let slot = 0; slot < 25; slot++) {
@@ -89,8 +89,8 @@ function historicalFixture(): HistoricalComparisonInput {
       maxSnapshotAgeMinutes: 5, maxEntryDelayMinutes: 10,
       maxExitDelayDays: 2, minCalendarDaysBeforeExpiry: 2,
       folds: [{
-        trainStart: expectedSessions[0], trainEnd: expectedSessions[2],
-        testStart: expectedSessions[3], testEnd: expectedSessions[5]
+        trainStart: expectedSessions[0], trainEnd: expectedSessions[0],
+        testStart: expectedSessions[4], testEnd: expectedSessions[6]
       }]
     }
   };
@@ -119,10 +119,10 @@ describe('Adaptive v2 historical comparisons cannot authorize execution', () => 
 
   it('fails closed if an EXIT bid/ask observation is missing', () => {
     const input = historicalFixture();
-    const firstKey = input.decisions[3].listedContracts[0].instrument_key;
+    const firstKey = input.decisions[4].listedContracts[0].instrument_key;
     input.executionQuotes = input.executionQuotes.filter(q =>
       q.instrumentKey !== firstKey || Date.parse(q.observedAt) <
-        Date.parse(input.decisions[3].decisionAt) + DAY);
+        Date.parse(input.decisions[4].decisionAt) + DAY);
     const report = compareAdaptiveHistorical(input);
     assert.equal(report.status, 'INCOMPLETE_EVIDENCE');
     const m = report.folds[0].outOfSample.find(x =>
@@ -133,8 +133,8 @@ describe('Adaptive v2 historical comparisons cannot authorize execution', () => 
 
   it('blocks future chain snapshots rather than looking ahead to entry data', () => {
     const input = historicalFixture();
-    input.decisions[3].chains[0].capturedAt =
-      new Date(Date.parse(input.decisions[3].decisionAt) + 1000).toISOString();
+    input.decisions[4].chains[0].capturedAt =
+      new Date(Date.parse(input.decisions[4].decisionAt) + 1000).toISOString();
     const report = compareAdaptiveHistorical(input);
     assert.equal(report.status, 'INCOMPLETE_EVIDENCE');
     const m = report.folds[0].outOfSample.find(x =>
@@ -155,6 +155,10 @@ describe('Adaptive v2 historical comparisons cannot authorize execution', () => 
     const repeated = historicalFixture();
     repeated.executionQuotes.push({ ...repeated.executionQuotes[0] });
     assert.ok(compareAdaptiveHistorical(repeated).errors.includes('DUPLICATED_EXECUTION_QUOTES'));
+    const overlap = historicalFixture();
+    overlap.policy.folds[0].trainEnd = overlap.provenance.expectedSessions[2];
+    assert.ok(compareAdaptiveHistorical(overlap).errors.includes(
+      'TRAIN_TEST_EMBARGO_INSUFFICIENT_FOR_HOLD_AND_EXIT'));
     const free = historicalFixture();
     free.policy.slippageBpsPerSide = -1;
     assert.equal(compareAdaptiveHistorical(free).status, 'INVALID_DATASET');
