@@ -166,7 +166,7 @@ describe('Adaptive v2 historical comparisons cannot authorize execution', () => 
 
   it('does not enter when the holding target crosses expiry safety buffer', () => {
     const input = historicalFixture();
-    input.policy.holdCalendarDays['1W'] = 8;
+    input.policy.minCalendarDaysBeforeExpiry = 8;
     const report = compareAdaptiveHistorical(input);
     const m = report.folds[0].outOfSample.find(x =>
       x.arm === 'EMA_BASELINE' && x.horizon === '1W')!;
