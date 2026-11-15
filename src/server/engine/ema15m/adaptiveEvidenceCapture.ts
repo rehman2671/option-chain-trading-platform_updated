@@ -327,7 +327,8 @@ export function verifyAdaptiveCapture(record: unknown): {
   };
   const r = record as AdaptiveCaptureRecord;
   const p = r.payload;
-  if (!p || p.schemaVersion !== 'ADAPTIVE_OPTION_EVIDENCE_V1' ||
+  if (!p || typeof p !== 'object' ||
+      p.schemaVersion !== 'ADAPTIVE_OPTION_EVIDENCE_V1' ||
       p.mode !== 'RESEARCH_ONLY' || p.executionAuthorized !== false ||
       (p.synthetic !== true && p.synthetic !== false) ||
       ((p.source === 'MOCK_HTTP_TEST') !== p.synthetic) ||
@@ -337,14 +338,35 @@ export function verifyAdaptiveCapture(record: unknown): {
       !Object.prototype.hasOwnProperty.call(CAPTURE_KEYS, p.instrument) ||
       CAPTURE_KEYS[p.instrument] !== p.underlyingKey ||
       !isIso(p.collectedAt)) errors.push('INVALID_CAPTURE_METADATA');
-  if (typeof r.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(r.sha256) ||
-      !p || captureSha256(p) !== r.sha256) errors.push('CAPTURE_HASH_MISMATCH');
-  if (!p || !Array.isArray(p.contracts?.rows) || !Array.isArray(p.buckets) ||
-      p.buckets.length !== 8 || !Array.isArray(p.chains) ||
-      !p.chains.every(c => c.exchangeQuoteAt === null &&
+  try {
+    if (typeof r.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(r.sha256) ||
+        !p || captureSha256(p) !== r.sha256) errors.push('CAPTURE_HASH_MISMATCH');
+  } catch {
+    errors.push('CAPTURE_HASH_MISMATCH');
+  }
+  if (!p || !p.contracts ||
+      !isIso(p.contracts.requestedAt) || !isIso(p.contracts.receivedAt) ||
+      Date.parse(p.contracts.receivedAt) < Date.parse(p.contracts.requestedAt) ||
+      !Array.isArray(p.contracts.rows) ||
+      !Number.isInteger(p.contracts.providerRowCount) ||
+      !Number.isInteger(p.contracts.acceptedRowCount) ||
+      p.contracts.providerRowCount < p.contracts.acceptedRowCount ||
+      p.contracts.acceptedRowCount !== p.contracts.rows.length ||
+      !Array.isArray(p.buckets) || p.buckets.length !== 8 ||
+      !p.buckets.every(b => b && ['CE','PE'].includes(b.side) &&
+        ['1W','2W','4W','8W'].includes(b.horizon) &&
+        (b.expiry === null || validDay(b.expiry))) ||
+      !Array.isArray(p.chains) ||
+      !p.chains.every(c => c && c.exchangeQuoteAt === null &&
+        ['CAPTURED','UNAVAILABLE','INVALID_RESPONSE'].includes(c.status) &&
         isIso(c.requestedAt) && isIso(c.receivedAt) &&
+        Date.parse(c.receivedAt) >= Date.parse(c.requestedAt) &&
+        Number.isInteger(c.providerRowCount) && c.providerRowCount >= 0 &&
+        Number.isInteger(c.acceptedRowCount) && c.acceptedRowCount >= 0 &&
         c.providerRowCount >= c.acceptedRowCount &&
-        c.acceptedRowCount === c.rows.length))
+        Number.isInteger(c.validSidesWithL1AndGreeks) &&
+        c.validSidesWithL1AndGreeks >= 0 &&
+        Array.isArray(c.rows) && c.acceptedRowCount === c.rows.length))
     errors.push('CAPTURE_STRUCTURE_UNVERIFIED');
   return { valid: errors.length === 0, errors, researchUsable: false };
 }
