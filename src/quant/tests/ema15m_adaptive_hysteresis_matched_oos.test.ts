@@ -225,12 +225,12 @@ describe('Phase 13 original vs independent hysteresis entry-first OOS cohorts',(
     assert.equal(c.stabilizedOnlyEntries,0);
     assert.equal(c.matchedCompleteNetDeltaINR,0);
     assert.equal(c.descriptivePairedSampleSufficient,true);
-    assert.equal(r.status,'INCOMPLETE_EVIDENCE'); // All other arms may be underpowered.
+    assert.equal(r.status,'DESCRIPTIVE_ONLY'); // Complete synthetic price paths; NOT real market proof.
   });
   it('future missing EXIT keeps original selected entries identical and PnL null',()=>{
     const f=sample();
     const initial=buildAdaptiveEntryFirstCohort(f.input);
-    const earliest=Date.UTC(2026,8,12);
+    const earliest=Date.UTC(2026,8,13); // remove only NEXT SESSION quotes, preserve original Sept 12 entry
     f.input.executionQuotes=f.input.executionQuotes.filter(q=>
       q.instrumentKey!==f.key||Date.parse(q.observedAt)<earliest);
     const revised=buildAdaptiveEntryFirstCohort(f.input);
