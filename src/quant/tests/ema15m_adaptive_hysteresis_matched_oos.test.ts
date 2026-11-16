@@ -203,6 +203,8 @@ describe('Phase 13 original vs independent hysteresis entry-first OOS cohorts',(
     assert.equal(c.skippedOriginalUnpriced,0);
     assert.equal(c.originalCensoredExits,0);
     assert.equal(c.stabilizedCensoredExits,0);
+    assert.equal(c.originalOvernightGapTriggers,1);
+    assert.equal(c.stabilizedOvernightGapTriggers,0);
     assert.equal(c.stabilizedCompleteCohortNetPnlINR,390);
     assert.ok(c.originalCompleteCohortNetPnlINR!<0);
   });
