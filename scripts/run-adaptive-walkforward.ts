@@ -4,7 +4,8 @@
  * npx tsx scripts/run-adaptive-walkforward.ts <bundle.json> \
  *   [--source-artifact <original-vendor-bytes>] \
  *   [--exit-policy <phase7-predeclared-policy.json>] \
- *   [--entry-first-policy <phase8-predeclared-policy.json>]
+ *   [--entry-first-policy <phase8-predeclared-policy.json>] \
+ *   [--market-data-policy <phase10-predeclared-quality-policy.json>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -16,6 +17,8 @@ import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
   '../src/server/engine/ema15m/adaptiveWalkForwardStudy.js';
+import { auditAdaptiveL1MarketDataQuality, type AdaptiveMarketDataQualityPolicy } from
+  '../src/server/engine/ema15m/adaptiveL1MarketDataQuality.js';
 import { runAdaptiveEntryFirstExitStudy } from
   '../src/server/engine/ema15m/adaptiveEntryFirstExitStudy.js';
 import { ingestVendorHistoricalBundle } from
@@ -32,14 +35,14 @@ async function fileBytes(path:string, max=MAX_BYTES):Promise<Uint8Array>{
 }
 function parseOptions(args:string[]):{
   bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
-  entryFirstPolicyPath:string|null
+  entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -48,11 +51,12 @@ function parseOptions(args:string[]):{
     bundlePath:resolve(args[0]),
     sourcePath:flags.has('--source-artifact')?resolve(flags.get('--source-artifact')!):null,
     exitPolicyPath:flags.has('--exit-policy')?resolve(flags.get('--exit-policy')!):null,
-    entryFirstPolicyPath:flags.has('--entry-first-policy')?resolve(flags.get('--entry-first-policy')!):null
+    entryFirstPolicyPath:flags.has('--entry-first-policy')?resolve(flags.get('--entry-first-policy')!):null,
+    marketDataPolicyPath:flags.has('--market-data-policy')?resolve(flags.get('--market-data-policy')!):null
   };
 }
 async function main():Promise<void>{
-  const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath}=
+  const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,marketDataPolicyPath}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -60,6 +64,8 @@ async function main():Promise<void>{
     throw new Error('EXIT_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
   if(entryFirstPolicyPath&&await realpath(entryFirstPolicyPath)===await realpath(bundlePath))
     throw new Error('ENTRY_FIRST_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(marketDataPolicyPath&&await realpath(marketDataPolicyPath)===await realpath(bundlePath))
+    throw new Error('MARKET_QUALITY_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
   const declaredReal=raw?.provenance?.synthetic===false;
   let artifactAudit=null;
@@ -142,6 +148,50 @@ async function main():Promise<void>{
       };
     }
   }
+  let marketDataQualityAudit=null;
+  if(marketDataPolicyPath){
+    const qualityPolicy:AdaptiveMarketDataQualityPolicy=JSON.parse(
+      Buffer.from(await fileBytes(marketDataPolicyPath,128*1024)).toString('utf8')
+    );
+    const ingested=ingestVendorHistoricalBundle(raw);
+    if(!ingested.input){
+      marketDataQualityAudit={
+        status:'REJECTED',executionAuthorized:false,
+        errors:['INGESTED_SOURCE_ATTESTED_L1_REQUIRED_FOR_QUALITY_AUDIT']
+      };
+    }else{
+      const report=auditAdaptiveL1MarketDataQuality(
+        ingested.input,raw.declaredExchangeSessions,
+        raw.executionL1,qualityPolicy
+      );
+      const reasonCounts:Record<string,number>={};
+      for(const item of report.paths)
+        for(const reason of item.reasons)
+          reasonCounts[reason]=(reasonCounts[reason]??0)+1;
+      // Deliberately do not print licensed per-contract L1 path evidence.
+      // Fold/horizon cells carry coverage & risk flags, NOT a profitability claim.
+      marketDataQualityAudit={
+        status:report.status,executionAuthorized:report.executionAuthorized,
+        productionSafe:report.productionSafe,
+        empiricalProfitabilityProven:report.empiricalProfitabilityProven,
+        sourceAuthenticityIndependentlyVerified:report.sourceAuthenticityIndependentlyVerified,
+        exchangeCalendarIndependentlyVerified:report.exchangeCalendarIndependentlyVerified,
+        originalAvailabilityClocksIndependentlyVerified:report.originalAvailabilityClocksIndependentlyVerified,
+        datasetId:report.datasetId,synthetic:report.synthetic,
+        errors:report.errors,warnings:report.warnings,
+        totalOutOfSampleDecisions:report.totalOutOfSampleDecisions,
+        observedEntryCount:report.observedEntryCount,
+        missingEntryCount:report.missingEntryCount,
+        pathDispositionCounts:{
+          sufficient:report.paths.filter(p=>
+            p.disposition==='SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS').length,
+          insufficient:report.paths.filter(p=>
+            p.disposition==='MISSING_OR_UNRELIABLE_L1_PATH').length
+        },
+        reasonCounts,cells:report.cells
+      };
+    }
+  }
   console.log(JSON.stringify({
     mode:result.mode,executionAuthorized:result.executionAuthorized,
     productionSafe:result.productionSafe,status:result.status,
@@ -154,11 +204,13 @@ async function main():Promise<void>{
     results:result.results,pairedOutOfSample:result.pairedOutOfSample,
     marketRegimeAudit:result.marketRegimeAudit,
     positionalExitReplay:exitReplay,
-    independentEntryFirstExitStudy:entryFirstReplay,warnings:result.warnings
+    independentEntryFirstExitStudy:entryFirstReplay,
+    marketDataQualityAudit,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
-     (entryFirstReplay!==null&&entryFirstReplay.status!=='DESCRIPTIVE_ONLY'))
+     (entryFirstReplay!==null&&entryFirstReplay.status!=='DESCRIPTIVE_ONLY')||
+     (marketDataQualityAudit!==null&&marketDataQualityAudit.status!=='DESCRIPTIVE_ONLY'))
     process.exitCode=1;
 }
 main().catch(error=>{
