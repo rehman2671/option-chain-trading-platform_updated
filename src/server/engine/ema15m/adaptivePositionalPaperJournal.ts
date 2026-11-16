@@ -260,7 +260,10 @@ export function replayAdaptivePositionalPaperJournal(
     switch(event.kind){
       case 'OPEN_PAPER_NRML':{
         if(position||!ident(event.positionId)||!ident(event.accountScopeId)||
-           !ident(event.instrumentKey)||!validDate(event.expiry)||
+           !event.accountScopeId.startsWith('SIMULATED_')||
+           !ident(event.instrumentKey)||
+           !/^(NSE_FO|BSE_FO)\|[0-9]+$/.test(event.instrumentKey)||
+           !validDate(event.expiry)||
            istDay(t)>event.expiry||!Number.isInteger(event.lotSize)||
            event.lotSize<=0||!Number.isInteger(event.quantity)||
            event.quantity<=0||event.quantity%event.lotSize!==0||
