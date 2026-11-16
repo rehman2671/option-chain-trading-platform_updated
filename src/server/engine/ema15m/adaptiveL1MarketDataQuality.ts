@@ -46,6 +46,8 @@ export interface AdaptiveMarketDataQualityPolicy {
   minimumSufficientBidDepthQuoteFraction:number;
   /** Risk flag only. A large gap is genuine market evidence, not invalid data. */
   overnightAdverseBidGapAlertPercent:number;
+  /** Observed long-option premium giveback alert; not index-point targets. */
+  observedOptionBidGivebackAlertPercent:number;
 }
 export type L1PathDisposition=
   'SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS'|'MISSING_OR_UNRELIABLE_L1_PATH';
@@ -64,6 +66,8 @@ export interface L1PathDiagnostic {
   eventToAvailableLagSecondsP95:number|null;
   largestAdverseOvernightBidGapPercent:number|null;
   adverseOvernightGapAlertCount:number;
+  maximumObservedBidPeakToTroughGivebackPercent:number|null;
+  observedBidGivebackAlert:boolean;
   firstFixedDueExitBidObservedAt:string|null;
 }
 export interface MarketDataQualityCell {
@@ -76,6 +80,7 @@ export interface MarketDataQualityCell {
   noSignalOrIneligibleCount:number;
   adverseOvernightGapAlertCount:number;
   largestAdverseOvernightBidGapPercent:number|null;
+  observedBidGivebackAlertCount:number;
   spreadBpsP95:number|null;
   eventToAvailableLagSecondsP95:number|null;
   /** Cannot measure profit or infer complete actual historical market sessions. */
@@ -111,6 +116,7 @@ const warnings=[
   'NO_FILLS_OR_PROFITS_ARE_INFERRED_FROM_BID_OR_ASK',
   'L1_DEPTH_IS_DISPLAYED_NOT_BROKER_CONFIRMED_EXECUTION',
   'LARGE_OVERNIGHT_PRICE_GAPS_ARE_PRESERVED_AND_FLAGGED_NOT_NORMALIZED',
+  'OBSERVED_PREMIUM_GIVEBACK_IS_NOT_AN_INDEX_TARGET_OR_BROKER_STOP_FILL',
   'OBSERVATION_DENSITY_CANNOT_PROVE_NO_INTRAGAP_REVERSAL',
   'POLICY_THRESHOLDS_MUST_BE_REGISTERED_BEFORE_INSPECTING_OOS_RESULTS',
   'STATUS_DESCRIPTIVE_ONLY_NEVER_MEANS_LIVE_TRADING_APPROVED'
@@ -138,7 +144,10 @@ function validPolicy(p:AdaptiveMarketDataQualityPolicy):boolean{
       p.minimumSufficientBidDepthQuoteFraction>=0&&p.minimumSufficientBidDepthQuoteFraction<=1&&
     finite(p.overnightAdverseBidGapAlertPercent)&&
       p.overnightAdverseBidGapAlertPercent>0&&
-      p.overnightAdverseBidGapAlertPercent<=100;
+      p.overnightAdverseBidGapAlertPercent<=100&&
+    finite(p.observedOptionBidGivebackAlertPercent)&&
+      p.observedOptionBidGivebackAlertPercent>0&&
+      p.observedOptionBidGivebackAlertPercent<=100;
 }
 function percentile(sorted:number[],ratio:number):number|null{
   if(!sorted.length)return null;
@@ -265,10 +274,13 @@ export function auditAdaptiveL1MarketDataQuality(
     const overlap=windows!.filter(w=>w.close>=started&&w.open<=latest);
     if(!overlap.length||windows![windows!.length-1].close<latest)
       flag('ORIGINAL_CALENDAR_DOES_NOT_SPAN_EXIT_WINDOW');
-    const relevant=new Set(overlap.map(w=>w.sessionDate));
+    const relevant=new Map(overlap.map(w=>[w.sessionDate,w]));
     for(const q of matching){
-      if(!relevant.has(istDay(time(q.observedAt))))
-        flag('OPTION_L1_OUTSIDE_DECLARED_SESSIONS');
+      const timeMs=time(q.observedAt);
+      const match=relevant.get(istDay(timeMs));
+      if(!match)flag('OPTION_L1_OUTSIDE_DECLARED_SESSIONS');
+      else if(timeMs<match.open||timeMs>match.close)
+        flag('OPTION_L1_OUTSIDE_DECLARED_SESSION_HOURS');
     }
     const spreadBps:number[]=[];
     const latencies:number[]=[];
@@ -290,6 +302,17 @@ export function auditAdaptiveL1MarketDataQuality(
       if(1-thinCount/matching.length<
           policy.minimumSufficientBidDepthQuoteFraction)
         flag('INSUFFICIENT_DEPTH_THROUGHOUT_HOLD');
+    }
+    // This is a point-in-time observed BID giveback, not an index-point
+    // target, intrabar high/low, or executable trailing-order fill.
+    let observedBidPeak=matching[0]?.bid??null;
+    let maxObservedGiveback:number|null=null;
+    for(const q of matching){
+      if(observedBidPeak!==null){
+        observedBidPeak=Math.max(observedBidPeak,q.bid);
+        maxObservedGiveback=Math.max(maxObservedGiveback??0,
+          (observedBidPeak-q.bid)/observedBidPeak*100);
+      }
     }
     let pastSessionLastBid:number|null=null;
     let overnightAlerts=0,maxAdverseGap:number|null=null;
@@ -335,6 +358,10 @@ export function auditAdaptiveL1MarketDataQuality(
       eventToAvailableLagSecondsP95:percentile(lagSorted,.95),
       largestAdverseOvernightBidGapPercent:maxAdverseGap===null?null:round(maxAdverseGap),
       adverseOvernightGapAlertCount:overnightAlerts,
+      maximumObservedBidPeakToTroughGivebackPercent:maxObservedGiveback===null?
+        null:round(maxObservedGiveback),
+      observedBidGivebackAlert:maxObservedGiveback!==null&&
+        maxObservedGiveback>policy.observedOptionBidGivebackAlertPercent,
       firstFixedDueExitBidObservedAt:firstDue?.observedAt??null
     });
   }
@@ -365,6 +392,7 @@ export function auditAdaptiveL1MarketDataQuality(
         noSignalOrIneligibleCount:attempts.length-observed.length-missing.length,
         adverseOvernightGapAlertCount:subset.reduce((a,v)=>
           a+v.adverseOvernightGapAlertCount,0),
+        observedBidGivebackAlertCount:subset.filter(p=>p.observedBidGivebackAlert).length,
         largestAdverseOvernightBidGapPercent:adverse.length?
           round(Math.max(...adverse)):null,
         spreadBpsP95:percentile(spreads.sort((a,b)=>a-b),.95),
