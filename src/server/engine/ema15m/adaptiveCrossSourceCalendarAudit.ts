@@ -213,7 +213,7 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
          !validTs(d.openAt)||!validTs(d.closeAt)||
          op>=cl||cl-op>DAY||exchangeDay(op)!==d.sessionDate||
          exchangeDay(cl)!==d.sessionDate||
-         d.closureReason!==undefined)
+         Object.prototype.hasOwnProperty.call(d,'closureReason'))
         return reject(base,['INVALID_CALENDAR_TRADING_SESSION_WINDOW']);
       trading.set(d.sessionDate,d);
     }else if(!['WEEKEND','HOLIDAY','EXCHANGE_CLOSURE'].includes(d.closureReason)||
