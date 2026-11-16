@@ -496,6 +496,6 @@ export function auditAdaptiveMatchedPremiumCostDepthStress(
     status:complete?'DESCRIPTIVE_ONLY':'INCOMPLETE_EVIDENCE',
     phase13Status:paired.status,originalEntryFirstStatus:b.status,
     stabilizedEntryFirstStatus:f.status,
-    policy:stressPolicy,cells,horizonSummary
+    policy:stressPolicy,cells,horizonSummary:summary
   };
 }
