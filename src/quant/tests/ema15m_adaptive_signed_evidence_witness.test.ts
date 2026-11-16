@@ -180,7 +180,7 @@ function reSign(w:ReturnType<typeof fresh>){
   e.calendarDocumentSha256=sigSha(w.input.calendarDocumentBytes);
   e.calendarCoverageStart=w.f.calendar.coverageStart;
   e.calendarCoverageEnd=w.f.calendar.coverageEnd;
-  const signingTime='2026-11-20T10:00:00.000Z';
+  const signingTime='2026-11-15T10:00:00.000Z';
   e.witnesses=w.keys.map(k=>{
     const witness={role:k.role,reviewerId:k.reviewerId,signedAt:signingTime};
     const signatureBase64=sign(null,
@@ -278,6 +278,10 @@ describe('Phase 16 operator-pinned Ed25519 evidence bindings, no trading permiss
       '2026-10-01T00:00:00Z';
     assert.ok(audit(timestamp).errors.includes(
       'INVALID_OR_NONCHRONOLOGICAL_DETACHED_WITNESS'));
+    const future=fresh();
+    future.input.envelope.witnesses[0].signedAt='2099-01-01T00:00:00Z';
+    assert.ok(audit(future).errors.includes(
+      'WITNESS_CLAIMS_A_FUTURE_SIGNATURE_TIME'));
   });
   it('a public key replacement or duplicate role/key cannot fake reviewer separation',()=>{
     const wrong=fresh();
