@@ -35,7 +35,7 @@ Each reviewer signs a byte string starting with the domain separator `ADAPTIVE_O
 
 The trust registry uses `ADAPTIVE_OPERATOR_PINNED_REVIEWERS_V1`, `trustSource: "OPERATOR_PINNED_UNVERIFIED"` and exactly two distinct `CALENDAR_REVIEWER` and `ORIGINAL_L1_REVIEWER` keys. Each key is standard Ed25519 SubjectPublicKeyInfo PEM with operator-pinned SHA256 of its binary DER-SPKI. The module rejects non-Ed25519 keys, wrong fingerprints, duplicate fingerprints, duplicate reviewer IDs, same role twice, wrong signature, different signed dataset/document, and signatures self-declared earlier than the calendar coverage.
 
-The signed `signedAt` itself is NOT externally timestamped. It is a signed claim, not a timestamp authority.
+The signed `signedAt` itself is NOT externally timestamped. It is a signed claim, not a timestamp authority. The audit rejects timestamps before full calendar coverage or clearly **in the future relative to the local machine clock** (five-minute tolerance); neither local-clock check proves when signing occurred.
 
 ### CLI
 
