@@ -21,6 +21,7 @@ export type HysteresisReason=
   'INITIAL_CONFIRMATION_PENDING'|'INITIAL_CONFIRMATION'|
   'CONFIRMED_DIRECTION_STABLE'|'OPPOSITE_CONFIRMATION_PENDING'|
   'REVERSAL_DWELL_NOT_SATISFIED'|'OPPOSITE_DIRECTION_CONFIRMED'|
+  'CONFIRMED_DIRECTION_REVALIDATION_PENDING'|'CONFIRMED_DIRECTION_REVALIDATED'|
   'POST_REVERSAL_COOLDOWN'|'NO_TREND_OR_TRANSITION'|
   'VOLATILITY_SHOCK_FREEZE'|'AFTER_SHOCK_FREEZE'|
   'MISSING_DECLARED_SESSION_RESET'|'CLOSED_CANDLE_EVIDENCE_STALE'|
@@ -51,6 +52,8 @@ export interface HysteresisState {
   confirmedSide:StabilizedSide;
   pendingSide:'CE'|'PE'|null;
   pendingCount:number;
+  /** Nontrend/opposite/shock invalidates immediate NEW entry advisories. */
+  requiresSameSideRevalidation:boolean;
   decisionsSinceConfirmation:number;
   freezeRemaining:number;
   cooldownRemaining:number;
@@ -139,6 +142,7 @@ export function validateAdaptiveHysteresisPolicy(p:HysteresisResearchPolicy):str
 export function emptyAdaptiveHysteresisState():HysteresisState{
   return {
     confirmedSide:'NO_TRADE',pendingSide:null,pendingCount:0,
+    requiresSameSideRevalidation:false,
     decisionsSinceConfirmation:0,freezeRemaining:0,cooldownRemaining:0,
     lastDecisionAt:null,lastClosedCandleEndAt:null,lastSessionOrdinal:null
   };
@@ -188,7 +192,8 @@ export function applyAdaptiveHysteresisObservation(
   if(end>t||t-end>maximumClosedCandleAgeMinutes*MS_MIN||
      o.regime==='INSUFFICIENT_DATA'||o.regime==='STALE_DATA')
     return step(o,{...base,confirmedSide:'NO_TRADE',
-      pendingSide:null,pendingCount:0,freezeRemaining:0,cooldownRemaining:0},
+      pendingSide:null,pendingCount:0,requiresSameSideRevalidation:false,
+      freezeRemaining:0,cooldownRemaining:0},
       'CLOSED_CANDLE_EVIDENCE_STALE','NO_TRADE',false,false);
   if(prior.lastSessionOrdinal!==null&&
      o.declaredSessionOrdinal>prior.lastSessionOrdinal+1)
@@ -197,30 +202,45 @@ export function applyAdaptiveHysteresisObservation(
       'MISSING_DECLARED_SESSION_RESET','NO_TRADE',false,false);
   if(o.regime==='VOLATILE'){
     return step(o,{...base,pendingSide:null,pendingCount:0,
-      freezeRemaining:rule.freezeObservedDecisionsAfterShock},
+      freezeRemaining:rule.freezeObservedDecisionsAfterShock,
+      requiresSameSideRevalidation:true},
       'VOLATILITY_SHOCK_FREEZE','NO_TRADE',false,false);
   }
   if(base.freezeRemaining>0)
     return step(o,{...base,pendingSide:null,pendingCount:0,
-      freezeRemaining:base.freezeRemaining-1},
+      freezeRemaining:base.freezeRemaining-1,
+      requiresSameSideRevalidation:true},
       'AFTER_SHOCK_FREEZE','NO_TRADE',false,false);
   // Even an already confirmed trend cannot trigger a NEW entry while
   // reversal-cooldown evidence is being collected. No auto-exit implied.
   if(base.cooldownRemaining>0)
     return step(o,{...base,pendingSide:null,pendingCount:0,
-      cooldownRemaining:base.cooldownRemaining-1},
+      cooldownRemaining:base.cooldownRemaining-1,
+      requiresSameSideRevalidation:true},
       'POST_REVERSAL_COOLDOWN','NO_TRADE',false,false);
   if(o.rawSignal==='NO_TRADE'){
-    return step(o,{...base,pendingSide:null,pendingCount:0},
+    return step(o,{...base,pendingSide:null,pendingCount:0,
+      requiresSameSideRevalidation:true},
       'NO_TREND_OR_TRANSITION','NO_TRADE',false,false);
   }
-  if(base.confirmedSide===o.rawSignal)
+  if(base.confirmedSide===o.rawSignal){
+    if(base.requiresSameSideRevalidation){
+      const count=base.pendingSide===o.rawSignal?base.pendingCount+1:1;
+      if(count<rule.initialConfirmations)
+        return step(o,{...base,pendingSide:o.rawSignal,pendingCount:count},
+          'CONFIRMED_DIRECTION_REVALIDATION_PENDING','NO_TRADE',false,false);
+      return step(o,{...base,pendingSide:null,pendingCount:0,
+        requiresSameSideRevalidation:false},
+        'CONFIRMED_DIRECTION_REVALIDATED',o.rawSignal,false,false);
+    }
     return step(o,{...base,pendingSide:null,pendingCount:0},
       'CONFIRMED_DIRECTION_STABLE',o.rawSignal,false,false);
+  }
   const nextCount=base.pendingSide===o.rawSignal?base.pendingCount+1:1;
   const isOpposite=base.confirmedSide!=='NO_TRADE';
   const required=isOpposite?rule.oppositeConfirmations:rule.initialConfirmations;
-  const pending={...base,pendingSide:o.rawSignal,pendingCount:nextCount};
+  const pending={...base,pendingSide:o.rawSignal,pendingCount:nextCount,
+    requiresSameSideRevalidation:true};
   if(nextCount<required)
     return step(o,pending,isOpposite?
       'OPPOSITE_CONFIRMATION_PENDING':'INITIAL_CONFIRMATION_PENDING',
@@ -232,6 +252,7 @@ export function applyAdaptiveHysteresisObservation(
   const confirmed:HysteresisState={
     ...base,confirmedSide:o.rawSignal,pendingSide:null,pendingCount:0,
     decisionsSinceConfirmation:0,
+    requiresSameSideRevalidation:isOpposite,
     cooldownRemaining:isOpposite?
       rule.cooldownObservedDecisionsAfterReversal:0
   };
