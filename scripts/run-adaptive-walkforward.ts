@@ -229,6 +229,7 @@ async function main():Promise<void>{
       errors:gate.errors,blockers:gate.blockers,
       foldCount:gate.foldCount,
       totalTestingSessions:gate.totalTestingSessions,
+      regimeFoldEvidence:gate.regimeFoldEvidence,
       aggregateSummarySha256:gate.aggregateSummarySha256,
       reviewCells:gate.cells,
       externalReviewChecklist:gate.externalReviewChecklist,
