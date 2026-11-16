@@ -86,6 +86,8 @@ export interface SignedEvidenceReviewReport {
   historicalLicenseIndependentlyVerified:false;
   reviewerIdentityIndependentlyAuthenticated:false;
   trustedTimestampEstablished:false;
+  pinnedTrustRegistryDigestMatched:boolean;
+  operatorPinnedTrustRegistrySha256:string|null;
   status:'REJECTED'|'BLOCKED_INCOMPLETE_EVIDENCE'|
     'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED';
   datasetId:string|null;
@@ -123,6 +125,8 @@ const baseReport=():SignedEvidenceReviewReport=>({
   historicalLicenseIndependentlyVerified:false,
   reviewerIdentityIndependentlyAuthenticated:false,
   trustedTimestampEstablished:false,
+  pinnedTrustRegistryDigestMatched:false,
+  operatorPinnedTrustRegistrySha256:null,
   status:'REJECTED',datasetId:null,synthetic:null,errors:[],blockers:[],
   warnings,sourceChecksumMatched:false,calendarChecksumMatched:false,
   reviewedExchangeCalendarConsistent:false,
@@ -193,7 +197,9 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
   vendorArchiveBytes:Uint8Array|undefined|null;
   calendarManifestBytes:Uint8Array|undefined|null;
   calendarDocumentBytes:Uint8Array|undefined|null;
-  operatorTrust:OperatorPinnedReviewerTrust|unknown;
+  operatorTrustRegistryBytes:Uint8Array|undefined|null;
+  /** Digest pinned OUTSIDE the registry, e.g. by an offline operator. */
+  expectedOperatorTrustRegistrySha256:string|undefined|null;
   envelope:ResearchEvidenceWitnessEnvelope|unknown;
 }):SignedEvidenceReviewReport{
   const base=baseReport();
@@ -227,16 +233,26 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
     calendarBlockers:calendarAudit.blockers
   };
   const e=input.envelope as ResearchEvidenceWitnessEnvelope|null;
-  const trust=input.operatorTrust as OperatorPinnedReviewerTrust|null;
+  const trustDigest=input.operatorTrustRegistryBytes?.length?
+    sha(input.operatorTrustRegistryBytes):null;
+  if(!trustDigest||!input.expectedOperatorTrustRegistrySha256||
+     !sameSha(trustDigest,input.expectedOperatorTrustRegistrySha256))
+    return reject(state,'OUT_OF_BAND_PINNED_REGISTRY_DIGEST_MISMATCH');
+  const pinnedState={
+    ...state,pinnedTrustRegistryDigestMatched:true,
+    operatorPinnedTrustRegistrySha256:trustDigest
+  };
+  const trust=parseFile<OperatorPinnedReviewerTrust>(
+    input.operatorTrustRegistryBytes,256*1024);
   if(!trust||trust.schemaVersion!=='ADAPTIVE_OPERATOR_PINNED_REVIEWERS_V1'||
      trust.trustSource!=='OPERATOR_PINNED_UNVERIFIED'||
      !Array.isArray(trust.reviewers)||trust.reviewers.length!==2)
-    return reject(state,'INVALID_OR_MISSING_OUT_OF_BAND_PINNED_REVIEWER_REGISTRY');
+    return reject(pinnedState,'INVALID_OR_MISSING_OUT_OF_BAND_PINNED_REVIEWER_REGISTRY');
   if(!e||e.schemaVersion!=='ADAPTIVE_SIGNED_RESEARCH_EVIDENCE_V1'||
      !safeId(e.studyProtocolId)||!safeId(e.datasetId)||
      !['NIFTY','BANKNIFTY','SENSEX'].includes(e.instrument)||
      !Array.isArray(e.witnesses)||e.witnesses.length!==2)
-    return reject(state,'INVALID_OR_MISSING_SIGNED_EVIDENCE_ENVELOPE');
+    return reject(pinnedState,'INVALID_OR_MISSING_SIGNED_EVIDENCE_ENVELOPE');
   const claims:[string,string][]=[
     [e.datasetId,raw.provenance.datasetId],
     [e.instrument,raw.instrument],
@@ -248,10 +264,10 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
     [e.calendarCoverageEnd,cal.coverageEnd]
   ];
   if(claims.some(([a,b])=>a!==b))
-    return reject(state,'SIGNED_ENVELOPE_NOT_BOUND_TO_EXACT_ORIGINAL_FILES');
+    return reject(pinnedState,'SIGNED_ENVELOPE_NOT_BOUND_TO_EXACT_ORIGINAL_FILES');
   if(!sameSha(e.vendorArtifactSha256,report.originalVendorArchiveSha256!)||
      !sameSha(e.calendarDocumentSha256,report.calendarSourceDocumentSha256!))
-    return reject(state,'SOURCE_DOCUMENT_HASH_MISMATCH_INSIDE_SIGNED_ENVELOPE');
+    return reject(pinnedState,'SOURCE_DOCUMENT_HASH_MISMATCH_INSIDE_SIGNED_ENVELOPE');
   const trustedKeys=new Map<WitnessRole,{reviewerId:string;key:KeyObject;fingerprint:string}>();
   const uniqueIds=new Set<string>(),uniqueFingerprints=new Set<string>();
   for(const reviewer of trust.reviewers){
@@ -262,13 +278,13 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
        !SHA.test(reviewer.publicKeySpkiSha256)||
        uniqueIds.has(reviewer.reviewerId)||
        trustedKeys.has(reviewer.role))
-      return reject(state,'MALFORMED_OR_DUPLICATE_PINNED_REVIEWER');
+      return reject(pinnedState,'MALFORMED_OR_DUPLICATE_PINNED_REVIEWER');
     const key=keyObject(reviewer.publicKeySpkiPem);
-    if(!key)return reject(state,'UNSUPPORTED_OR_INVALID_ED25519_PUBLIC_KEY');
+    if(!key)return reject(pinnedState,'UNSUPPORTED_OR_INVALID_ED25519_PUBLIC_KEY');
     const fingerprint=sha(key.export({format:'der',type:'spki'}) as Buffer);
     if(!sameSha(fingerprint,reviewer.publicKeySpkiSha256)||
        uniqueFingerprints.has(fingerprint))
-      return reject(state,'WRONG_PINNED_KEY_FINGERPRINT_OR_SIGNER_REUSE');
+      return reject(pinnedState,'WRONG_PINNED_KEY_FINGERPRINT_OR_SIGNER_REUSE');
     trustedKeys.set(reviewer.role,{
       reviewerId:reviewer.reviewerId,key,fingerprint
     });
@@ -276,7 +292,7 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
     uniqueFingerprints.add(fingerprint);
   }
   if(ROLES.some(role=>!trustedKeys.has(role)))
-    return reject(state,'BOTH_DISTINCT_REVIEWER_ROLES_REQUIRED');
+    return reject(pinnedState,'BOTH_DISTINCT_REVIEWER_ROLES_REQUIRED');
   const signatures=new Set<string>();
   const signedPayloadSha256ByRole:Partial<Record<WitnessRole,string>>={};
   const pinnedKeyFingerprintByRole:Partial<Record<WitnessRole,string>>={};
@@ -289,30 +305,30 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
        // Self-declared date cannot be a trusted timestamp, but must not
        // contradict the claim of reviewing the *complete* calendar archive.
        Date.parse(w.signedAt)<Date.parse(cal.coverageEnd+'T00:00:00Z')+86400000)
-      return reject(state,'INVALID_OR_NONCHRONOLOGICAL_DETACHED_WITNESS');
+      return reject(pinnedState,'INVALID_OR_NONCHRONOLOGICAL_DETACHED_WITNESS');
     // A local machine clock cannot validate an attestation timestamp, but it
     // can still reject the obvious false claim of a signature from the future.
     if(Date.parse(w.signedAt)>Date.now()+5*60_000)
-      return reject(state,'WITNESS_CLAIMS_A_FUTURE_SIGNATURE_TIME');
+      return reject(pinnedState,'WITNESS_CLAIMS_A_FUTURE_SIGNATURE_TIME');
     const key=trustedKeys.get(w.role)!;
     if(key.reviewerId!==w.reviewerId)
-      return reject(state,'DETACHED_WITNESS_NOT_IN_PINNED_ROLE');
+      return reject(pinnedState,'DETACHED_WITNESS_NOT_IN_PINNED_ROLE');
     const message=buildAdaptiveEvidenceWitnessPayload(e,w);
     const signature=Buffer.from(w.signatureBase64,'base64');
     if(signature.length!==64||!verify(null,Buffer.from(message),key.key,signature))
-      return reject(state,'INVALID_DETACHED_ED25519_WITNESS_SIGNATURE');
+      return reject(pinnedState,'INVALID_DETACHED_ED25519_WITNESS_SIGNATURE');
     signedPayloadSha256ByRole[w.role]=sha(message);
     pinnedKeyFingerprintByRole[w.role]=key.fingerprint;
     validDetachedWitnessCount++;
     signatures.add(w.role);
   }
   if(ROLES.some(role=>!signatures.has(role)))
-    return reject(state,'MISSING_REQUIRED_DETACHED_WITNESS_ROLE');
+    return reject(pinnedState,'MISSING_REQUIRED_DETACHED_WITNESS_ROLE');
   const blockers=[...calendarAudit.blockers];
   if(raw.provenance.synthetic)
     blockers.push('SYNTHETIC_SOURCE_CANNOT_CLAIM_REAL_MARKET_REVIEW');
   return {
-    ...state,
+    ...pinnedState,
     status:blockers.length?'BLOCKED_INCOMPLETE_EVIDENCE':
       'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED',
     errors:[],blockers,signedPayloadSha256ByRole,
