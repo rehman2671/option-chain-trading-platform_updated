@@ -195,7 +195,7 @@ describe('Phase 8 entry-first OOS positional exit research',()=>{
   it('missing next bid after a valid trigger stays unpriced, never zero-PnL',()=>{
     const {input,sessions,testDate}=sample('GIVEBACK');
     const from=Date.parse(testDate+'T00:00:00Z')+391*MIN;
-    const after=from+15*MIN;
+    const after=from+20*MIN;
     const chosen=100000+11*8; // CE contract in first expiry, test day only
     input.executionQuotes=input.executionQuotes.filter(q=>{
       if(q.instrumentKey!=='NSE_FO|'+chosen)return true;
