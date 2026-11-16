@@ -416,10 +416,12 @@ export function replayAdaptivePositionalPaperJournal(
      (lastRestart!==-Infinity&&!recovered)||
      !!s&&(s.netLongQuantity!==p.remaining||s.netShortQuantity!==0))
     return{...result,status:'WAITING_FOR_RECONCILIATION'};
-  if(request)return{...result,status:exitFillCount>0?'PAPER_PARTIAL_EXIT':
-    'PAPER_EXIT_REVIEW_PENDING'};
+  // An operator intent is NOT a protective order. Always display missing or
+  // cancel-pending protection as BLOCKED, even if a paper exit was requested.
   if(!protectionActive||s!.unresolvedOtherSellOrders>0)
     return{...result,status:'BLOCKED_PROTECTION'};
+  if(request)return{...result,status:exitFillCount>0?'PAPER_PARTIAL_EXIT':
+    'PAPER_EXIT_REVIEW_PENDING'};
   if(reasons.includes('SIMULATED_OVERNIGHT_STRESSED_LOSS_LIMIT_EXCEEDED')||
      reasons.includes('EXPIRY_TRADING_SESSIONS_NEAR_OR_PASSED')||
      !!q&&q.bid<=Math.max(p.initialStop,s!.stopTrigger!))
