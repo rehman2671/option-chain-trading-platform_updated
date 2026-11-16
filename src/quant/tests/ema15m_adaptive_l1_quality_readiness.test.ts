@@ -37,7 +37,8 @@ const policy=():AdaptiveMarketDataQualityPolicy=>({
   maximumWideSpreadQuoteFraction:0.05,
   minimumBidDepthMultipleOfLot:1,
   minimumSufficientBidDepthQuoteFraction:0.90,
-  overnightAdverseBidGapAlertPercent:25
+  overnightAdverseBidGapAlertPercent:25,
+  observedOptionBidGivebackAlertPercent:20
 });
 function sample():{
   input:HistoricalComparisonInput;
@@ -243,6 +244,26 @@ describe('Phase 10 predeclared OOS market-data quality and liquidity',()=>{
     assert.equal(select(r)!.disposition,'SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS');
     assert.ok(select(r)!.adverseOvernightGapAlertCount>=1);
     assert.ok(select(r)!.largestAdverseOvernightBidGapPercent!>25);
+    assert.equal(r.executionAuthorized,false);
+  });
+  it('records a 20%+ option-premium giveback after a favorable observed bid peak',()=>{
+    const f=sample();
+    const entryAt=f.testDay+391*MINUTE;
+    for(const q of f.input.executionQuotes){
+      if(q.instrumentKey!==f.testKey)continue;
+      if(Date.parse(q.observedAt)===entryAt+15*MINUTE){
+        q.bid=130;q.ask=131;
+      }
+      if(Date.parse(q.observedAt)===entryAt+30*MINUTE){
+        q.bid=99;q.ask=100;
+      }
+    }
+    const r=run(f);
+    assert.equal(select(r)!.disposition,'SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS');
+    assert.equal(select(r)!.observedBidGivebackAlert,true);
+    assert.ok(select(r)!.maximumObservedBidPeakToTroughGivebackPercent!>20);
+    assert.equal(r.cells.find(c=>c.arm==='EMA_BASELINE'&&c.horizon==='1W')!.
+      observedBidGivebackAlertCount,1);
     assert.equal(r.executionAuthorized,false);
   });
   it('rejects removed session declaration, invalid policy and forged source L1',()=>{
