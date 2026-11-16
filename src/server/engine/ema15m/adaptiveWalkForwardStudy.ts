@@ -11,6 +11,7 @@ import {
 import { ingestVendorHistoricalBundle, type VerifiedHistoricalBundleV1,
   type IngestionResult } from './adaptiveVendorIngestion.js';
 import type { HorizonBucket } from './adaptiveOptionRanker.js';
+import { auditAdaptiveOosMarketRegimes, type OosRegimeAudit } from './adaptiveOosRegimeAudit.js';
 
 export type StressScenario = 'BASE' | 'DOUBLE_FEES_AND_SLIPPAGE' |
   'WIDEN_L1_50BPS' | 'COMBINED_COST_AND_L1_STRESS';
@@ -65,6 +66,7 @@ export interface AdaptiveWalkForwardStudy {
   }>;
   results: StressCell[];
   pairedOutOfSample: PairedComparison[];
+  marketRegimeAudit: OosRegimeAudit | null;
   report: HistoricalComparisonReport | null;
   warnings: string[];
 }
@@ -134,7 +136,7 @@ export function runAdaptiveWalkForwardStudy(raw:unknown):AdaptiveWalkForwardStud
     sourceAuthenticityIndependentlyVerified:false,empiricalProfitabilityProven:false,
     status:'REJECTED',errors:[...ingestion.errors],ingestion:audit,
     scenarios:SCENARIOS,foldWindows:[],results:[],pairedOutOfSample:[],
-    report:null,
+    report:null,marketRegimeAudit:null,
     warnings:['SYNTHETIC_FIXTURES_CANNOT_ESTABLISH_MARKET_PERFORMANCE',
       'SOURCE_EVENT_TIME_ATTESTATION_REQUIRES_INDEPENDENT_REVIEW',
       'L1_DEPTH_DOES_NOT_GUARANTEE_FILL_OR_PROTECT_OVERNIGHT_GAPS',
@@ -169,6 +171,7 @@ export function runAdaptiveWalkForwardStudy(raw:unknown):AdaptiveWalkForwardStud
       ...f.window,trainingSessions:f.trainingSessions,testingSessions:f.testingSessions
     })),
     pairedOutOfSample:pairs,results:cells,errors:[],
+    marketRegimeAudit:auditAdaptiveOosMarketRegimes(input,report),
     // Even if a vendor claims all data, never produce PASS/PROFITABLE.
     status:checks.every(x=>x.status==='DESCRIPTIVE_ONLY')
       ?'DESCRIPTIVE_ONLY':'INCOMPLETE_EVIDENCE'
