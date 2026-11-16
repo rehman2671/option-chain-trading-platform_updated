@@ -223,6 +223,21 @@ describe('Adaptive Phase 9 offline NRML paper journal invariants',()=>{
     assert.equal(result.status,'INVALID_JOURNAL');
     assert.ok(result.errors.includes('SIMULATED_FILL_LACKS_POST_REQUEST_L1_OR_DEPTH'));
   });
+  it('cannot cherry-pick a later favorable quote when the first post-request L1 was thin',()=>{
+    let j=evidence();
+    j=add(j,'req',{kind:'OPERATOR_EXIT_REVIEW_REQUESTED',at:iso(16,13),
+      requestId:'THIN-FIRST-QUOTE',quantity:130,reason:'PAPER_REVIEW'});
+    j=add(j,'thin',{kind:'OPTION_L1_OBSERVED',at:iso(16,14),
+      quote:bid(iso(16,14),90,1)});
+    j=add(j,'later',{kind:'OPTION_L1_OBSERVED',at:iso(16,15),
+      quote:bid(iso(16,15),110,130)});
+    j=add(j,'optimistic',{kind:'SIMULATED_EXIT_FILL',at:iso(16,15),
+      requestId:'THIN-FIRST-QUOTE',quantity:130,
+      quoteObservedAt:iso(16,15),bid:110});
+    const r=audit(j,iso(16,16));
+    assert.equal(r.status,'INVALID_JOURNAL');
+    assert.ok(r.errors.includes('SIMULATED_FILL_LACKS_POST_REQUEST_L1_OR_DEPTH'));
+  });
   it('rejects journal mutation, out-of-order events and duplicate event IDs',()=>{
     let j=evidence();
     assert.throws(()=>add(j,'l1',{kind:'RECOVERY_STARTED',at:iso(16,12)}),
