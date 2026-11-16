@@ -137,7 +137,7 @@ function policyValid(p:AdaptiveResearchEvidencePolicy):boolean {
     integer(p.minimumPricedEntryFirstExitsPerCell,1,100000)&&
     integer(p.minimumStressTradesPerCell,1,100000)&&
     integer(p.minimumPairedDecisionsPerArmHorizon,1,100000)&&
-    integer(p.minimumDistinctMarketRegimesPerFold,1,5)&&
+    integer(p.minimumDistinctMarketRegimesPerFold,2,5)&&
     integer(p.minimumDecisionSessionsPerObservedRegime,1,100000)&&
     fraction(p.maximumMissingEntryFractionPerCell)&&
     fraction(p.maximumCensoredExitFractionPerCell)&&
@@ -267,6 +267,9 @@ export function evaluateAdaptiveResearchEvidenceGate(
     if(!consistent)flag('REGIME_AUDIT_SESSIONS_OR_ARM_HORIZON_MATRIX_MISMATCH');
     if(eligible.length<policy.minimumDistinctMarketRegimesPerFold)
       flag('INSUFFICIENT_DISTINCT_MARKET_REGIMES_FOR_GENERALIZABILITY_REVIEW');
+    if(!eligible.some(r=>r==='TREND_UP'||r==='TREND_DOWN')||
+       !eligible.some(r=>r==='SIDEWAYS'||r==='VOLATILE'||r==='TRANSITION'))
+      flag('BOTH_TREND_AND_NON_TREND_MARKET_REGIMES_MUST_BE_OBSERVED');
     regimeFoldEvidence.push({
       foldIndex,distinctObservedRegimes:allRegimes,qualifyingRegimes:eligible,
       attributedDecisionSessions:attributedSessions,
