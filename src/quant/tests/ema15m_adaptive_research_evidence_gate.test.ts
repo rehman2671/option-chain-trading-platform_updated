@@ -170,7 +170,7 @@ function fixture():Fixture{
         training:[],outOfSample:[],completePriceEvidence:true}]
     },
     warnings:[]
-  } as AdaptiveWalkForwardStudy;
+  } as unknown as AdaptiveWalkForwardStudy;
   const artifact:SourceArtifactAudit={
     mode:'RESEARCH_ONLY',executionAuthorized:false,
     marketAuthenticityVerified:false,
