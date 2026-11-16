@@ -24,6 +24,8 @@ const protocol=():AdaptiveResearchEvidencePolicy=>({
   minimumOutOfSampleFolds:1,minimumTestingSessionsPerFold:20,
   minimumPricedEntryFirstExitsPerCell:20,minimumStressTradesPerCell:20,
   minimumPairedDecisionsPerArmHorizon:20,
+  minimumDistinctMarketRegimesPerFold:2,
+  minimumDecisionSessionsPerObservedRegime:10,
   maximumMissingEntryFractionPerCell:0,
   maximumCensoredExitFractionPerCell:0,
   maximumCombinedStressDeteriorationINR:500,
@@ -152,7 +154,16 @@ function fixture():Fixture{
     empiricalProfitabilityProven:false,status:'DESCRIPTIVE_ONLY',
     errors:[],scenarios,foldWindows:[{
       ...w,trainingSessions:20,testingSessions:20
-    }],results,pairedOutOfSample:pairs,marketRegimeAudit:null,
+    }],results,pairedOutOfSample:pairs,marketRegimeAudit:{
+      mode:'RESEARCH_ONLY',executionAuthorized:false,
+      causalEffectEstablished:false,sourceAuthenticityVerified:false,
+      cells:['TREND_UP','SIDEWAYS'].flatMap(regime=>arms.flatMap(arm=>
+        horizons.map(horizon=>({
+          foldIndex:0,regime,arm,horizon,observedDecisionSessions:10,
+          executedTrades:10,netPnlINR:0,avgPnlPerClosedTradeINR:0,
+          adequateSampleForDescriptiveUse:false,productionSafe:false
+        })))),warnings:[]
+    },
     ingestion:{
       mode:'RESEARCH_ONLY',executionAuthorized:false,schemaValid:true,
       sourceAuthenticityIndependentlyVerified:false,
@@ -191,6 +202,8 @@ describe('Phase 11 independent-review evidence gate never enables trading',()=>{
     assert.equal(a.cells.length,12);
     assert.equal(a.totalTestingSessions,20);
     assert.equal(a.foldCount,1);
+    assert.deepEqual(a.regimeFoldEvidence[0].qualifyingRegimes,['SIDEWAYS','TREND_UP']);
+    assert.equal(a.regimeFoldEvidence[0].internallyConsistent,true);
     assert.match(a.aggregateSummarySha256!,/^[0-9a-f]{64}$/);
     assert.equal(a.aggregateSummarySha256,b.aggregateSummarySha256);
     assert.equal(a.executionAuthorized,false);
@@ -290,6 +303,23 @@ describe('Phase 11 independent-review evidence gate never enables trading',()=>{
     const r=assess(f);
     assert.ok(r.blockers.includes('UPSTREAM_RESEARCH_SAFETY_FLAGS_UNEXPECTEDLY_MUTATED'));
     assert.equal(r.executionAuthorized,false);
+  });
+  it('blocks omitted sideways/choppy market conditions, not just strong-trend outcomes',()=>{
+    const f=fixture();
+    const cells=f.study.marketRegimeAudit!.cells;
+    f.study.marketRegimeAudit!.cells=cells.filter(c=>c.regime==='TREND_UP');
+    const r=assess(f);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.ok(r.blockers.includes('INSUFFICIENT_DISTINCT_MARKET_REGIMES_FOR_GENERALIZABILITY_REVIEW'));
+    assert.ok(r.blockers.includes('REGIME_AUDIT_SESSIONS_OR_ARM_HORIZON_MATRIX_MISMATCH'));
+    assert.equal(r.regimeFoldEvidence[0].attributedDecisionSessions,10);
+  });
+  it('blocks a duplicated or missing regime × arm × horizon cross-section',()=>{
+    const f=fixture();
+    f.study.marketRegimeAudit!.cells.pop();
+    const r=assess(f);
+    assert.ok(r.blockers.includes('REGIME_AUDIT_SESSIONS_OR_ARM_HORIZON_MATRIX_MISMATCH'));
+    assert.equal(r.regimeFoldEvidence[0].internallyConsistent,false);
   });
   it('data-quality source mismatch and incomplete prior reports remain blocked',()=>{
     const f=fixture();
