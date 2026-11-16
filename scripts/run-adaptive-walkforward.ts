@@ -5,7 +5,8 @@
  *   [--source-artifact <original-vendor-bytes>] \
  *   [--exit-policy <phase7-predeclared-policy.json>] \
  *   [--entry-first-policy <phase8-predeclared-policy.json>] \
- *   [--market-data-policy <phase10-predeclared-quality-policy.json>]
+ *   [--market-data-policy <phase10-predeclared-quality-policy.json>] \
+ *   [--evidence-gate-policy <phase11-predeclared-evidence-policy.json>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -17,9 +18,12 @@ import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
   '../src/server/engine/ema15m/adaptiveWalkForwardStudy.js';
-import { auditAdaptiveL1MarketDataQuality, type AdaptiveMarketDataQualityPolicy } from
+import { evaluateAdaptiveResearchEvidenceGate, type AdaptiveResearchEvidencePolicy } from
+  '../src/server/engine/ema15m/adaptiveResearchEvidenceGate.js';
+import { auditAdaptiveL1MarketDataQuality, type AdaptiveMarketDataQualityPolicy,
+  type AdaptiveMarketDataQualityReport } from
   '../src/server/engine/ema15m/adaptiveL1MarketDataQuality.js';
-import { runAdaptiveEntryFirstExitStudy } from
+import { runAdaptiveEntryFirstExitStudy, type EntryFirstExitStudy } from
   '../src/server/engine/ema15m/adaptiveEntryFirstExitStudy.js';
 import { ingestVendorHistoricalBundle } from
   '../src/server/engine/ema15m/adaptiveVendorIngestion.js';
@@ -35,14 +39,15 @@ async function fileBytes(path:string, max=MAX_BYTES):Promise<Uint8Array>{
 }
 function parseOptions(args:string[]):{
   bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
-  entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null
+  entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null;
+  evidenceGatePolicyPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -52,11 +57,13 @@ function parseOptions(args:string[]):{
     sourcePath:flags.has('--source-artifact')?resolve(flags.get('--source-artifact')!):null,
     exitPolicyPath:flags.has('--exit-policy')?resolve(flags.get('--exit-policy')!):null,
     entryFirstPolicyPath:flags.has('--entry-first-policy')?resolve(flags.get('--entry-first-policy')!):null,
-    marketDataPolicyPath:flags.has('--market-data-policy')?resolve(flags.get('--market-data-policy')!):null
+    marketDataPolicyPath:flags.has('--market-data-policy')?resolve(flags.get('--market-data-policy')!):null,
+    evidenceGatePolicyPath:flags.has('--evidence-gate-policy')?resolve(flags.get('--evidence-gate-policy')!):null
   };
 }
 async function main():Promise<void>{
-  const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,marketDataPolicyPath}=
+  const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,
+    marketDataPolicyPath,evidenceGatePolicyPath}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -66,6 +73,10 @@ async function main():Promise<void>{
     throw new Error('ENTRY_FIRST_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
   if(marketDataPolicyPath&&await realpath(marketDataPolicyPath)===await realpath(bundlePath))
     throw new Error('MARKET_QUALITY_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(evidenceGatePolicyPath&&await realpath(evidenceGatePolicyPath)===await realpath(bundlePath))
+    throw new Error('EVIDENCE_GATE_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(evidenceGatePolicyPath&&(!marketDataPolicyPath||!entryFirstPolicyPath))
+    throw new Error('EVIDENCE_GATE_REQUIRES_ENTRY_FIRST_AND_MARKET_QUALITY_POLICIES');
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
   const declaredReal=raw?.provenance?.synthetic===false;
   let artifactAudit=null;
@@ -116,6 +127,7 @@ async function main():Promise<void>{
     }
   }
   let entryFirstReplay=null;
+  let entryFirstStudy:EntryFirstExitStudy|null=null;
   if(entryFirstPolicyPath){
     const phase8Policy:AdaptiveExitReplayPolicy=JSON.parse(
       Buffer.from(await fileBytes(entryFirstPolicyPath,128*1024)).toString('utf8')
@@ -130,6 +142,7 @@ async function main():Promise<void>{
       const study=runAdaptiveEntryFirstExitStudy(
         data,phase8Policy,raw.declaredExchangeSessions
       );
+      entryFirstStudy=study;
       // Output ONLY group-level counts, censoring and observational PnL:
       // no licensed per-contract quote-path disclosure.
       const reasonCounts:Record<string,number>={};
@@ -149,6 +162,7 @@ async function main():Promise<void>{
     }
   }
   let marketDataQualityAudit=null;
+  let marketDataQualityStudy:AdaptiveMarketDataQualityReport|null=null;
   if(marketDataPolicyPath){
     const qualityPolicy:AdaptiveMarketDataQualityPolicy=JSON.parse(
       Buffer.from(await fileBytes(marketDataPolicyPath,128*1024)).toString('utf8')
@@ -164,6 +178,7 @@ async function main():Promise<void>{
         ingested.input,raw.declaredExchangeSessions,
         raw.executionL1,qualityPolicy
       );
+      marketDataQualityStudy=report;
       const reasonCounts:Record<string,number>={};
       for(const item of report.paths)
         for(const reason of item.reasons)
@@ -192,6 +207,34 @@ async function main():Promise<void>{
       };
     }
   }
+  let evidenceGate=null;
+  if(evidenceGatePolicyPath){
+    const evidencePolicy:AdaptiveResearchEvidencePolicy=JSON.parse(
+      Buffer.from(await fileBytes(evidenceGatePolicyPath,128*1024)).toString('utf8')
+    );
+    const gate=evaluateAdaptiveResearchEvidenceGate(
+      result,marketDataQualityStudy,entryFirstStudy,artifactAudit,evidencePolicy
+    );
+    evidenceGate={
+      mode:gate.mode,status:gate.status,
+      executionAuthorized:gate.executionAuthorized,
+      productionSafe:gate.productionSafe,
+      profitabilityProven:gate.profitabilityProven,
+      brokerOperationalSafetyProven:gate.brokerOperationalSafetyProven,
+      sourceAuthenticityIndependentlyVerified:gate.sourceAuthenticityIndependentlyVerified,
+      exchangeCalendarIndependentlyVerified:gate.exchangeCalendarIndependentlyVerified,
+      timestampProvenanceIndependentlyVerified:gate.timestampProvenanceIndependentlyVerified,
+      protocolRegistrationIndependentlyVerified:gate.protocolRegistrationIndependentlyVerified,
+      datasetId:gate.datasetId,synthetic:gate.synthetic,
+      errors:gate.errors,blockers:gate.blockers,
+      foldCount:gate.foldCount,
+      totalTestingSessions:gate.totalTestingSessions,
+      aggregateSummarySha256:gate.aggregateSummarySha256,
+      reviewCells:gate.cells,
+      externalReviewChecklist:gate.externalReviewChecklist,
+      warnings:gate.warnings
+    };
+  }
   console.log(JSON.stringify({
     mode:result.mode,executionAuthorized:result.executionAuthorized,
     productionSafe:result.productionSafe,status:result.status,
@@ -205,12 +248,14 @@ async function main():Promise<void>{
     marketRegimeAudit:result.marketRegimeAudit,
     positionalExitReplay:exitReplay,
     independentEntryFirstExitStudy:entryFirstReplay,
-    marketDataQualityAudit,warnings:result.warnings
+    marketDataQualityAudit,
+    independentEvidenceReviewGate:evidenceGate,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
      (entryFirstReplay!==null&&entryFirstReplay.status!=='DESCRIPTIVE_ONLY')||
-     (marketDataQualityAudit!==null&&marketDataQualityAudit.status!=='DESCRIPTIVE_ONLY'))
+     (marketDataQualityAudit!==null&&marketDataQualityAudit.status!=='DESCRIPTIVE_ONLY')||
+     (evidenceGate!==null&&evidenceGate.status!=='EXTERNAL_REVIEW_REQUIRED'))
     process.exitCode=1;
 }
 main().catch(error=>{
