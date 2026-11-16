@@ -20,6 +20,7 @@ It cross-checks:
 - A matching, separately retained source-artifact checksum result from Phase 6. The result remains `CHECKSUM_MATCHED_AUTHENTICITY_UNVERIFIED`; the gate always returns `sourceAuthenticityIndependentlyVerified=false`.
 - A predeclared protocol ID and `prespecifiedAt` timestamp **before** the first OOS test fold. The timestamp is still self-declared and does **not** prove prior third-party registration.
 - Non-overlapping dated walk-forward test folds, original fold-window consistency and the predeclared minimum test sessions/folds.
+- **Decision-time market-regime diversity**, using Phase 6 closed-index-candle classifications: each OOS fold must include the predeclared minimum number of distinct trend/sideways/volatile/transition regimes, with a minimum number of actual observed decision sessions each. Regime × arm × horizon counts must reconcile to the fold's testing-session denominator. A run dominated by one favorable trending regime must not claim generalizable market behavior.
 - Exactly 3 policy research arms × 4 expiry horizons per fold, with all four cost-stress scenarios and both paired policy-arm comparisons. Rejects missing/duplicated cells, missing pairs or insufficient paired decisions.
 - **Phase 8 entry-first cohort, raw decision records, raw L1 path dispositions and raw exit outcomes** against Phase 10 summary cells: for each fold, arm and 1W/2W/4W/8W bucket, original decision counts, observed/missing entries, priced/unknown exits and data-quality passes must reconcile. A future missing exit cannot be silently dropped or assigned zero P&L.
 - The minimum number of **complete, priced** OOS entries in every arm/horizon; no review if censoring, missing entries or poor L1 quality exceed predeclared limits.
@@ -57,6 +58,8 @@ Illustrative JSON **not calibrated or recommended for live trading**:
   "minimumPricedEntryFirstExitsPerCell": 20,
   "minimumStressTradesPerCell": 20,
   "minimumPairedDecisionsPerArmHorizon": 20,
+  "minimumDistinctMarketRegimesPerFold": 3,
+  "minimumDecisionSessionsPerObservedRegime": 10,
   "maximumMissingEntryFractionPerCell": 0.0,
   "maximumCensoredExitFractionPerCell": 0.0,
   "maximumCombinedStressDeteriorationINR": 10000,
@@ -64,7 +67,7 @@ Illustrative JSON **not calibrated or recommended for live trading**:
 }
 ```
 
-Set protocol ID and policy values **before** inspecting untouched OOS returns; the self-declared `prespecifiedAt` only detects obvious chronological contradictions and cannot establish honest preregistration. Even 20 complete examples or 3 folds are NOT proof of statistical significance or a trading edge. The illustrative INR risk limits cannot be copied to a real account without explicit sizing, capital, tail-risk and regulatory review.
+Set protocol ID and policy values **before** inspecting untouched OOS returns; the self-declared `prespecifiedAt` only detects obvious chronological contradictions and cannot establish honest preregistration. Even 20 complete examples, 3 regimes or 3 folds are NOT proof of statistical significance or a trading edge. A regime-classifier output itself can be wrong and requires independent comparison to external market conditions. The illustrative INR risk limits cannot be copied to a real account without explicit sizing, capital, tail-risk and regulatory review.
 
 ## Mandatory independent/manual reviews AFTER this gate
 
