@@ -7,7 +7,8 @@
  *   [--entry-first-policy <phase8-predeclared-policy.json>] \
  *   [--market-data-policy <phase10-predeclared-quality-policy.json>] \
  *   [--evidence-gate-policy <phase11-predeclared-evidence-policy.json>] \
- *   [--hysteresis-policy <phase12-predeclared-policy.json>]
+ *   [--hysteresis-policy <phase12-predeclared-policy.json>] \
+ *   [--matched-hysteresis-policy <phase13-predeclared-policy.json>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -19,6 +20,9 @@ import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
   '../src/server/engine/ema15m/adaptiveWalkForwardStudy.js';
+import { compareAdaptiveHysteresisMatchedOos,
+  type HysteresisMatchedOosPolicy } from
+  '../src/server/engine/ema15m/adaptiveHysteresisMatchedOos.js';
 import { replayAdaptiveRegimeHysteresis, type HysteresisResearchPolicy } from
   '../src/server/engine/ema15m/adaptiveRegimeHysteresis.js';
 import { evaluateAdaptiveResearchEvidenceGate, type AdaptiveResearchEvidencePolicy } from
@@ -43,14 +47,15 @@ async function fileBytes(path:string, max=MAX_BYTES):Promise<Uint8Array>{
 function parseOptions(args:string[]):{
   bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
   entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null;
-  evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null
+  evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null;
+  matchedHysteresisPolicyPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -62,12 +67,14 @@ function parseOptions(args:string[]):{
     entryFirstPolicyPath:flags.has('--entry-first-policy')?resolve(flags.get('--entry-first-policy')!):null,
     marketDataPolicyPath:flags.has('--market-data-policy')?resolve(flags.get('--market-data-policy')!):null,
     evidenceGatePolicyPath:flags.has('--evidence-gate-policy')?resolve(flags.get('--evidence-gate-policy')!):null,
-    hysteresisPolicyPath:flags.has('--hysteresis-policy')?resolve(flags.get('--hysteresis-policy')!):null
+    hysteresisPolicyPath:flags.has('--hysteresis-policy')?resolve(flags.get('--hysteresis-policy')!):null,
+    matchedHysteresisPolicyPath:flags.has('--matched-hysteresis-policy')?resolve(flags.get('--matched-hysteresis-policy')!):null
   };
 }
 async function main():Promise<void>{
   const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,
-    marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath}=
+    marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath,
+    matchedHysteresisPolicyPath}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -81,6 +88,11 @@ async function main():Promise<void>{
     throw new Error('EVIDENCE_GATE_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
   if(hysteresisPolicyPath&&await realpath(hysteresisPolicyPath)===await realpath(bundlePath))
     throw new Error('HYSTERESIS_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(matchedHysteresisPolicyPath&&
+     await realpath(matchedHysteresisPolicyPath)===await realpath(bundlePath))
+    throw new Error('MATCHED_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(matchedHysteresisPolicyPath&&(!hysteresisPolicyPath||!entryFirstPolicyPath))
+    throw new Error('MATCHED_OOS_REQUIRES_ENTRY_FIRST_AND_HYSTERESIS_POLICIES');
   if(evidenceGatePolicyPath&&(!marketDataPolicyPath||!entryFirstPolicyPath))
     throw new Error('EVIDENCE_GATE_REQUIRES_ENTRY_FIRST_AND_MARKET_QUALITY_POLICIES');
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
@@ -273,6 +285,46 @@ async function main():Promise<void>{
       };
     }
   }
+  let matchedHysteresisOosStudy=null;
+  if(matchedHysteresisPolicyPath){
+    const matchedPolicy:HysteresisMatchedOosPolicy=JSON.parse(
+      Buffer.from(await fileBytes(matchedHysteresisPolicyPath,128*1024)).toString('utf8')
+    );
+    const input=ingestVendorHistoricalBundle(raw).input;
+    if(!input){
+      matchedHysteresisOosStudy={
+        status:'REJECTED',executionAuthorized:false,
+        errors:['VALID_SOURCE_ATTESTED_HISTORICAL_L1_DATASET_REQUIRED']
+      };
+    }else{
+      const exitPolicy:AdaptiveExitReplayPolicy=JSON.parse(
+        Buffer.from(await fileBytes(entryFirstPolicyPath!,128*1024)).toString('utf8')
+      );
+      const hysteresisPolicy:HysteresisResearchPolicy=JSON.parse(
+        Buffer.from(await fileBytes(hysteresisPolicyPath!,128*1024)).toString('utf8')
+      );
+      const study=compareAdaptiveHysteresisMatchedOos(
+        input,raw.declaredExchangeSessions,exitPolicy,
+        hysteresisPolicy,matchedPolicy
+      );
+      matchedHysteresisOosStudy={
+        status:study.status,executionAuthorized:study.executionAuthorized,
+        productionSafe:study.productionSafe,
+        profitabilityProven:study.profitabilityProven,
+        brokerStopsInstalled:study.brokerStopsInstalled,
+        historicalSourceAuthenticated:study.historicalSourceAuthenticated,
+        exchangeCalendarAuthenticated:study.exchangeCalendarAuthenticated,
+        originalClockIndependentlyAuthenticated:study.originalClockIndependentlyAuthenticated,
+        method:study.method,datasetId:study.datasetId,synthetic:study.synthetic,
+        originalExitStatus:study.originalExitStatus,
+        stabilizedExitStatus:study.stabilizedExitStatus,
+        hysteresisStatus:study.hysteresisStatus,
+        totalDecisionCells:study.totalDecisionCells,
+        errors:study.errors,warnings:study.warnings,
+        cells:study.cells
+      };
+    }
+  }
   console.log(JSON.stringify({
     mode:result.mode,executionAuthorized:result.executionAuthorized,
     productionSafe:result.productionSafe,status:result.status,
@@ -288,7 +340,8 @@ async function main():Promise<void>{
     independentEntryFirstExitStudy:entryFirstReplay,
     marketDataQualityAudit,
     independentEvidenceReviewGate:evidenceGate,
-    adaptiveRegimeHysteresisStudy,warnings:result.warnings
+    adaptiveRegimeHysteresisStudy,
+    matchedHysteresisOosStudy,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
@@ -296,7 +349,9 @@ async function main():Promise<void>{
      (marketDataQualityAudit!==null&&marketDataQualityAudit.status!=='DESCRIPTIVE_ONLY')||
      (evidenceGate!==null&&evidenceGate.status!=='EXTERNAL_REVIEW_REQUIRED')||
      (adaptiveRegimeHysteresisStudy!==null&&
-       adaptiveRegimeHysteresisStudy.status!=='DESCRIPTIVE_ONLY'))
+       adaptiveRegimeHysteresisStudy.status!=='DESCRIPTIVE_ONLY')||
+     (matchedHysteresisOosStudy!==null&&
+       matchedHysteresisOosStudy.status!=='DESCRIPTIVE_ONLY'))
     process.exitCode=1;
 }
 main().catch(error=>{

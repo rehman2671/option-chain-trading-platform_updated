@@ -154,9 +154,11 @@ function emptyOutcome(a:CohortDecision,status:EntryFirstExitStatus,
 export function runAdaptiveEntryFirstExitStudy(
   input:HistoricalComparisonInput,
   policy:AdaptiveExitReplayPolicy,
-  declaredSessions:DeclaredTradingSession[]|undefined
+  declaredSessions:DeclaredTradingSession[]|undefined,
+  /** Optional precomputed Phase 12 ORIGINAL-decision advisory per fold/horizon. */
+  newEntryAdvisories?:ReadonlyMap<string,'CE'|'PE'|'NO_TRADE'>
 ):EntryFirstExitStudy {
-  const cohort=buildAdaptiveEntryFirstCohort(input);
+  const cohort=buildAdaptiveEntryFirstCohort(input,newEntryAdvisories);
   const errors=[...cohort.errors,...validateAdaptiveExitReplayPolicy(policy)];
   const sessions=validatedSessions(declaredSessions);
   if(!sessions)errors.push('ORIGINAL_EXCHANGE_SESSION_CALENDAR_REQUIRED');

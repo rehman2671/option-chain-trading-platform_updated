@@ -24,7 +24,8 @@ const ARMS: HistoricalArm[]=['EMA_BASELINE','REGIME_FILTER','REGIME_AND_RANK'];
 const ms=(x:string)=>Date.parse(x);
 export type EntryDisposition='NO_TRADE_SIGNAL'|'NO_POINT_IN_TIME_CONTRACT'|
  'PRE_EXPIRY_BUFFER_VIOLATION'|'MISSING_EXECUTABLE_ENTRY_L1'|
- 'PREDECLARED_EXPOSURE_COOLDOWN'|'UNUSABLE_UNDERLYING_HISTORY'|'ENTRY_OBSERVED';
+ 'PREDECLARED_EXPOSURE_COOLDOWN'|'UNUSABLE_UNDERLYING_HISTORY'|
+ 'HYSTERESIS_NEW_ENTRY_BLOCKED'|'ENTRY_OBSERVED';
 export interface CohortDecision {
   foldIndex:number;
   arm:HistoricalArm;
@@ -66,7 +67,20 @@ function selectLatestChain(d:HistoricalDecision,expiry:string,ageMs:number):unkn
   return eligible[0]?.rows??null;
 }
 
-export function buildAdaptiveEntryFirstCohort(input:HistoricalComparisonInput):EntryFirstCohortReport {
+/**
+ * Optional research-only point-in-time advisory gate.
+ * The map is keyed by fold|horizon|decisionAt and carries the Phase 12 advisory
+ * computed WITHOUT future option quotes. A filtered replay creates its OWN
+ * cooldown state; a skipped baseline entry does not reserve filtered exposure.
+ * Existing Phase 8 calls without a gate are byte-for-byte behavior compatible.
+ */
+export const adaptiveCohortAdvisoryKey=(foldIndex:number,
+  horizon:HorizonBucket,decisionAt:string)=>
+  foldIndex+'|'+horizon+'|'+decisionAt;
+export function buildAdaptiveEntryFirstCohort(
+  input:HistoricalComparisonInput,
+  newEntryAdvisories?:ReadonlyMap<string,'CE'|'PE'|'NO_TRADE'>
+):EntryFirstCohortReport {
   const base:EntryFirstCohortReport={
     mode:'RESEARCH_ONLY',executionAuthorized:false,productionSafe:false,
     sourceAuthenticated:false,status:'REJECTED',errors:[],attempts:[],
@@ -137,6 +151,12 @@ export function buildAdaptiveEntryFirstCohort(input:HistoricalComparisonInput):E
         }
         if(!side||(arm!=='EMA_BASELINE'&&!eligibleSignal)){
           attempts.push(basic);continue;
+        }
+        if(newEntryAdvisories&&
+           newEntryAdvisories.get(adaptiveCohortAdvisoryKey(
+             foldIndex,horizon,d.decisionAt))!==side){
+          attempts.push({...basic,disposition:'HYSTERESIS_NEW_ENTRY_BLOCKED'});
+          continue;
         }
         const bucket=ranked?.options.find(v=>v.horizon===horizon);
         if(!bucket||bucket.status!=='RANKED'){
