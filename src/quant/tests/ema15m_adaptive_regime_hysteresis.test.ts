@@ -80,16 +80,19 @@ describe('Phase 12 offline regime hysteresis state machine',()=>{
       obs(0,'CE'),obs(1,'CE'),
       obs(2,'PE'),obs(3,'CE'),
       obs(4,'PE'),obs(5,'NO_TRADE'),
-      obs(6,'CE')
+      obs(6,'CE'),obs(7,'CE')
     ]);
     assert.equal(rows[2].reason,'OPPOSITE_CONFIRMATION_PENDING');
     assert.equal(rows[2].confirmedSide,'CE');
     assert.equal(rows[2].newEntryAdvisory,'NO_TRADE');
-    assert.equal(rows[3].newEntryAdvisory,'CE');
+    assert.equal(rows[3].reason,'CONFIRMED_DIRECTION_REVALIDATION_PENDING');
+    assert.equal(rows[3].newEntryAdvisory,'NO_TRADE');
     assert.equal(rows[4].newEntryAdvisory,'NO_TRADE');
     assert.equal(rows[5].reason,'NO_TREND_OR_TRANSITION');
     assert.equal(rows[5].confirmedSide,'CE'); // research only; not a held position
-    assert.equal(rows[6].newEntryAdvisory,'CE');
+    assert.equal(rows[6].newEntryAdvisory,'NO_TRADE');
+    assert.equal(rows[6].reason,'CONFIRMED_DIRECTION_REVALIDATION_PENDING');
+    assert.equal(rows[7].newEntryAdvisory,'CE');
     assert.ok(rows.every(x=>!x.confirmedOppositeFlip));
   });
   it('opposite confirmation respects dwell and separate post-reversal cooldown',()=>{
@@ -109,8 +112,12 @@ describe('Phase 12 offline regime hysteresis state machine',()=>{
     assert.equal(after.reason,'POST_REVERSAL_COOLDOWN');
     assert.equal(after.newEntryAdvisory,'NO_TRADE');
     const resumed=applyAdaptiveHysteresisObservation(after.state,obs(8,'PE'),rule,30);
-    assert.equal(resumed.newEntryAdvisory,'PE');
-    assert.equal(resumed.confirmedOppositeFlip,false);
+    assert.equal(resumed.reason,'CONFIRMED_DIRECTION_REVALIDATION_PENDING');
+    assert.equal(resumed.newEntryAdvisory,'NO_TRADE');
+    const reaffirmed=applyAdaptiveHysteresisObservation(resumed.state,obs(9,'PE'),rule,30);
+    assert.equal(reaffirmed.reason,'CONFIRMED_DIRECTION_REVALIDATED');
+    assert.equal(reaffirmed.newEntryAdvisory,'PE');
+    assert.equal(reaffirmed.confirmedOppositeFlip,false);
   });
   it('longer 8W bucket needs more sequential evidence than the 1W bucket',()=>{
     const input=[0,1,2,3].map(i=>obs(i,'CE'));
@@ -124,14 +131,16 @@ describe('Phase 12 offline regime hysteresis state machine',()=>{
     const rows=runSequence([
       obs(0,'CE'),obs(1,'CE'),
       obs(2,'NO_TRADE','VOLATILE'),
-      obs(3,'CE'),obs(4,'CE')
+      obs(3,'CE'),obs(4,'CE'),obs(5,'CE')
     ]);
     assert.equal(rows[2].reason,'VOLATILITY_SHOCK_FREEZE');
     assert.equal(rows[2].confirmedSide,'CE');
     assert.equal(rows[2].newEntryAdvisory,'NO_TRADE');
     assert.equal(rows[3].reason,'AFTER_SHOCK_FREEZE');
     assert.equal(rows[3].newEntryAdvisory,'NO_TRADE');
-    assert.equal(rows[4].newEntryAdvisory,'CE');
+    assert.equal(rows[4].reason,'CONFIRMED_DIRECTION_REVALIDATION_PENDING');
+    assert.equal(rows[4].newEntryAdvisory,'NO_TRADE');
+    assert.equal(rows[5].newEntryAdvisory,'CE');
   });
   it('missing declared exchange session breaks pending confirmation',()=>{
     const rows=runSequence([
