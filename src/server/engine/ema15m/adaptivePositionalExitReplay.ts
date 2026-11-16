@@ -108,7 +108,7 @@ const warnings = [
   'FIXED_HOLD_COMPARATOR_ALREADY_EXCLUDES_ENTRIES_WITH_MISSING_EXIT_EVIDENCE',
   'REGIME_STRATEGY_OOS_EDGE_AND_PRODUCTION_SAFETY_NOT_ESTABLISHED'
 ];
-function validate(policy: AdaptiveExitReplayPolicy): string[] {
+export function validateAdaptiveExitReplayPolicy(policy: AdaptiveExitReplayPolicy): string[] {
   if (!policy || policy.schemaVersion!=='ADAPTIVE_OPTION_EXIT_REPLAY_V1' ||
       !policy.horizonRules ||
       !Number.isInteger(policy.minQuotesPerDeclaredSession) ||
@@ -217,7 +217,7 @@ export function replayAdaptiveExitPaths(
     empiricalProfitabilityProven:false,status:'REJECTED',
     errors:[],trades:[],cells:[],warnings
   };
-  const errors=validate(policy);
+  const errors=validateAdaptiveExitReplayPolicy(policy);
   if(!input || !baseline || baseline.status==='INVALID_DATASET' ||
      baseline.datasetId!==input?.provenance?.datasetId ||
      baseline.synthetic!==input?.provenance?.synthetic)
