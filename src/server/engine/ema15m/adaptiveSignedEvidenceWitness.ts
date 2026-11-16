@@ -290,6 +290,10 @@ export function auditAdaptiveSignedEvidenceWitness(input:{
        // contradict the claim of reviewing the *complete* calendar archive.
        Date.parse(w.signedAt)<Date.parse(cal.coverageEnd+'T00:00:00Z')+86400000)
       return reject(state,'INVALID_OR_NONCHRONOLOGICAL_DETACHED_WITNESS');
+    // A local machine clock cannot validate an attestation timestamp, but it
+    // can still reject the obvious false claim of a signature from the future.
+    if(Date.parse(w.signedAt)>Date.now()+5*60_000)
+      return reject(state,'WITNESS_CLAIMS_A_FUTURE_SIGNATURE_TIME');
     const key=trustedKeys.get(w.role)!;
     if(key.reviewerId!==w.reviewerId)
       return reject(state,'DETACHED_WITNESS_NOT_IN_PINNED_ROLE');
