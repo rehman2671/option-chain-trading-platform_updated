@@ -3,7 +3,8 @@
  *
  * npx tsx scripts/run-adaptive-walkforward.ts <bundle.json> \
  *   [--source-artifact <original-vendor-bytes>] \
- *   [--exit-policy <predeclared-exit-policy.json>]
+ *   [--exit-policy <phase7-predeclared-policy.json>] \
+ *   [--entry-first-policy <phase8-predeclared-policy.json>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -15,6 +16,8 @@ import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
   '../src/server/engine/ema15m/adaptiveWalkForwardStudy.js';
+import { runAdaptiveEntryFirstExitStudy } from
+  '../src/server/engine/ema15m/adaptiveEntryFirstExitStudy.js';
 import { ingestVendorHistoricalBundle } from
   '../src/server/engine/ema15m/adaptiveVendorIngestion.js';
 import { replayAdaptiveExitPaths, type AdaptiveExitReplayPolicy } from
@@ -28,14 +31,15 @@ async function fileBytes(path:string, max=MAX_BYTES):Promise<Uint8Array>{
   return readFile(path);
 }
 function parseOptions(args:string[]):{
-  bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null
+  bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
+  entryFirstPolicyPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <policy.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -43,15 +47,19 @@ function parseOptions(args:string[]):{
   return{
     bundlePath:resolve(args[0]),
     sourcePath:flags.has('--source-artifact')?resolve(flags.get('--source-artifact')!):null,
-    exitPolicyPath:flags.has('--exit-policy')?resolve(flags.get('--exit-policy')!):null
+    exitPolicyPath:flags.has('--exit-policy')?resolve(flags.get('--exit-policy')!):null,
+    entryFirstPolicyPath:flags.has('--entry-first-policy')?resolve(flags.get('--entry-first-policy')!):null
   };
 }
 async function main():Promise<void>{
-  const {bundlePath,sourcePath,exitPolicyPath}=parseOptions(process.argv.slice(2));
+  const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath}=
+    parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
   if(exitPolicyPath&&await realpath(exitPolicyPath)===await realpath(bundlePath))
     throw new Error('EXIT_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(entryFirstPolicyPath&&await realpath(entryFirstPolicyPath)===await realpath(bundlePath))
+    throw new Error('ENTRY_FIRST_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
   const declaredReal=raw?.provenance?.synthetic===false;
   let artifactAudit=null;
@@ -101,6 +109,39 @@ async function main():Promise<void>{
       };
     }
   }
+  let entryFirstReplay=null;
+  if(entryFirstPolicyPath){
+    const phase8Policy:AdaptiveExitReplayPolicy=JSON.parse(
+      Buffer.from(await fileBytes(entryFirstPolicyPath,128*1024)).toString('utf8')
+    );
+    const data=ingestVendorHistoricalBundle(raw).input;
+    if(!data){
+      entryFirstReplay={
+        status:'REJECTED',executionAuthorized:false,
+        errors:['VALID_VENDOR_DATASET_REQUIRED_FOR_ENTRY_FIRST_REPLAY']
+      };
+    }else{
+      const study=runAdaptiveEntryFirstExitStudy(
+        data,phase8Policy,raw.declaredExchangeSessions
+      );
+      // Output ONLY group-level counts, censoring and observational PnL:
+      // no licensed per-contract quote-path disclosure.
+      const reasonCounts:Record<string,number>={};
+      for(const o of study.outcomes)
+        reasonCounts[o.status+':'+o.reason]=(reasonCounts[o.status+':'+o.reason]??0)+1;
+      entryFirstReplay={
+        status:study.status,selectionMethod:study.selectionMethod,
+        executionAuthorized:study.executionAuthorized,
+        productionSafe:study.productionSafe,
+        historicalDataIndependentlyAuthenticated:study.historicalDataIndependentlyAuthenticated,
+        profitabilityProven:study.profitabilityProven,
+        brokerStopProtectionInstalled:study.brokerStopProtectionInstalled,
+        errors:study.errors,warnings:study.warnings,
+        decisionCohortCounts:study.cohort.counts,
+        reasonCounts,cells:study.cells
+      };
+    }
+  }
   console.log(JSON.stringify({
     mode:result.mode,executionAuthorized:result.executionAuthorized,
     productionSafe:result.productionSafe,status:result.status,
@@ -112,10 +153,12 @@ async function main():Promise<void>{
     foldWindows:result.foldWindows,scenarios:result.scenarios,
     results:result.results,pairedOutOfSample:result.pairedOutOfSample,
     marketRegimeAudit:result.marketRegimeAudit,
-    positionalExitReplay:exitReplay,warnings:result.warnings
+    positionalExitReplay:exitReplay,
+    independentEntryFirstExitStudy:entryFirstReplay,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
-     (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY'))
+     (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
+     (entryFirstReplay!==null&&entryFirstReplay.status!=='DESCRIPTIVE_ONLY'))
     process.exitCode=1;
 }
 main().catch(error=>{
