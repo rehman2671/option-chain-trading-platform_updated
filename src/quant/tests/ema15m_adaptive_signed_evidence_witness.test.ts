@@ -164,9 +164,11 @@ function fresh(){
     vendorArchiveBytes:Buffer.from(sourceArchive),
     calendarManifestBytes:Buffer.from(JSON.stringify(f.calendar)),
     calendarDocumentBytes:Buffer.from(documentBytes),
-    operatorTrust,envelope
+    operatorTrustRegistryBytes:Buffer.from(JSON.stringify(operatorTrust)),
+    expectedOperatorTrustRegistrySha256:sigSha(Buffer.from(JSON.stringify(operatorTrust))),
+    envelope
   };
-  const obj={f,keys,input};
+  const obj={f,keys,input,operatorTrust};
   reSign(obj);
   return obj;
 }
@@ -189,6 +191,10 @@ function reSign(w:ReturnType<typeof fresh>){
     return {...witness,signatureBase64};
   });
 }
+function rePin(w:WitnessPacket){
+  w.input.operatorTrustRegistryBytes=Buffer.from(JSON.stringify(w.operatorTrust));
+  w.input.expectedOperatorTrustRegistrySha256=sigSha(w.input.operatorTrustRegistryBytes);
+}
 const audit=(w:WitnessPacket)=>
   auditAdaptiveSignedEvidenceWitness(w.input);
 
@@ -199,6 +205,9 @@ describe('Phase 16 operator-pinned Ed25519 evidence bindings, no trading permiss
     assert.deepEqual(r,repeated);
     assert.equal(r.status,'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED');
     assert.equal(r.sourceChecksumMatched,true);
+    assert.equal(r.pinnedTrustRegistryDigestMatched,true);
+    assert.equal(r.operatorPinnedTrustRegistrySha256,
+      w.input.expectedOperatorTrustRegistrySha256);
     assert.equal(r.calendarChecksumMatched,true);
     assert.equal(r.reviewedExchangeCalendarConsistent,true);
     assert.equal(r.validDetachedWitnessCount,2);
@@ -283,21 +292,37 @@ describe('Phase 16 operator-pinned Ed25519 evidence bindings, no trading permiss
     assert.ok(audit(future).errors.includes(
       'WITNESS_CLAIMS_A_FUTURE_SIGNATURE_TIME'));
   });
+  it('a swapped registry file fails when the PINNED out-of-band SHA256 stays unchanged',()=>{
+    const w=fresh();
+    const wrong=generateKeyPairSync('ed25519').publicKey;
+    w.operatorTrust.reviewers[0].publicKeySpkiPem=
+      wrong.export({type:'spki',format:'pem'}).toString();
+    // Supply modified registry bytes, but DO NOT update independently pinned SHA.
+    w.input.operatorTrustRegistryBytes=Buffer.from(JSON.stringify(w.operatorTrust));
+    const r=audit(w);
+    assert.equal(r.status,'REJECTED');
+    assert.ok(r.errors.includes('OUT_OF_BAND_PINNED_REGISTRY_DIGEST_MISMATCH'));
+    assert.equal(r.pinnedTrustRegistryDigestMatched,false);
+    assert.equal(r.executionAuthorized,false);
+  });
   it('a public key replacement or duplicate role/key cannot fake reviewer separation',()=>{
     const wrong=fresh();
-    wrong.input.operatorTrust.reviewers[0].publicKeySpkiSha256=
+    wrong.operatorTrust.reviewers[0].publicKeySpkiSha256=
       'a'.repeat(64);
+    rePin(wrong);
     assert.ok(audit(wrong).errors.includes(
       'WRONG_PINNED_KEY_FINGERPRINT_OR_SIGNER_REUSE'));
     const same=fresh();
-    same.input.operatorTrust.reviewers[1].publicKeySpkiPem=
-      same.input.operatorTrust.reviewers[0].publicKeySpkiPem;
-    same.input.operatorTrust.reviewers[1].publicKeySpkiSha256=
-      same.input.operatorTrust.reviewers[0].publicKeySpkiSha256;
+    same.operatorTrust.reviewers[1].publicKeySpkiPem=
+      same.operatorTrust.reviewers[0].publicKeySpkiPem;
+    same.operatorTrust.reviewers[1].publicKeySpkiSha256=
+      same.operatorTrust.reviewers[0].publicKeySpkiSha256;
+    rePin(same);
     assert.ok(audit(same).errors.includes(
       'WRONG_PINNED_KEY_FINGERPRINT_OR_SIGNER_REUSE'));
     const reusedRole=fresh();
-    reusedRole.input.operatorTrust.reviewers[1].role='CALENDAR_REVIEWER';
+    reusedRole.operatorTrust.reviewers[1].role='CALENDAR_REVIEWER';
+    rePin(reusedRole);
     assert.ok(audit(reusedRole).errors.includes(
       'MALFORMED_OR_DUPLICATE_PINNED_REVIEWER'));
   });
@@ -314,12 +339,13 @@ describe('Phase 16 operator-pinned Ed25519 evidence bindings, no trading permiss
   });
   it('requires a separately pinned operator trust registry; a reviewer cannot self-declare it in a bundle',()=>{
     const w=fresh();
-    const wrong={...w.input,operatorTrust:null};
+    const wrong={...w.input,operatorTrustRegistryBytes:Buffer.alloc(0)};
     assert.equal(auditAdaptiveSignedEvidenceWitness(wrong).status,'REJECTED');
     assert.ok(auditAdaptiveSignedEvidenceWitness(wrong).errors.includes(
-      'INVALID_OR_MISSING_OUT_OF_BAND_PINNED_REVIEWER_REGISTRY'));
-    w.input.operatorTrust.trustSource='SELF_DECLARED' as
+      'OUT_OF_BAND_PINNED_REGISTRY_DIGEST_MISMATCH'));
+    w.operatorTrust.trustSource='SELF_DECLARED' as
       OperatorPinnedReviewerTrust['trustSource'];
+    rePin(w);
     assert.equal(audit(w).status,'REJECTED');
   });
   it('role/key pinned identity claims still cannot establish a real issuer or timestamp',()=>{
