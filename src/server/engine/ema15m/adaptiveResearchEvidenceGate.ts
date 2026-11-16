@@ -173,6 +173,13 @@ export function evaluateAdaptiveResearchEvidenceGate(
   const blockers:string[]=[];
   const flag=(s:string)=>{if(!blockers.includes(s))blockers.push(s);};
   if(wf.synthetic||q.synthetic)flag('SYNTHETIC_DATA_CANNOT_ENTER_EXTERNAL_MARKET_EVIDENCE_REVIEW');
+  if(study.executionAuthorized!==false||study.productionSafe!==false||
+     study.empiricalProfitabilityProven!==false||
+     q.executionAuthorized!==false||q.productionSafe!==false||
+     q.empiricalProfitabilityProven!==false||
+     ex.executionAuthorized!==false||ex.productionSafe!==false||
+     ex.profitabilityProven!==false)
+    flag('UPSTREAM_RESEARCH_SAFETY_FLAGS_UNEXPECTEDLY_MUTATED');
   if(q.datasetId!==wf.datasetId||study.ingestion.schemaValid!==true||
      study.report?.folds.length!==foldCount)
     flag('MISMATCHED_OR_INVALID_DATASET_PROVENANCE');
@@ -250,10 +257,10 @@ export function evaluateAdaptiveResearchEvidenceGate(
      q.observedEntryCount!==ex.cohort.counts.qualifyingEntryCount||
      q.missingEntryCount!==ex.cohort.counts.missingEntryCount||
      ex.cohort.counts.testDecisions!==totalTestingSessions||
-     ex.cohort.counts.attempts!==foldCount*12*
-       // Test decision sessions may differ by fold; avoid multiplying by
-       // single-fold sample count in a multi-fold evaluation.
-       (totalTestingSessions/foldCount))
+     ex.cohort.counts.attempts!==12*totalTestingSessions||
+     ex.cohort.attempts.length!==12*totalTestingSessions||
+     ex.outcomes.length!==q.observedEntryCount||
+     q.paths.length!==q.observedEntryCount)
     flag('ENTRY_FIRST_COHORT_TOTALS_DISAGREE');
   const cells:EvidenceGateCell[]=[];
   for(let i=0;i<foldCount;i++)for(const arm of ARMS)
@@ -269,6 +276,33 @@ export function evaluateAdaptiveResearchEvidenceGate(
       const priced=ec?.pricedExitCount??0;
       const censored=(ec?.unpricedExitCount??0)+(ec?.pathIncompleteCount??0);
       const qualityPassed=qc?.qualityPassCount??0;
+      // Do not trust summary cells alone: verify that the underlying
+      // enrolled decision records, path dispositions and exit outcomes add
+      // up for this exact fold/arm/horizon. No survivor-only cell promotion.
+      const decisions=ex.cohort.attempts.filter(a=>
+        a.foldIndex===i&&a.arm===arm&&a.horizon===horizon);
+      const paths=q.paths.filter(p=>
+        p.foldIndex===i&&p.arm===arm&&p.horizon===horizon);
+      const exits=ex.outcomes.filter(o=>
+        o.foldIndex===i&&o.arm===arm&&o.horizon===horizon);
+      const qualified=paths.filter(p=>
+        p.disposition==='SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS').length;
+      const complete=exits.filter(o=>o.status==='PRICED_EXIT');
+      const pathTimes=new Set(paths.map(p=>p.decisionAt));
+      const exitTimes=new Set(exits.map(e=>e.decisionAt));
+      if(decisions.length!==n||
+         decisions.filter(d=>d.disposition==='ENTRY_OBSERVED').length!==entries||
+         paths.length!==entries||exits.length!==entries||
+         qualified!==qualityPassed||complete.length!==priced||
+         pathTimes.size!==paths.length||exitTimes.size!==exits.length||
+         paths.some(p=>!exitTimes.has(p.decisionAt))||
+         exits.some(o=>!pathTimes.has(o.decisionAt))||
+         exits.some(o=>o.status==='PRICED_EXIT'?
+           !num(o.hypotheticalNetPnlINR)||
+             !num(o.hypotheticalExitBid)||!o.nextQuoteAt:
+           o.hypotheticalNetPnlINR!==null||
+             o.hypotheticalExitBid!==null))
+        bad('RAW_COHORT_PATH_OR_EXIT_COUNTS_DIVERGE_FROM_SUMMARY');
       if(!qc||!ec||!baseStress||!worst)
         bad('MISSING_REQUIRED_FOLD_ARM_HORIZON_CELL');
       else {
