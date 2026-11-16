@@ -311,6 +311,7 @@ describe('Phase 11 independent-review evidence gate never enables trading',()=>{
     const r=assess(f);
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
     assert.ok(r.blockers.includes('INSUFFICIENT_DISTINCT_MARKET_REGIMES_FOR_GENERALIZABILITY_REVIEW'));
+    assert.ok(r.blockers.includes('BOTH_TREND_AND_NON_TREND_MARKET_REGIMES_MUST_BE_OBSERVED'));
     assert.ok(r.blockers.includes('REGIME_AUDIT_SESSIONS_OR_ARM_HORIZON_MATRIX_MISMATCH'));
     assert.equal(r.regimeFoldEvidence[0].attributedDecisionSessions,10);
   });
