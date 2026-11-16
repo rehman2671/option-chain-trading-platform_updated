@@ -75,6 +75,20 @@ describe('Adaptive Phase 9 offline NRML paper journal invariants',()=>{
     assert.equal(r.paperRemainingQuantity,130);
     assert.ok(r.reasons.includes('MOCK_BROKER_RECONCILIATION_MISSING_OR_STALE'));
   });
+  it('rejects real-account-shaped scope, cash instrument keys and non-lot quantities',()=>{
+    for(const change of [
+      {accountScopeId:'ACTUAL_ACCOUNT_ID'},
+      {instrumentKey:'NSE_EQ|123456'},
+      {quantity:131}
+    ]){
+      const item={...open,...change} as PositionalPaperEvent;
+      const j=add(emptyAdaptivePositionalPaperJournal(),
+        'bad-entry',item);
+      const r=audit(j);
+      assert.equal(r.status,'INVALID_JOURNAL');
+      assert.ok(r.errors.includes('INVALID_OR_SECOND_PAPER_NRML_ENTRY'));
+    }
+  });
   it('holds only under a fresh matching complete SIMULATED snapshot and option L1',()=>{
     const r=audit(evidence());
     assert.equal(r.status,'RECONCILED_PAPER_HOLD');
