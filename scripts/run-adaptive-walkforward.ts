@@ -13,7 +13,8 @@
  *   [--exchange-calendar-evidence <phase15-separate-calendar.json>] \
  *   [--calendar-source-document <separate-original-calendar-file>] \
  *   [--signed-evidence-envelope <phase16-detached-sigs.json>] \
- *   [--reviewer-trust-registry <operator-out-of-band-pinned-keys.json>]
+ *   [--reviewer-trust-registry <operator-out-of-band-pinned-keys.json>] \
+ *   [--pinned-reviewer-trust-sha256 <out-of-band-approved-64-hex-digest>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -22,8 +23,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { auditAdaptiveSignedEvidenceWitness,
-  type ResearchEvidenceWitnessEnvelope,
-  type OperatorPinnedReviewerTrust } from
+  type ResearchEvidenceWitnessEnvelope } from
   '../src/server/engine/ema15m/adaptiveSignedEvidenceWitness.js';
 import { auditAdaptiveCrossSourceExchangeCalendar,
   type IndependentlySuppliedCalendarEvidence } from
@@ -65,14 +65,15 @@ function parseOptions(args:string[]):{
   evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null;
   matchedHysteresisPolicyPath:string|null;premiumStressPolicyPath:string|null;
   externalCalendarPath:string|null;calendarSourceDocumentPath:string|null;
-  witnessEnvelopePath:string|null;reviewerTrustRegistryPath:string|null
+  witnessEnvelopePath:string|null;reviewerTrustRegistryPath:string|null;
+  pinnedReviewerTrustSha256:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>] [--exchange-calendar-evidence <phase15.json>] [--calendar-source-document <original-exchange-archive>] [--signed-evidence-envelope <phase16.json>] [--reviewer-trust-registry <operator-pinned-keys.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>] [--exchange-calendar-evidence <phase15.json>] [--calendar-source-document <original-exchange-archive>] [--signed-evidence-envelope <phase16.json>] [--reviewer-trust-registry <operator-pinned-keys.json>] [--pinned-reviewer-trust-sha256 <64-hex-out-of-band-pin>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy','--exchange-calendar-evidence','--calendar-source-document','--signed-evidence-envelope','--reviewer-trust-registry'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy','--exchange-calendar-evidence','--calendar-source-document','--signed-evidence-envelope','--reviewer-trust-registry','--pinned-reviewer-trust-sha256'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -90,7 +91,8 @@ function parseOptions(args:string[]):{
     externalCalendarPath:flags.has('--exchange-calendar-evidence')?resolve(flags.get('--exchange-calendar-evidence')!):null,
     calendarSourceDocumentPath:flags.has('--calendar-source-document')?resolve(flags.get('--calendar-source-document')!):null,
     witnessEnvelopePath:flags.has('--signed-evidence-envelope')?resolve(flags.get('--signed-evidence-envelope')!):null,
-    reviewerTrustRegistryPath:flags.has('--reviewer-trust-registry')?resolve(flags.get('--reviewer-trust-registry')!):null
+    reviewerTrustRegistryPath:flags.has('--reviewer-trust-registry')?resolve(flags.get('--reviewer-trust-registry')!):null,
+    pinnedReviewerTrustSha256:flags.get('--pinned-reviewer-trust-sha256')??null
   };
 }
 async function main():Promise<void>{
@@ -98,7 +100,8 @@ async function main():Promise<void>{
     marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath,
     matchedHysteresisPolicyPath,premiumStressPolicyPath,
     externalCalendarPath,calendarSourceDocumentPath,
-    witnessEnvelopePath,reviewerTrustRegistryPath}=
+    witnessEnvelopePath,reviewerTrustRegistryPath,
+    pinnedReviewerTrustSha256}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -136,6 +139,10 @@ async function main():Promise<void>{
   }
   if(Boolean(witnessEnvelopePath)!==Boolean(reviewerTrustRegistryPath))
     throw new Error('SIGNATURE_ENVELOPE_AND_OUT_OF_BAND_REVIEWER_TRUST_ARE_BOTH_REQUIRED');
+  if(Boolean(witnessEnvelopePath)!==Boolean(pinnedReviewerTrustSha256))
+    throw new Error('SIGNED_WITNESS_REQUIRES_SEPARATE_OUT_OF_BAND_REGISTRY_SHA256_PIN');
+  if(pinnedReviewerTrustSha256&&!/^[a-f0-9]{64}$/.test(pinnedReviewerTrustSha256))
+    throw new Error('INVALID_PINNED_REGISTRY_SHA256_FORMAT');
   if(witnessEnvelopePath&&reviewerTrustRegistryPath){
     if(!sourcePath||!externalCalendarPath||!calendarSourceDocumentPath)
       throw new Error('SIGNED_WITNESS_REQUIRES_VENDOR_ARCHIVE_AND_COMPLETE_PHASE15_CALENDAR');
@@ -210,15 +217,14 @@ async function main():Promise<void>{
     const envelope:ResearchEvidenceWitnessEnvelope=JSON.parse(
       Buffer.from(await fileBytes(witnessEnvelopePath,256*1024)).toString('utf8')
     );
-    const trust:OperatorPinnedReviewerTrust=JSON.parse(
-      Buffer.from(await fileBytes(reviewerTrustRegistryPath,256*1024)).toString('utf8')
-    );
     const witness=auditAdaptiveSignedEvidenceWitness({
       bundleBytes:await fileBytes(bundlePath),
       vendorArchiveBytes:await fileBytes(sourcePath!),
       calendarManifestBytes:await fileBytes(externalCalendarPath!,1024*1024),
       calendarDocumentBytes:await fileBytes(calendarSourceDocumentPath!),
-      envelope,operatorTrust:trust
+      envelope,
+      operatorTrustRegistryBytes:await fileBytes(reviewerTrustRegistryPath,256*1024),
+      expectedOperatorTrustRegistrySha256:pinnedReviewerTrustSha256
     });
     signedEvidenceWitnessAudit={
       status:witness.status,mode:witness.mode,
@@ -235,6 +241,8 @@ async function main():Promise<void>{
       reviewerIdentityIndependentlyAuthenticated:
         witness.reviewerIdentityIndependentlyAuthenticated,
       trustedTimestampEstablished:witness.trustedTimestampEstablished,
+      pinnedTrustRegistryDigestMatched:witness.pinnedTrustRegistryDigestMatched,
+      operatorPinnedTrustRegistrySha256:witness.operatorPinnedTrustRegistrySha256,
       datasetId:witness.datasetId,synthetic:witness.synthetic,
       sourceChecksumMatched:witness.sourceChecksumMatched,
       calendarChecksumMatched:witness.calendarChecksumMatched,
