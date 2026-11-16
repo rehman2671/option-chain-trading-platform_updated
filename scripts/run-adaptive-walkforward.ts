@@ -11,7 +11,10 @@
  *   [--matched-hysteresis-policy <phase13-predeclared-policy.json>] \
  *   [--premium-stress-policy <phase14-predeclared-policy.json>] \
  *   [--exchange-calendar-evidence <phase15-separate-calendar.json>] \
- *   [--calendar-source-document <separate-original-calendar-file>]
+ *   [--calendar-source-document <separate-original-calendar-file>] \
+ *   [--signed-evidence-envelope <phase16-detached-sigs.json>] \
+ *   [--reviewer-trust-registry <operator-out-of-band-pinned-keys.json>] \
+ *   [--pinned-reviewer-trust-sha256 <out-of-band-approved-64-hex-digest>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -19,6 +22,9 @@
  */
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { auditAdaptiveSignedEvidenceWitness,
+  type ResearchEvidenceWitnessEnvelope } from
+  '../src/server/engine/ema15m/adaptiveSignedEvidenceWitness.js';
 import { auditAdaptiveCrossSourceExchangeCalendar,
   type IndependentlySuppliedCalendarEvidence } from
   '../src/server/engine/ema15m/adaptiveCrossSourceCalendarAudit.js';
@@ -58,14 +64,16 @@ function parseOptions(args:string[]):{
   entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null;
   evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null;
   matchedHysteresisPolicyPath:string|null;premiumStressPolicyPath:string|null;
-  externalCalendarPath:string|null;calendarSourceDocumentPath:string|null
+  externalCalendarPath:string|null;calendarSourceDocumentPath:string|null;
+  witnessEnvelopePath:string|null;reviewerTrustRegistryPath:string|null;
+  pinnedReviewerTrustSha256:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>] [--exchange-calendar-evidence <phase15.json>] [--calendar-source-document <original-exchange-archive>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>] [--exchange-calendar-evidence <phase15.json>] [--calendar-source-document <original-exchange-archive>] [--signed-evidence-envelope <phase16.json>] [--reviewer-trust-registry <operator-pinned-keys.json>] [--pinned-reviewer-trust-sha256 <64-hex-out-of-band-pin>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy','--exchange-calendar-evidence','--calendar-source-document'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy','--exchange-calendar-evidence','--calendar-source-document','--signed-evidence-envelope','--reviewer-trust-registry','--pinned-reviewer-trust-sha256'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -81,14 +89,19 @@ function parseOptions(args:string[]):{
     matchedHysteresisPolicyPath:flags.has('--matched-hysteresis-policy')?resolve(flags.get('--matched-hysteresis-policy')!):null,
     premiumStressPolicyPath:flags.has('--premium-stress-policy')?resolve(flags.get('--premium-stress-policy')!):null,
     externalCalendarPath:flags.has('--exchange-calendar-evidence')?resolve(flags.get('--exchange-calendar-evidence')!):null,
-    calendarSourceDocumentPath:flags.has('--calendar-source-document')?resolve(flags.get('--calendar-source-document')!):null
+    calendarSourceDocumentPath:flags.has('--calendar-source-document')?resolve(flags.get('--calendar-source-document')!):null,
+    witnessEnvelopePath:flags.has('--signed-evidence-envelope')?resolve(flags.get('--signed-evidence-envelope')!):null,
+    reviewerTrustRegistryPath:flags.has('--reviewer-trust-registry')?resolve(flags.get('--reviewer-trust-registry')!):null,
+    pinnedReviewerTrustSha256:flags.get('--pinned-reviewer-trust-sha256')??null
   };
 }
 async function main():Promise<void>{
   const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,
     marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath,
     matchedHysteresisPolicyPath,premiumStressPolicyPath,
-    externalCalendarPath,calendarSourceDocumentPath}=
+    externalCalendarPath,calendarSourceDocumentPath,
+    witnessEnvelopePath,reviewerTrustRegistryPath,
+    pinnedReviewerTrustSha256}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -123,6 +136,21 @@ async function main():Promise<void>{
     const real=await Promise.all(distinct.map(p=>realpath(p)));
     if(new Set(real).size!==real.length)
       throw new Error('CALENDAR_DOCUMENT_AND_METADATA_MUST_BE_SEPARATE_FROM_BUNDLE_AND_L1_SOURCE');
+  }
+  if(Boolean(witnessEnvelopePath)!==Boolean(reviewerTrustRegistryPath))
+    throw new Error('SIGNATURE_ENVELOPE_AND_OUT_OF_BAND_REVIEWER_TRUST_ARE_BOTH_REQUIRED');
+  if(Boolean(witnessEnvelopePath)!==Boolean(pinnedReviewerTrustSha256))
+    throw new Error('SIGNED_WITNESS_REQUIRES_SEPARATE_OUT_OF_BAND_REGISTRY_SHA256_PIN');
+  if(pinnedReviewerTrustSha256&&!/^[a-f0-9]{64}$/.test(pinnedReviewerTrustSha256))
+    throw new Error('INVALID_PINNED_REGISTRY_SHA256_FORMAT');
+  if(witnessEnvelopePath&&reviewerTrustRegistryPath){
+    if(!sourcePath||!externalCalendarPath||!calendarSourceDocumentPath)
+      throw new Error('SIGNED_WITNESS_REQUIRES_VENDOR_ARCHIVE_AND_COMPLETE_PHASE15_CALENDAR');
+    const distinct=[bundlePath,sourcePath,externalCalendarPath,
+      calendarSourceDocumentPath,witnessEnvelopePath,reviewerTrustRegistryPath];
+    const real=await Promise.all(distinct.map(p=>realpath(p)));
+    if(new Set(real).size!==real.length)
+      throw new Error('SIGNED_EVIDENCE_REVIEW_FILES_MUST_ALL_BE_DISTINCT');
   }
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
   const declaredReal=raw?.provenance?.synthetic===false;
@@ -182,6 +210,54 @@ async function main():Promise<void>{
       missingContractExpiryReferences:report.missingContractExpiryReferences,
       nonTradingContractExpiryCount:report.nonTradingContractExpiryCount,
       foldCoverage:report.foldCoverage,warnings:report.warnings
+    };
+  }
+  let signedEvidenceWitnessAudit=null;
+  if(witnessEnvelopePath&&reviewerTrustRegistryPath){
+    const envelope:ResearchEvidenceWitnessEnvelope=JSON.parse(
+      Buffer.from(await fileBytes(witnessEnvelopePath,256*1024)).toString('utf8')
+    );
+    const witness=auditAdaptiveSignedEvidenceWitness({
+      bundleBytes:await fileBytes(bundlePath),
+      vendorArchiveBytes:await fileBytes(sourcePath!),
+      calendarManifestBytes:await fileBytes(externalCalendarPath!,1024*1024),
+      calendarDocumentBytes:await fileBytes(calendarSourceDocumentPath!),
+      envelope,
+      operatorTrustRegistryBytes:await fileBytes(reviewerTrustRegistryPath,256*1024),
+      expectedOperatorTrustRegistrySha256:pinnedReviewerTrustSha256
+    });
+    signedEvidenceWitnessAudit={
+      status:witness.status,mode:witness.mode,
+      executionAuthorized:witness.executionAuthorized,
+      productionSafe:witness.productionSafe,
+      profitabilityProven:witness.profitabilityProven,
+      nativeBrokerProtectionInstalled:witness.nativeBrokerProtectionInstalled,
+      exchangeIssuerAuthenticated:witness.exchangeIssuerAuthenticated,
+      vendorDataOriginAuthenticated:witness.vendorDataOriginAuthenticated,
+      originalAvailabilityClockAuthenticated:
+        witness.originalAvailabilityClockAuthenticated,
+      historicalLicenseIndependentlyVerified:
+        witness.historicalLicenseIndependentlyVerified,
+      reviewerIdentityIndependentlyAuthenticated:
+        witness.reviewerIdentityIndependentlyAuthenticated,
+      trustedTimestampEstablished:witness.trustedTimestampEstablished,
+      pinnedTrustRegistryDigestMatched:witness.pinnedTrustRegistryDigestMatched,
+      operatorPinnedTrustRegistrySha256:witness.operatorPinnedTrustRegistrySha256,
+      datasetId:witness.datasetId,synthetic:witness.synthetic,
+      sourceChecksumMatched:witness.sourceChecksumMatched,
+      calendarChecksumMatched:witness.calendarChecksumMatched,
+      reviewedExchangeCalendarConsistent:witness.reviewedExchangeCalendarConsistent,
+      bundleSha256:witness.bundleSha256,
+      calendarManifestSha256:witness.calendarManifestSha256,
+      calendarSourceDocumentSha256:witness.calendarSourceDocumentSha256,
+      originalVendorArchiveSha256:witness.originalVendorArchiveSha256,
+      validDetachedWitnessCount:witness.validDetachedWitnessCount,
+      pinnedKeyFingerprintByRole:witness.pinnedKeyFingerprintByRole,
+      signedPayloadSha256ByRole:witness.signedPayloadSha256ByRole,
+      errors:witness.errors,blockers:witness.blockers,
+      calendarBlockers:witness.calendarBlockers,
+      externalReviewChecklist:witness.externalReviewChecklist,
+      warnings:witness.warnings
     };
   }
   let exitReplay=null;
@@ -464,7 +540,8 @@ async function main():Promise<void>{
     adaptiveRegimeHysteresisStudy,
     matchedHysteresisOosStudy,
     premiumCostDepthStressAudit,
-    externalCalendarCoverageAudit,warnings:result.warnings
+    externalCalendarCoverageAudit,
+    signedEvidenceWitnessAudit,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
@@ -479,7 +556,10 @@ async function main():Promise<void>{
        premiumCostDepthStressAudit.status!=='DESCRIPTIVE_ONLY')||
      (externalCalendarCoverageAudit!==null&&
        externalCalendarCoverageAudit.status!==
-         'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED'))
+         'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED')||
+     (signedEvidenceWitnessAudit!==null&&
+       signedEvidenceWitnessAudit.status!==
+         'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED'))
     process.exitCode=1;
 }
 main().catch(error=>{
