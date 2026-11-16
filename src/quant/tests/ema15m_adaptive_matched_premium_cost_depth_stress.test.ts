@@ -5,7 +5,7 @@ import {
   validatePremiumCostDepthStressPolicy,
   type PremiumCostDepthStressPolicy,type StressCase
 } from '../../server/engine/ema15m/adaptiveMatchedPremiumCostDepthStress.js';
-import {compareAdaptiveHysteresisMatchedOos} from
+import {compareAdaptiveHysteresisMatchedOos,type HysteresisMatchedOosPolicy} from
   '../../server/engine/ema15m/adaptiveHysteresisMatchedOos.js';
 import {buildAdaptiveEntryFirstCohort} from
   '../../server/engine/ema15m/adaptiveEntryFirstCohort.js';
