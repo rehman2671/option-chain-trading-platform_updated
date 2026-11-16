@@ -195,6 +195,31 @@ describe('Phase 7 historical exit-path L1 replay, research only',()=>{
     assert.equal(x.hypotheticalNetPnlINR,90);
     assert.equal(x.deltaVsOriginalINR,0);
   });
+  it('cannot fill a stop using a quote outside the declared exchange session',()=>{
+    const series=[
+      quote(start,99),quote(t(0,1),110),quote(t(0,2),130),
+      quote(t(0,3),115),quote(t(0,4),114),
+      quote(t(1,69),110),quote(end,110)
+    ];
+    const {input,report}=caseStudy(series,110);
+    const badSessions=structuredClone(sessions);
+    badSessions[0].closeAt='2026-11-16T04:02:00Z';
+    const out=replayAdaptiveExitPaths(input,report,policy(),badSessions);
+    assert.equal(out.trades[0].status,'INCOMPLETE_PATH');
+    assert.equal(out.trades[0].reason,'L1_OUTSIDE_DECLARED_EXCHANGE_SESSION');
+  });
+  it('rejects duplicate declared session windows rather than selecting the easier hours',()=>{
+    const series=[
+      quote(start,99),quote(t(0,1),110),quote(t(0,2),130),
+      quote(t(0,3),115),quote(t(0,4),114),
+      quote(t(1,69),110),quote(end,110)
+    ];
+    const {input,report}=caseStudy(series,110);
+    const out=replayAdaptiveExitPaths(input,report,policy(),
+      [...sessions,sessions[0]]);
+    assert.equal(out.trades[0].status,'INCOMPLETE_PATH');
+    assert.equal(out.trades[0].reason,'INVALID_OR_DUPLICATE_DECLARED_EXCHANGE_SESSION');
+  });
   it('disqualifies coverage metrics when fixed-hold comparator itself missed exits',()=>{
     const series=[
       quote(start,99),quote(t(0,1),104),quote(t(0,2),107),
