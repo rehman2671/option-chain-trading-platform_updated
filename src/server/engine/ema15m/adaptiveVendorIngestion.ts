@@ -7,6 +7,7 @@
  * No broker imports; no orders; no auto-trading.
  */
 import type { ClosedIndexCandle } from './adaptiveMarketRegime.js';
+import { auditAdaptiveExchangeWindows, type DeclaredTradingSession } from './adaptiveSessionIntegrity.js';
 import type { ListedOptionContract } from './adaptiveOptionRanker.js';
 import type {
   HistoricalComparisonInput, HistoricalDecision, HistoricalExecutableQuote
@@ -61,6 +62,8 @@ export interface VerifiedHistoricalBundleV1 {
   underlyingKey: string;
   sessions: VendorSession[];
   executionL1: VendorExecutionL1[];
+  /** Original, externally sourced calendar including warm-up and exit days. Required when synthetic=false. */
+  declaredExchangeSessions?: DeclaredTradingSession[];
   /** Chosen BEFORE evaluating the testing windows. */
   policy: HistoricalComparisonInput['policy'];
   /** Maximum original feed/event-to-strategy availability latency. */
@@ -249,21 +252,32 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
   if (!Array.isArray(x.sessions) || !Array.isArray(x.executionL1) ||
       x.sessions.length !== p?.expectedSessions?.length)
     err(errors,'INCOMPLETE_SESSION_OR_QUOTE_SERIES');
+  if (p?.synthetic === false && !Array.isArray(x.declaredExchangeSessions))
+    err(errors,'MISSING_REAL_EXCHANGE_SESSION_CALENDAR');
   if (Array.isArray(x.policy?.folds) && Array.isArray(p?.expectedSessions) &&
       x.policy.folds.some(f => !f ||
         !p.expectedSessions.some(d => d >= f.trainStart && d <= f.trainEnd) ||
         !p.expectedSessions.some(d => d >= f.testStart && d <= f.testEnd)))
     err(errors,'FOLD_OUTSIDE_DECLARED_SESSION_COVERAGE');
   if (errors.length) return reject();
+  // This is a CONSISTENCY check against a claimed calendar, not proof the
+  // submitted calendar came from the exchange. Never infer holiday/weekend rules.
+  if (x.declaredExchangeSessions !== undefined) {
+    const sessionAudit = auditAdaptiveExchangeWindows({
+      declaredSessions: x.declaredExchangeSessions,
+      decisions: x.sessions, optionQuotes: x.executionL1
+    });
+    for (const code of sessionAudit.errors) err(errors, code);
+    if (!sessionAudit.valid) return reject();
+  }
 
   const latencyMs = x.maximumOriginalFeedLatencySeconds * 1000;
   const allKeys = new Map<string,ListedOptionContract>();
   const decisions: HistoricalDecision[] = [];
-  const sourceIds = new Map<string,string>();
-  const register = (id:string,kind:string) => {
-    const previous=sourceIds.get(id);
-    if (previous && previous!==kind) err(errors,'REUSED_SOURCE_RECORD_ID');
-    sourceIds.set(id,kind);
+  const sourceIds = new Set<string>();
+  const register = (id:string) => {
+    if (sourceIds.has(id)) err(errors,'REUSED_SOURCE_RECORD_ID');
+    sourceIds.add(id);
   };
   x.sessions.forEach((session, index)=>{
     counts.sessions++;
@@ -289,8 +303,8 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
     if (!validateClocked(session.contracts,session.decisionAt,latencyMs,errors) ||
         !validateContracts(session.contracts.data,x.instrument,x.underlyingKey,allKeys,errors))
       return;
-    register(session.contracts.sourceRecordId,'CATALOG');
-    if (!Array.isArray(session.chains)) {
+    register(session.contracts.sourceRecordId);
+    if (!Array.isArray(session.chains) || session.chains.length === 0) {
       err(errors,'MISSING_HISTORICAL_L1_CHAIN'); return;
     }
     const chainForReplay: HistoricalDecision['chains'] = [];
@@ -304,7 +318,7 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
         err(errors,'DUPLICATED_DECISION_EXPIRY_CHAIN'); continue;
       }
       seenExpiries.add(chain.data.expiry);
-      register(chain.sourceRecordId,'CHAIN');
+      register(chain.sourceRecordId);
       chainForReplay.push({
         // Original arrival time is when the strategy could have seen the data.
         // This prevents use of data that arrived after the decision.
@@ -345,7 +359,7 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
     if (canonicalDay(q.availableAt) > allKeys.get(q.instrumentKey)!.expiry) {
       err(errors,'OPTION_L1_AFTER_CONTRACT_EXPIRY'); return;
     }
-    register(q.sourceRecordId,'EXECUTION_L1');
+    register(q.sourceRecordId);
     quotes.push({
       // Only the originally recorded AVAILABLE time can enter the replay.
       // Event time is validated against it, not treated as immediate fill.
