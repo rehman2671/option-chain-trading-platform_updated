@@ -6,7 +6,7 @@
  * evidence. It does NOT authenticate vendor/exchange, certify profitability,
  * compare causal policy effects or authorize any broker/paper/live order.
  *
- * REVIEW_PACKAGE_READY means only that the supplied reports are internally
+ * EXTERNAL_REVIEW_REQUIRED means only that the supplied reports are internally
  * consistent enough to *ask* a human to independently review source/license,
  * timestamp provenance, market calendar and broker execution assumptions.
  */
