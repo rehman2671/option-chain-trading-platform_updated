@@ -237,6 +237,7 @@ export function replayAdaptivePositionalPaperJournal(
   let priorTime=-Infinity;
   let previousHash='GENESIS';
   let filledQuoteTime=-Infinity;
+  let firstUnconsumedPostRequestQuoteTime:number|null=null;
   let exitFillCount=0;
   const seenIds=new Set<string>();
   for(let i=0;i<journal.entries.length;i++){
@@ -312,6 +313,9 @@ export function replayAdaptivePositionalPaperJournal(
            (quote&&qt<=ts(quote.observedAt))){
           errors.push('INVALID_STALE_OR_WRONG_OPTION_L1');break;
         }
+        if(request&&qt>request.at&&qt>filledQuoteTime&&
+           firstUnconsumedPostRequestQuoteTime===null)
+          firstUnconsumedPostRequestQuoteTime=qt;
         quote=q;break;
       }
       case 'OPERATOR_EXIT_REVIEW_REQUESTED':{
@@ -323,6 +327,7 @@ export function replayAdaptivePositionalPaperJournal(
           errors.push('INVALID_OR_DUPLICATE_OPERATOR_EXIT_REVIEW');break;
         }
         request={requestId:event.requestId,remaining:event.quantity,at:t};
+        firstUnconsumedPostRequestQuoteTime=null;
         break;
       }
       case 'SIMULATED_EXIT_FILL':{
@@ -332,6 +337,7 @@ export function replayAdaptivePositionalPaperJournal(
            event.quantity>request.remaining||
            event.quantity>position.remaining||
            !quote||event.quoteObservedAt!==quote.observedAt||
+           firstUnconsumedPostRequestQuoteTime!==ts(quote.observedAt)||
            !positive(event.bid)||Math.abs(event.bid-quote.bid)>1e-8||
            ts(quote.observedAt)<=request.at||
            ts(quote.observedAt)<=filledQuoteTime||
@@ -343,6 +349,7 @@ export function replayAdaptivePositionalPaperJournal(
         position.remaining-=event.quantity;
         request.remaining-=event.quantity;
         filledQuoteTime=ts(quote.observedAt);
+        firstUnconsumedPostRequestQuoteTime=null;
         exitFillCount++;
         if(request.remaining===0)request=null;
         break;
