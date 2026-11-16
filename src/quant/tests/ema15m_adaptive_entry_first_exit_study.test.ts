@@ -219,9 +219,10 @@ describe('Phase 8 entry-first OOS positional exit research',()=>{
   it('retains missing entry in denominator even with a future quote',()=>{
     const {input}=sample('FLAT');
     const testKey='NSE_FO|'+(100000+11*8);
+    const lastDecision=Date.parse(input.decisions[input.decisions.length-1].decisionAt);
     input.executionQuotes=input.executionQuotes.filter(q=>
       q.instrumentKey!==testKey||
-      Date.parse(q.observedAt)>Date.parse('2026-09-12T00:00:00Z'));
+      Date.parse(q.observedAt)>lastDecision+input.policy.maxEntryDelayMinutes*MIN);
     const report=buildAdaptiveEntryFirstCohort(input);
     assert.equal(report.status,'ENTRY_COHORT_RECORDED');
     const entry=report.attempts.find(a=>a.arm==='EMA_BASELINE'&&a.horizon==='1W')!;
