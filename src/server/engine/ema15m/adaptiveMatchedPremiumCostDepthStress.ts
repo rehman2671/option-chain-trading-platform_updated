@@ -323,22 +323,22 @@ function evaluateCell(
     else if(fEntered)fOnly++;
     else neither++;
   }
-  const toEvidence=(c:Counter):StressVariantEvidence=>({
+  const toEvidence=(c:Counter,missingEntries:number):StressVariantEvidence=>({
     enrolledEntries:c.total,originallyPricedExits:c.originallyPriced,
     originalCensoredExits:c.originalCensored,
     scenarioPricedExits:c.priced,scenarioCensoredExits:c.censored,
     additionalDepthBlockedExits:c.depth,
     missingOriginalQuoteEvidence:c.mismatch,
-    completeCohortNetPnlINR:c.total>0&&c.censored===0?
+    completeCohortNetPnlINR:c.total>0&&c.censored===0&&missingEntries===0?
       round(c.totalNet):null,
-    aggregateScenarioCostPenaltyINR:c.total>0&&c.censored===0?
+    aggregateScenarioCostPenaltyINR:c.total>0&&c.censored===0&&missingEntries===0?
       round(c.costPenalty):null,
     originalOnlyWinnersUnderStress:c.onlyWins,
     originalOnlyLosersUnderStress:c.onlyLosses,
     originalOnlyCensoredUnderStress:c.onlyCensored
   });
-  const b=toEvidence(counts.ORIGINAL);
-  const h=toEvidence(counts.HYSTERESIS);
+  const b=toEvidence(counts.ORIGINAL,missingOriginal);
+  const h=toEvidence(counts.HYSTERESIS,missingFiltered);
   if(!prior||both!==prior.bothEntered||
      bOnly!==prior.originalOnlyEntries||
      fOnly!==prior.stabilizedOnlyEntries||
@@ -444,6 +444,31 @@ export function auditAdaptiveMatchedPremiumCostDepthStress(
       for(const scenario of SCENARIOS)
         cells.push(evaluateCell(input,rawQuotes,baseline,stabilized,
           paired,stressPolicy,foldIndex,arm,horizon,scenario));
+  // Sensitivity policy includes per-horizon absolute INR risk caps.
+  // Block rather than quietly presenting over-budget stress results as robust.
+  for(let foldIndex=0;foldIndex<input.policy.folds.length;foldIndex++)
+    for(const arm of ARMS)for(const horizon of HORIZONS){
+      const subset=cells.filter(c=>c.foldIndex===foldIndex&&
+        c.arm===arm&&c.horizon===horizon);
+      const baseCase=subset.find(c=>c.scenario==='UNCHANGED_P8_COSTS');
+      const combined=subset.find(c=>
+        c.scenario==='COMBINED_OVERNIGHT_GAP_AND_DEPTH');
+      if(!combined||!baseCase)continue;
+      const cap=stressPolicy.horizonRules[horizon].
+        maximumCombinedStressDeteriorationINR;
+      for(const variant of ['original','stabilized'] as const){
+        const b=baseCase[variant].completeCohortNetPnlINR;
+        const v=combined[variant].completeCohortNetPnlINR;
+        if(b!==null&&v!==null&&b-v>cap){
+          combined.blockers.push(
+            'COMBINED_STRESS_DETERIORATION_OVER_PREDECLARED_LIMIT_'+
+              variant.toUpperCase()
+          );
+          combined.sufficientForDescriptiveStressReview=false;
+          combined.pairedNetDeltaINR=null;
+        }
+      }
+    }
   const summary:PremiumCostDepthStressReport['horizonSummary']=[];
   for(const horizon of HORIZONS)for(const scenario of SCENARIOS){
     const subset=cells.filter(c=>c.horizon===horizon&&c.scenario===scenario);
