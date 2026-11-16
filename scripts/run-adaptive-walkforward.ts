@@ -70,6 +70,7 @@ async function main(): Promise<void> {
     foldWindows:result.foldWindows,scenarios:result.scenarios,
     // All displayed results remain descriptive even when checksum matched.
     results:result.results,pairedOutOfSample:result.pairedOutOfSample,
+    marketRegimeAudit:result.marketRegimeAudit,
     warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY') process.exitCode=1;
