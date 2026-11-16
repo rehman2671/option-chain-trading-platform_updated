@@ -9,7 +9,9 @@
  *   [--evidence-gate-policy <phase11-predeclared-evidence-policy.json>] \
  *   [--hysteresis-policy <phase12-predeclared-policy.json>] \
  *   [--matched-hysteresis-policy <phase13-predeclared-policy.json>] \
- *   [--premium-stress-policy <phase14-predeclared-policy.json>]
+ *   [--premium-stress-policy <phase14-predeclared-policy.json>] \
+ *   [--exchange-calendar-evidence <phase15-separate-calendar.json>] \
+ *   [--calendar-source-document <separate-original-calendar-file>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -17,6 +19,9 @@
  */
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { auditAdaptiveCrossSourceExchangeCalendar,
+  type IndependentlySuppliedCalendarEvidence } from
+  '../src/server/engine/ema15m/adaptiveCrossSourceCalendarAudit.js';
 import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
@@ -52,14 +57,15 @@ function parseOptions(args:string[]):{
   bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
   entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null;
   evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null;
-  matchedHysteresisPolicyPath:string|null;premiumStressPolicyPath:string|null
+  matchedHysteresisPolicyPath:string|null;premiumStressPolicyPath:string|null;
+  externalCalendarPath:string|null;calendarSourceDocumentPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>] [--exchange-calendar-evidence <phase15.json>] [--calendar-source-document <original-exchange-archive>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy','--exchange-calendar-evidence','--calendar-source-document'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -73,13 +79,16 @@ function parseOptions(args:string[]):{
     evidenceGatePolicyPath:flags.has('--evidence-gate-policy')?resolve(flags.get('--evidence-gate-policy')!):null,
     hysteresisPolicyPath:flags.has('--hysteresis-policy')?resolve(flags.get('--hysteresis-policy')!):null,
     matchedHysteresisPolicyPath:flags.has('--matched-hysteresis-policy')?resolve(flags.get('--matched-hysteresis-policy')!):null,
-    premiumStressPolicyPath:flags.has('--premium-stress-policy')?resolve(flags.get('--premium-stress-policy')!):null
+    premiumStressPolicyPath:flags.has('--premium-stress-policy')?resolve(flags.get('--premium-stress-policy')!):null,
+    externalCalendarPath:flags.has('--exchange-calendar-evidence')?resolve(flags.get('--exchange-calendar-evidence')!):null,
+    calendarSourceDocumentPath:flags.has('--calendar-source-document')?resolve(flags.get('--calendar-source-document')!):null
   };
 }
 async function main():Promise<void>{
   const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,
     marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath,
-    matchedHysteresisPolicyPath,premiumStressPolicyPath}=
+    matchedHysteresisPolicyPath,premiumStressPolicyPath,
+    externalCalendarPath,calendarSourceDocumentPath}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -106,6 +115,15 @@ async function main():Promise<void>{
     throw new Error('MATCHED_OOS_REQUIRES_ENTRY_FIRST_AND_HYSTERESIS_POLICIES');
   if(evidenceGatePolicyPath&&(!marketDataPolicyPath||!entryFirstPolicyPath))
     throw new Error('EVIDENCE_GATE_REQUIRES_ENTRY_FIRST_AND_MARKET_QUALITY_POLICIES');
+  if(Boolean(externalCalendarPath)!==Boolean(calendarSourceDocumentPath))
+    throw new Error('SEPARATE_CALENDAR_MANIFEST_AND_ORIGINAL_DOCUMENT_ARE_BOTH_REQUIRED');
+  if(externalCalendarPath&&calendarSourceDocumentPath){
+    const distinct=[bundlePath,externalCalendarPath,calendarSourceDocumentPath];
+    if(sourcePath)distinct.push(sourcePath);
+    const real=await Promise.all(distinct.map(p=>realpath(p)));
+    if(new Set(real).size!==real.length)
+      throw new Error('CALENDAR_DOCUMENT_AND_METADATA_MUST_BE_SEPARATE_FROM_BUNDLE_AND_L1_SOURCE');
+  }
   const raw=JSON.parse(Buffer.from(await fileBytes(bundlePath)).toString('utf8'));
   const declaredReal=raw?.provenance?.synthetic===false;
   let artifactAudit=null;
@@ -122,6 +140,50 @@ async function main():Promise<void>{
     }
   }
   const result=runAdaptiveWalkForwardStudy(raw);
+  let externalCalendarCoverageAudit=null;
+  if(externalCalendarPath&&calendarSourceDocumentPath){
+    const calendar:IndependentlySuppliedCalendarEvidence=JSON.parse(
+      Buffer.from(await fileBytes(externalCalendarPath,1024*1024)).toString('utf8')
+    );
+    const report=auditAdaptiveCrossSourceExchangeCalendar(
+      raw,calendar,await fileBytes(calendarSourceDocumentPath)
+    );
+    externalCalendarCoverageAudit={
+      status:report.status,mode:report.mode,
+      executionAuthorized:report.executionAuthorized,
+      productionSafe:report.productionSafe,
+      profitabilityProven:report.profitabilityProven,
+      exchangeCalendarIndependentlyAuthenticated:
+        report.exchangeCalendarIndependentlyAuthenticated,
+      sourceDocumentIssuerVerified:report.sourceDocumentIssuerVerified,
+      originalFeedClockIndependentlyAuthenticated:
+        report.originalFeedClockIndependentlyAuthenticated,
+      originalExpiryScheduleIndependentlyAuthenticated:
+        report.originalExpiryScheduleIndependentlyAuthenticated,
+      sourceDocumentLicenseIndependentlyVerified:
+        report.sourceDocumentLicenseIndependentlyVerified,
+      sourceChecksumMatched:report.sourceChecksumMatched,
+      originalCalendarDocumentSha256:report.originalCalendarDocumentSha256,
+      datasetId:report.datasetId,synthetic:report.synthetic,
+      exchange:report.exchange,errors:report.errors,blockers:report.blockers,
+      coveredCalendarDays:report.coveredCalendarDays,
+      coveredTradingDays:report.coveredTradingDays,
+      coveredClosedDays:report.coveredClosedDays,
+      specialSessionDays:report.specialSessionDays,
+      sourceDecisionSessions:report.sourceDecisionSessions,
+      sourceDeclaredTradingSessions:report.sourceDeclaredTradingSessions,
+      missingVendorTradingSessions:report.missingVendorTradingSessions,
+      extraVendorTradingSessions:report.extraVendorTradingSessions,
+      mismatchedSessionWindows:report.mismatchedSessionWindows,
+      missingDecisionSessions:report.missingDecisionSessions,
+      optionL1OutsideCalendarCount:report.optionL1OutsideCalendarCount,
+      vendorSnapshotOrCandleOutsideCalendarCount:
+        report.vendorSnapshotOrCandleOutsideCalendarCount,
+      missingContractExpiryReferences:report.missingContractExpiryReferences,
+      nonTradingContractExpiryCount:report.nonTradingContractExpiryCount,
+      foldCoverage:report.foldCoverage,warnings:report.warnings
+    };
+  }
   let exitReplay=null;
   if(exitPolicyPath){
     const policy: AdaptiveExitReplayPolicy = JSON.parse(
@@ -401,7 +463,8 @@ async function main():Promise<void>{
     independentEvidenceReviewGate:evidenceGate,
     adaptiveRegimeHysteresisStudy,
     matchedHysteresisOosStudy,
-    premiumCostDepthStressAudit,warnings:result.warnings
+    premiumCostDepthStressAudit,
+    externalCalendarCoverageAudit,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
@@ -413,7 +476,10 @@ async function main():Promise<void>{
      (matchedHysteresisOosStudy!==null&&
        matchedHysteresisOosStudy.status!=='DESCRIPTIVE_ONLY')||
      (premiumCostDepthStressAudit!==null&&
-       premiumCostDepthStressAudit.status!=='DESCRIPTIVE_ONLY'))
+       premiumCostDepthStressAudit.status!=='DESCRIPTIVE_ONLY')||
+     (externalCalendarCoverageAudit!==null&&
+       externalCalendarCoverageAudit.status!==
+         'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED'))
     process.exitCode=1;
 }
 main().catch(error=>{
