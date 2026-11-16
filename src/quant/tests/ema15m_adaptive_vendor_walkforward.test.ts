@@ -1,4 +1,9 @@
 import { describe, it } from 'node:test';
+import { createHash } from 'node:crypto';
+import { auditAdaptiveSourceArtifact } from
+  '../../server/engine/ema15m/adaptiveSourceArtifactAudit.js';
+import { auditAdaptiveExchangeWindows, type DeclaredTradingSession } from
+  '../../server/engine/ema15m/adaptiveSessionIntegrity.js';
 import assert from 'node:assert/strict';
 import {
   ingestVendorHistoricalBundle, type VerifiedHistoricalBundleV1
@@ -119,6 +124,19 @@ function fixture():VerifiedHistoricalBundleV1 {
   };
 }
 
+
+function marketWindows(): DeclaredTradingSession[] {
+  return Array.from({length:21}, (_,i)=>{
+    const start=Date.UTC(2026,8,1+i);
+    return {
+      sessionDate:at(start).slice(0,10),
+      openAt:at(start+225*60_000),
+      closeAt:at(start+600*60_000),
+      sourceRecordId:'SYNTHETIC_MARKET_WINDOW_'+i
+    };
+  });
+}
+
 describe('Adaptive Phase 5 event-time ingestion and OOS cost sensitivity',()=>{
   it('ingests original-event-time snapshots and conservatively replays availability time',()=>{
     const data=fixture();
@@ -223,6 +241,80 @@ describe('Adaptive Phase 5 event-time ingestion and OOS cost sensitivity',()=>{
     const result=ingestVendorHistoricalBundle(x);
     assert.equal(result.input,null);
     assert.ok(result.errors.includes('FOLD_OUTSIDE_DECLARED_SESSION_COVERAGE'));
+  });
+  it('requires source-declared exchange windows for any non-synthetic bundle',()=>{
+    const b=fixture();
+    b.provenance.synthetic=false;
+    const r=ingestVendorHistoricalBundle(b);
+    assert.ok(r.errors.includes('MISSING_REAL_EXCHANGE_SESSION_CALENDAR'));
+    assert.equal(r.input,null);
+    b.declaredExchangeSessions=marketWindows();
+    const valid=ingestVendorHistoricalBundle(b);
+    assert.equal(valid.status,'SOURCE_ATTESTED_NOT_INDEPENDENTLY_VERIFIED');
+    assert.equal(valid.sourceAuthenticityIndependentlyVerified,false);
+  });
+  it('audits decision/entry/exit and warm-up candles using separately declared windows',()=>{
+    const b=fixture();
+    b.declaredExchangeSessions=marketWindows();
+    const good=auditAdaptiveExchangeWindows({
+      declaredSessions:b.declaredExchangeSessions,
+      decisions:b.sessions,optionQuotes:b.executionL1
+    });
+    assert.equal(good.valid,true);
+    assert.equal(good.calendarIndependentlyAuthenticated,false);
+    assert.ok(good.checkedCandles>100);
+    const incomplete=marketWindows().slice(1);
+    const bad=auditAdaptiveExchangeWindows({
+      declaredSessions:incomplete,decisions:b.sessions,optionQuotes:b.executionL1
+    });
+    assert.ok(bad.errors.includes('CANDLE_OUTSIDE_DECLARED_EXCHANGE_WINDOW'));
+    const quote=fixture();
+    quote.declaredExchangeSessions=marketWindows();
+    quote.executionL1[0].eventAt=at(Date.UTC(2026,8,8,11,0));
+    quote.executionL1[0].availableAt=at(Date.UTC(2026,8,8,11,0,1));
+    assert.ok(ingestVendorHistoricalBundle(quote).errors.includes(
+      'EXECUTION_OUTSIDE_DECLARED_EXCHANGE_WINDOW'));
+  });
+  it('rejects duplicate or special-session-invalid declared market calendar',()=>{
+    const b=fixture();
+    const windows=marketWindows();
+    windows[1].sessionDate=windows[0].sessionDate;
+    assert.equal(auditAdaptiveExchangeWindows({
+      declaredSessions:windows,decisions:b.sessions,optionQuotes:b.executionL1
+    }).valid,false);
+  });
+  it('compares original vendor artifact bytes but never authenticates their vendor',()=>{
+    const b=fixture();
+    const original=Buffer.from('SYNTHETIC_TEST_VENDOR_BYTE_SOURCE','utf8');
+    b.provenance.sourceArtifactSha256=createHash('sha256').update(original).digest('hex');
+    const matched=auditAdaptiveSourceArtifact(b,original);
+    assert.equal(matched.status,'CHECKSUM_MATCHED_AUTHENTICITY_UNVERIFIED');
+    assert.equal(matched.marketAuthenticityVerified,false);
+    assert.equal(matched.executionAuthorized,false);
+    assert.equal(auditAdaptiveSourceArtifact(b).status,'MISSING_SOURCE');
+    assert.equal(auditAdaptiveSourceArtifact(b,Buffer.from('TAMPERED')).status,
+      'CHECKSUM_MISMATCH');
+    assert.ok(auditAdaptiveSourceArtifact(b,Buffer.from('TAMPERED')).errors.includes(
+      'ORIGINAL_SOURCE_ARTIFACT_SHA256_MISMATCH'));
+  });
+  it('rejects ambiguous reuse of an evidence record ID',()=>{
+    const b=fixture();
+    b.executionL1[1].sourceRecordId=b.executionL1[0].sourceRecordId;
+    assert.ok(ingestVendorHistoricalBundle(b).errors.includes('REUSED_SOURCE_RECORD_ID'));
+  });
+  it('includes context-conditional OOS trade distribution, never causal/profit certification',()=>{
+    const report=runAdaptiveWalkForwardStudy(fixture());
+    const audit=report.marketRegimeAudit;
+    assert.ok(audit);
+    assert.equal(audit!.executionAuthorized,false);
+    assert.equal(audit!.causalEffectEstablished,false);
+    assert.equal(audit!.sourceAuthenticityVerified,false);
+    assert.ok(audit!.cells.length>0);
+    assert.ok(audit!.cells.every(c=>!c.productionSafe));
+    assert.ok(audit!.cells.some(c=>c.executedTrades>0));
+    assert.ok(audit!.cells.every(c=>
+      (c.executedTrades===0 && c.netPnlINR===null) ||
+      (c.executedTrades>0 && typeof c.netPnlINR==='number')));
   });
   it('does not let synthetic test output masquerade as empirically proven strategy',()=>{
     const x=fixture();

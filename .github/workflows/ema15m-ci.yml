@@ -1,9 +1,9 @@
 name: EMA15M safety checks
 on:
   push:
-    branches: [codex, 'research/adaptive-v2-historical-comparison', 'research/adaptive-v2-evidence-capture', 'research/adaptive-v2-verified-ingestion-walkforward']
+    branches: [codex, 'research/adaptive-v2-historical-comparison', 'research/adaptive-v2-evidence-capture', 'research/adaptive-v2-verified-ingestion-walkforward', 'research/adaptive-v2-phase6-integrity-review']
   pull_request:
-    branches: [main, codex, 'research/adaptive-v2-historical-comparison', 'research/adaptive-v2-evidence-capture']
+    branches: [main, codex, 'research/adaptive-v2-historical-comparison', 'research/adaptive-v2-evidence-capture', 'research/adaptive-v2-verified-ingestion-walkforward']
   workflow_dispatch:
 
 permissions:
