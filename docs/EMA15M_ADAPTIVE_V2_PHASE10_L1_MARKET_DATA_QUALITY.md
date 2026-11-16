@@ -23,8 +23,9 @@ Real option markets can exhibit large overnight gaps, IV-driven moves, thin orde
 3. **Fixed-hold data window**: check quotes from the originally recorded *post-decision entry* to the policy's predeclared fixed-hold exit/grace window, not merely until an unusually favorable first profitable exit.
 4. **Session coverage**: check original declared trading windows for each intersecting session. Include the first and last parts of sessions in quote-gap checks, enforce minimum observations per session, and flag quotes on dates missing from the submitted calendar. The external calendar's completeness is **not** independently authenticated.
 5. **Bid/ask and depth**: calculate percent bid/ask spread from displayed midpoint, fraction of observations above a specified spread ceiling, and proportion with sufficient bid quantity measured in entire option lots. The **first** bid at/after scheduled fixed-hold due is checked for age and depth; a later favorable quote may not replace it.
-6. **Overnight gap analysis**: calculate adverse option-bid changes between the last observed bid of one declared session and the first bid of the next. A large genuine adverse gap is **preserved as a risk alert**; it does not make the feed invalid or imply the originally hoped-for stop-price fill occurred.
-7. **Full evidence denominator**: every fold × arm × horizon has entry, missing entry, quality-pass and incomplete-path counts. Missing/unsafe observations keep a cell `sufficientForDescriptiveQualityReview=false`. A small sample also fails the predeclared minimum.
+6. **Observed bid giveback**: measure the peak-to-later-trough of **option-premium BID** from recorded chronological L1, separately from underlying index-point targets. A large observed pullback is a risk alert, not a stop-trigger fill or profitability prediction.
+7. **Overnight gap analysis**: calculate adverse option-bid changes between the last observed bid of one declared session and the first bid of the next. A large genuine adverse gap is **preserved as a risk alert**; it does not make the feed invalid or imply the originally hoped-for stop-price fill occurred.
+8. **Full evidence denominator**: every fold × arm × horizon has entry, missing entry, quality-pass and incomplete-path counts. Missing/unsafe observations keep a cell `sufficientForDescriptiveQualityReview=false`. A small sample also fails the predeclared minimum.
 
 `DESCRIPTIVE_ONLY` is the **maximum possible** audit status when all supplied synthetic/source-attested quality checks happen to pass. It is NOT a real-market performance confirmation or a production authorization. If a fold/horizon lacks examples or required quote observations, the report remains `INCOMPLETE_EVIDENCE`. `REJECTED` denotes a structurally invalid input or policy.
 
@@ -56,7 +57,8 @@ Example `ADAPTIVE_MARKET_DATA_QUALITY_V1` configuration (**illustrative, uncalib
   "maximumWideSpreadQuoteFraction": 0.05,
   "minimumBidDepthMultipleOfLot": 1,
   "minimumSufficientBidDepthQuoteFraction": 0.9,
-  "overnightAdverseBidGapAlertPercent": 25
+  "overnightAdverseBidGapAlertPercent": 25,
+  "observedOptionBidGivebackAlertPercent": 20
 }
 ```
 
@@ -64,7 +66,7 @@ Example `ADAPTIVE_MARKET_DATA_QUALITY_V1` configuration (**illustrative, uncalib
 
 ## Limitations and release blockers
 
-- **No real vendor market data was supplied.** The deterministic tests construct **synthetic** date-stamped original/availability observations and intentionally corrupt quote paths, spread/depth, event lag, session coverage and exit-bid evidence. Successful tests prove the controls respond as coded, not that a strategy earns money.
+- **No real vendor market data was supplied.** The deterministic tests construct **synthetic** date-stamped original/availability observations and intentionally corrupt quote paths, spread/depth, event lag, session coverage and exit-bid evidence, plus observed option-premium giveback alerts. Successful tests prove the controls respond as coded, not that a strategy earns money.
 - Original feed clocks are source-attested only; a matching SHA of separately retained source bytes **does not independently authenticate** the vendor or prove timestamps are truthful.
 - Exchange special sessions, trading holidays and expiry changes need an independently checked official calendar. A submitter can omit a real session even if all supplied windows appear internally consistent.
 - Quotes are L1 displayed values, not fill confirmations: execution queue, price impact, partial fills, cancelled/unknown native broker stops, GTT triggers, opening auction and unexpected outages are NOT resolved by this audit.
