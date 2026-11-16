@@ -8,7 +8,8 @@
  *   [--market-data-policy <phase10-predeclared-quality-policy.json>] \
  *   [--evidence-gate-policy <phase11-predeclared-evidence-policy.json>] \
  *   [--hysteresis-policy <phase12-predeclared-policy.json>] \
- *   [--matched-hysteresis-policy <phase13-predeclared-policy.json>]
+ *   [--matched-hysteresis-policy <phase13-predeclared-policy.json>] \
+ *   [--premium-stress-policy <phase14-predeclared-policy.json>]
  *
  * Non-synthetic source requires independently retained original artifact.
  * Phase 7 exit-policy is explicitly opt-in and MUST be predeclared, not tuned
@@ -20,6 +21,9 @@ import { auditAdaptiveSourceArtifact } from
   '../src/server/engine/ema15m/adaptiveSourceArtifactAudit.js';
 import { runAdaptiveWalkForwardStudy } from
   '../src/server/engine/ema15m/adaptiveWalkForwardStudy.js';
+import { auditAdaptiveMatchedPremiumCostDepthStress,
+  type PremiumCostDepthStressPolicy } from
+  '../src/server/engine/ema15m/adaptiveMatchedPremiumCostDepthStress.js';
 import { compareAdaptiveHysteresisMatchedOos,
   type HysteresisMatchedOosPolicy } from
   '../src/server/engine/ema15m/adaptiveHysteresisMatchedOos.js';
@@ -48,14 +52,14 @@ function parseOptions(args:string[]):{
   bundlePath:string; sourcePath:string|null; exitPolicyPath:string|null;
   entryFirstPolicyPath:string|null;marketDataPolicyPath:string|null;
   evidenceGatePolicyPath:string|null;hysteresisPolicyPath:string|null;
-  matchedHysteresisPolicyPath:string|null
+  matchedHysteresisPolicyPath:string|null;premiumStressPolicyPath:string|null
 }{
   if(!args.length||!args[0]||args[0].startsWith('-')||args.length%2===0)
-    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>]');
+    throw new Error('USAGE: <bundle.json> [--source-artifact <original>] [--exit-policy <phase7.json>] [--entry-first-policy <phase8.json>] [--market-data-policy <phase10.json>] [--evidence-gate-policy <phase11.json>] [--hysteresis-policy <phase12.json>] [--matched-hysteresis-policy <phase13.json>] [--premium-stress-policy <phase14.json>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const flag=args[i],value=args[i+1];
-    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy'].includes(flag)||
+    if(!['--source-artifact','--exit-policy','--entry-first-policy','--market-data-policy','--evidence-gate-policy','--hysteresis-policy','--matched-hysteresis-policy','--premium-stress-policy'].includes(flag)||
        !value||value.startsWith('-')||flags.has(flag))
       throw new Error('INVALID_OR_DUPLICATE_OFFLINE_RESEARCH_FLAG');
     flags.set(flag,value);
@@ -68,13 +72,14 @@ function parseOptions(args:string[]):{
     marketDataPolicyPath:flags.has('--market-data-policy')?resolve(flags.get('--market-data-policy')!):null,
     evidenceGatePolicyPath:flags.has('--evidence-gate-policy')?resolve(flags.get('--evidence-gate-policy')!):null,
     hysteresisPolicyPath:flags.has('--hysteresis-policy')?resolve(flags.get('--hysteresis-policy')!):null,
-    matchedHysteresisPolicyPath:flags.has('--matched-hysteresis-policy')?resolve(flags.get('--matched-hysteresis-policy')!):null
+    matchedHysteresisPolicyPath:flags.has('--matched-hysteresis-policy')?resolve(flags.get('--matched-hysteresis-policy')!):null,
+    premiumStressPolicyPath:flags.has('--premium-stress-policy')?resolve(flags.get('--premium-stress-policy')!):null
   };
 }
 async function main():Promise<void>{
   const {bundlePath,sourcePath,exitPolicyPath,entryFirstPolicyPath,
     marketDataPolicyPath,evidenceGatePolicyPath,hysteresisPolicyPath,
-    matchedHysteresisPolicyPath}=
+    matchedHysteresisPolicyPath,premiumStressPolicyPath}=
     parseOptions(process.argv.slice(2));
   if(sourcePath&&await realpath(sourcePath)===await realpath(bundlePath))
     throw new Error('BUNDLE_CANNOT_BE_ITS_OWN_SOURCE_ARTIFACT');
@@ -91,6 +96,12 @@ async function main():Promise<void>{
   if(matchedHysteresisPolicyPath&&
      await realpath(matchedHysteresisPolicyPath)===await realpath(bundlePath))
     throw new Error('MATCHED_POLICY_MUST_BE_A_SEPARATE_PRESPECIFIED_FILE');
+  if(premiumStressPolicyPath&&
+     await realpath(premiumStressPolicyPath)===await realpath(bundlePath))
+    throw new Error('PREMIUM_STRESS_POLICY_MUST_BE_SEPARATELY_PREDECLARED');
+  if(premiumStressPolicyPath&&
+     (!matchedHysteresisPolicyPath||!hysteresisPolicyPath||!entryFirstPolicyPath))
+    throw new Error('PREMIUM_STRESS_REQUIRES_PHASE8_PHASE12_PHASE13_POLICIES');
   if(matchedHysteresisPolicyPath&&(!hysteresisPolicyPath||!entryFirstPolicyPath))
     throw new Error('MATCHED_OOS_REQUIRES_ENTRY_FIRST_AND_HYSTERESIS_POLICIES');
   if(evidenceGatePolicyPath&&(!marketDataPolicyPath||!entryFirstPolicyPath))
@@ -325,6 +336,54 @@ async function main():Promise<void>{
       };
     }
   }
+  let premiumCostDepthStressAudit=null;
+  if(premiumStressPolicyPath){
+    const premiumStressPolicy:PremiumCostDepthStressPolicy=JSON.parse(
+      Buffer.from(await fileBytes(premiumStressPolicyPath,128*1024)).toString('utf8')
+    );
+    const input=ingestVendorHistoricalBundle(raw).input;
+    if(!input){
+      premiumCostDepthStressAudit={
+        status:'REJECTED',executionAuthorized:false,
+        errors:['ORIGINAL_SOURCE_ATTESTED_OPTION_L1_REQUIRED_FOR_STRESS_AUDIT']
+      };
+    }else{
+      const exitPolicy:AdaptiveExitReplayPolicy=JSON.parse(
+        Buffer.from(await fileBytes(entryFirstPolicyPath!,128*1024)).toString('utf8')
+      );
+      const hysteresisPolicy:HysteresisResearchPolicy=JSON.parse(
+        Buffer.from(await fileBytes(hysteresisPolicyPath!,128*1024)).toString('utf8')
+      );
+      const matchedPolicy:HysteresisMatchedOosPolicy=JSON.parse(
+        Buffer.from(await fileBytes(matchedHysteresisPolicyPath!,128*1024)).toString('utf8')
+      );
+      const audit=auditAdaptiveMatchedPremiumCostDepthStress(
+        input,raw.declaredExchangeSessions,exitPolicy,hysteresisPolicy,
+        matchedPolicy,premiumStressPolicy
+      );
+      // Aggregate decision, censor, price-stress and horizon-risk cells only.
+      // NEVER print licensed instrument-level historical option quotes.
+      premiumCostDepthStressAudit={
+        status:audit.status,executionAuthorized:audit.executionAuthorized,
+        productionSafe:audit.productionSafe,
+        profitabilityProven:audit.profitabilityProven,
+        brokerFillsAuthenticated:audit.brokerFillsAuthenticated,
+        nativeProtectionInstalled:audit.nativeProtectionInstalled,
+        originalMarketDataIndependentlyAuthenticated:
+          audit.originalMarketDataIndependentlyAuthenticated,
+        exchangeCalendarIndependentlyVerified:
+          audit.exchangeCalendarIndependentlyVerified,
+        scenarioPricesAreObservedTrades:audit.scenarioPricesAreObservedTrades,
+        datasetId:audit.datasetId,synthetic:audit.synthetic,
+        phase13Status:audit.phase13Status,
+        originalEntryFirstStatus:audit.originalEntryFirstStatus,
+        stabilizedEntryFirstStatus:audit.stabilizedEntryFirstStatus,
+        errors:audit.errors,warnings:audit.warnings,
+        horizonSummary:audit.horizonSummary,
+        cells:audit.cells
+      };
+    }
+  }
   console.log(JSON.stringify({
     mode:result.mode,executionAuthorized:result.executionAuthorized,
     productionSafe:result.productionSafe,status:result.status,
@@ -341,7 +400,8 @@ async function main():Promise<void>{
     marketDataQualityAudit,
     independentEvidenceReviewGate:evidenceGate,
     adaptiveRegimeHysteresisStudy,
-    matchedHysteresisOosStudy,warnings:result.warnings
+    matchedHysteresisOosStudy,
+    premiumCostDepthStressAudit,warnings:result.warnings
   },null,2));
   if(result.status!=='DESCRIPTIVE_ONLY'||
      (exitReplay!==null&&exitReplay.status!=='DESCRIPTIVE_ONLY')||
@@ -351,7 +411,9 @@ async function main():Promise<void>{
      (adaptiveRegimeHysteresisStudy!==null&&
        adaptiveRegimeHysteresisStudy.status!=='DESCRIPTIVE_ONLY')||
      (matchedHysteresisOosStudy!==null&&
-       matchedHysteresisOosStudy.status!=='DESCRIPTIVE_ONLY'))
+       matchedHysteresisOosStudy.status!=='DESCRIPTIVE_ONLY')||
+     (premiumCostDepthStressAudit!==null&&
+       premiumCostDepthStressAudit.status!=='DESCRIPTIVE_ONLY'))
     process.exitCode=1;
 }
 main().catch(error=>{
