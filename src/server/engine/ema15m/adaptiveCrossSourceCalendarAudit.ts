@@ -88,6 +88,7 @@ export interface CrossSourceCalendarReport {
   mismatchedSessionWindows:number;
   missingDecisionSessions:number;
   optionL1OutsideCalendarCount:number;
+  vendorSnapshotOrCandleOutsideCalendarCount:number;
   missingContractExpiryReferences:number;
   nonTradingContractExpiryCount:number;
   foldCoverage:CalendarFoldCoverage[];
@@ -153,7 +154,9 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
     sourceDeclaredTradingSessions:0,
     missingVendorTradingSessions:0,extraVendorTradingSessions:0,
     mismatchedSessionWindows:0,missingDecisionSessions:0,
-    optionL1OutsideCalendarCount:0,missingContractExpiryReferences:0,
+    optionL1OutsideCalendarCount:0,
+    vendorSnapshotOrCandleOutsideCalendarCount:0,
+    missingContractExpiryReferences:0,
     nonTradingContractExpiryCount:0,foldCoverage:[]
   };
   const errors:string[]=[];
@@ -192,7 +195,6 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
   if(cal!.days.length!==span)
     return reject(base,['INCOMPLETE_DAY_BY_DAY_CALENDAR_LEDGER']);
 
-  const calendarByDay=new Map<string,CalendarDayEvidence>();
   const trading=new Map<string,TradingCalendarRow>();
   const sourceIds=new Set<string>();
   for(let i=0;i<span;i++){
@@ -218,7 +220,6 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
              d.openAt!==undefined||d.closeAt!==undefined||
              d.sessionKind!==undefined)
       return reject(base,['INVALID_CALENDAR_CLOSED_DAY_EVIDENCE']);
-    calendarByDay.set(d.sessionDate,d);
   }
   const expiryRows=new Set<string>();
   for(const e of cal!.contractExpiries){
@@ -236,7 +237,9 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
   const windowMap=new Map<string,{openAt:string;closeAt:string}>();
   let missingVendorTradingSessions=0,extraVendorTradingSessions=0,
     mismatchedSessionWindows=0,missingDecisionSessions=0,
-    optionL1OutsideCalendarCount=0,missingContractExpiryReferences=0,
+    optionL1OutsideCalendarCount=0,
+    vendorSnapshotOrCandleOutsideCalendarCount=0,
+    missingContractExpiryReferences=0,
     nonTradingContractExpiryCount=0;
   const originalIds=new Set<string>();
   let lastDate='';
@@ -286,6 +289,27 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
       if(!trading.has(contract.expiry))nonTradingContractExpiryCount++;
     }
   }
+  const withinSeparateWindow=(ts:unknown,barLengthMs=0):boolean=>{
+    if(!validTs(ts))return false;
+    const at=Date.parse(ts);
+    const row=trading.get(exchangeDay(at));
+    return !!row&&at>=Date.parse(row.openAt)&&
+      at+barLengthMs<=Date.parse(row.closeAt);
+  };
+  for(const d of decisions){
+    const snapshots=[d.contracts,...(d.chains??[])];
+    for(const snap of snapshots){
+      if(!snap||!withinSeparateWindow(snap.eventAt)||
+         !withinSeparateWindow(snap.availableAt)||
+         Date.parse(snap.eventAt)>Date.parse(snap.availableAt))
+        vendorSnapshotOrCandleOutsideCalendarCount++;
+    }
+    for(const bar of d.underlyingCandles??[])
+      if(!withinSeparateWindow(bar?.timestamp,15*60_000))
+        vendorSnapshotOrCandleOutsideCalendarCount++;
+  }
+  if(vendorSnapshotOrCandleOutsideCalendarCount)
+    flag('VENDOR_CANDLE_OR_CHAIN_CLOCK_OUTSIDE_SEPARATE_CALENDAR');
   const expected= bundle!.provenance.expectedSessions;
   if(decisionDates.length!==expected.length||
      decisionDates.some((d,i)=>d!==expected[i]))
@@ -373,7 +397,9 @@ export function auditAdaptiveCrossSourceExchangeCalendar(
     sourceDeclaredTradingSessions:sourceWindows.length,
     missingVendorTradingSessions,extraVendorTradingSessions,
     mismatchedSessionWindows,missingDecisionSessions,
-    optionL1OutsideCalendarCount,missingContractExpiryReferences,
+    optionL1OutsideCalendarCount,
+    vendorSnapshotOrCandleOutsideCalendarCount,
+    missingContractExpiryReferences,
     nonTradingContractExpiryCount,foldCoverage
   };
 }
