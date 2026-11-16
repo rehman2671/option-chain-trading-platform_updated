@@ -58,6 +58,11 @@ export interface HysteresisMatchedOosCell {
   originalCensoredExits:number;
   stabilizedPricedExits:number;
   stabilizedCensoredExits:number;
+  /** Overnight bid gap can bypass the assumed premium stop; evidence only. */
+  originalOvernightGapTriggers:number;
+  stabilizedOvernightGapTriggers:number;
+  originalTrailingGivebackTriggers:number;
+  stabilizedTrailingGivebackTriggers:number;
   /** Original-only opportunities that later PRICE as winners/losers. */
   skippedOriginalWinnersObserved:number;
   skippedOriginalLosersObserved:number;
@@ -154,6 +159,10 @@ function aggregateCell(
   const filteredPriced=fOutcomes.filter(completeOutcome).length;
   const bCensored=bEntered-originalPriced;
   const fCensored=fEntered-filteredPriced;
+  const bGaps=bOutcomes.filter(o=>o.overnightGapAtTrigger).length;
+  const fGaps=fOutcomes.filter(o=>o.overnightGapAtTrigger).length;
+  const bGivebacks=bOutcomes.filter(o=>o.reason==='TRAILING_GIVEBACK').length;
+  const fGivebacks=fOutcomes.filter(o=>o.reason==='TRAILING_GIVEBACK').length;
   if(!bIndex||!fIndex||!bExit||!fExit||
      original.length!==stabilized.length||
      original.some(row=>!fIndex?.has(sameKey(row)))||
@@ -235,6 +244,9 @@ function aggregateCell(
     jointlyCensoredPairs:jointlyCensored,originalPricedExits:originalPriced,
     originalCensoredExits:bCensored,stabilizedPricedExits:filteredPriced,
     stabilizedCensoredExits:fCensored,
+    originalOvernightGapTriggers:bGaps,stabilizedOvernightGapTriggers:fGaps,
+    originalTrailingGivebackTriggers:bGivebacks,
+    stabilizedTrailingGivebackTriggers:fGivebacks,
     skippedOriginalWinnersObserved:skippedWinners,
     skippedOriginalLosersObserved:skippedLosers,
     skippedOriginalUnpriced:skippedUnpriced,
