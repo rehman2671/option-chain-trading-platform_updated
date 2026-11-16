@@ -103,6 +103,7 @@ const warnings = [
   'STOP_TRIGGER_IS_NOT_AN_ACKNOWLEDGED_NATIVE_BROKER_ORDER',
   'HYPOTHETICAL_NEXT_L1_BID_AND_DISPLAYED_DEPTH_DO_NOT_GUARANTEE_EXECUTION',
   'NO_INTRABAR_STOPS_OR_GAP_PRICE_INTERPOLATION',
+  'REPLAY_GAP_CHECKS_ONLY_OBSERVED_QUOTES_NOT_UNOBSERVED_INTRASESSION_REVERSALS',
   'INCOMPLETE_PATHS_ARE_NOT_ASSIGNED_WIN_OR_ZERO_PNL',
   'FIXED_HOLD_COMPARATOR_ALREADY_EXCLUDES_ENTRIES_WITH_MISSING_EXIT_EVIDENCE',
   'REGIME_STRATEGY_OOS_EDGE_AND_PRODUCTION_SAFETY_NOT_ESTABLISHED'
@@ -144,6 +145,24 @@ function coverage(trade:HistoricalTrade,
   policy:AdaptiveExitReplayPolicy,
   sessions:DeclaredTradingSession[]|undefined):string|null{
   if(!Array.isArray(sessions) || sessions.length===0) return 'DECLARED_EXCHANGE_WINDOWS_REQUIRED';
+  const bySession=new Map<string,DeclaredTradingSession>();
+  for(const session of sessions){
+    const open=at(session?.openAt),close=at(session?.closeAt);
+    if(!session || !session.sessionDate || bySession.has(session.sessionDate) ||
+       !Number.isFinite(open) || !Number.isFinite(close) || close<=open ||
+       istDay(open)!==session.sessionDate || istDay(close)!==session.sessionDate)
+      return 'INVALID_OR_DUPLICATE_DECLARED_EXCHANGE_SESSION';
+    bySession.set(session.sessionDate,session);
+  }
+  // The optional exit replay must not upgrade a quote emitted outside the
+  // declared session into an executable market observation.
+  for(const q of series){
+    const ms=at(q.observedAt);
+    const session=bySession.get(istDay(ms));
+    if(!session || !Number.isFinite(ms) ||
+       ms<at(session.openAt) || ms>at(session.closeAt))
+      return 'L1_OUTSIDE_DECLARED_EXCHANGE_SESSION';
+  }
   const first=at(trade.entryAt),last=at(trade.exitAt);
   const relevant=sessions.filter(s=>s?.sessionDate&&withinDateRange(s.sessionDate,first,last));
   if(relevant.length===0) return 'HOLDING_SESSION_CALENDAR_MISSING';
