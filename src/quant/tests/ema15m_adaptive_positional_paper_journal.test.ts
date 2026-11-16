@@ -165,6 +165,20 @@ describe('Adaptive Phase 9 offline NRML paper journal invariants',()=>{
     assert.equal(expiry.status,'EXIT_REVIEW');
     assert.ok(expiry.reasons.includes('EXPIRY_TRADING_SESSIONS_NEAR_OR_PASSED'));
   });
+  it('does not mask cancel-pending stop protection behind an operator exit request',()=>{
+    let j=journalBase();
+    j=add(j,'b',{kind:'MOCK_BROKER_SNAPSHOT',at:iso(16,10),
+      snapshot:snap(iso(16,10),130,{protectionStatus:'CANCEL_PENDING'})});
+    j=add(j,'q',{kind:'OPTION_L1_OBSERVED',at:iso(16,11),
+      quote:bid(iso(16,11),105)});
+    j=add(j,'req',{kind:'OPERATOR_EXIT_REVIEW_REQUESTED',at:iso(16,13),
+      requestId:'REVIEW_UNPROTECTED',quantity:130,reason:'MANUAL_REVIEW'});
+    const r=audit(j,iso(16,14));
+    assert.equal(r.status,'BLOCKED_PROTECTION');
+    assert.equal(r.openExitRequestQuantity,130);
+    assert.ok(r.reasons.includes('SIMULATED_NATIVE_PROTECTION_UNCONFIRMED_OR_CANCEL_PENDING'));
+    assert.equal(r.executionAuthorized,false);
+  });
   it('permits a separately declared paper exit request but not an imaginary fill',()=>{
     let j=evidence();
     j=add(j,'req',{kind:'OPERATOR_EXIT_REVIEW_REQUESTED',
