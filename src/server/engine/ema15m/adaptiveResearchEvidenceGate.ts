@@ -52,6 +52,9 @@ export interface AdaptiveResearchEvidencePolicy {
   minimumPricedEntryFirstExitsPerCell:number;
   minimumStressTradesPerCell:number;
   minimumPairedDecisionsPerArmHorizon:number;
+  /** Distinct decision-time CLOSED index regimes per OOS fold. */
+  minimumDistinctMarketRegimesPerFold:number;
+  minimumDecisionSessionsPerObservedRegime:number;
   maximumMissingEntryFractionPerCell:number;
   maximumCensoredExitFractionPerCell:number;
   /** This is absolute P&L deterioration sensitivity, NOT a profit promise. */
@@ -73,6 +76,14 @@ export interface EvidenceGateCell {
   evidenceSufficientForManualReview:boolean;
   blockers:string[];
 }
+export interface RegimeFoldReview {
+  foldIndex:number;
+  distinctObservedRegimes:string[];
+  qualifyingRegimes:string[];
+  attributedDecisionSessions:number;
+  expectedTestingSessions:number;
+  internallyConsistent:boolean;
+}
 export interface AdaptiveResearchEvidenceGate {
   mode:'RESEARCH_ONLY';
   executionAuthorized:false;
@@ -91,6 +102,7 @@ export interface AdaptiveResearchEvidenceGate {
   cells:EvidenceGateCell[];
   foldCount:number;
   totalTestingSessions:number;
+  regimeFoldEvidence:RegimeFoldReview[];
   policy:AdaptiveResearchEvidencePolicy|null;
   /** Hash of AGGREGATE summaries, not source raw bytes or a notarization. */
   aggregateSummarySha256:string|null;
@@ -125,6 +137,8 @@ function policyValid(p:AdaptiveResearchEvidencePolicy):boolean {
     integer(p.minimumPricedEntryFirstExitsPerCell,1,100000)&&
     integer(p.minimumStressTradesPerCell,1,100000)&&
     integer(p.minimumPairedDecisionsPerArmHorizon,1,100000)&&
+    integer(p.minimumDistinctMarketRegimesPerFold,1,5)&&
+    integer(p.minimumDecisionSessionsPerObservedRegime,1,100000)&&
     fraction(p.maximumMissingEntryFractionPerCell)&&
     fraction(p.maximumCensoredExitFractionPerCell)&&
     num(p.maximumCombinedStressDeteriorationINR)&&
@@ -153,7 +167,7 @@ export function evaluateAdaptiveResearchEvidenceGate(
     protocolRegistrationIndependentlyVerified:false,
     status:'REJECTED',datasetId:study?.report?.datasetId??null,
     synthetic:study?.report?.synthetic??null,errors:[],blockers:[],cells:[],
-    foldCount:0,totalTestingSessions:0,policy:null,
+    foldCount:0,totalTestingSessions:0,regimeFoldEvidence:[],policy:null,
     aggregateSummarySha256:null,externalReviewChecklist:reviewChecklist,warnings
   };
   const errors:string[]=[];
@@ -219,6 +233,47 @@ export function evaluateAdaptiveResearchEvidenceGate(
     totalTestingSessions+=num(f?.testingSessions)?f.testingSessions:0;
   }
   for(const b of unique(foldBlockers))flag(b);
+  const regimeFoldEvidence:RegimeFoldReview[]=[];
+  const regimeAudit=study.marketRegimeAudit;
+  if(!regimeAudit||regimeAudit.mode!=='RESEARCH_ONLY'||
+     regimeAudit.executionAuthorized!==false||
+     regimeAudit.causalEffectEstablished!==false||
+     regimeAudit.sourceAuthenticityVerified!==false||
+     !Array.isArray(regimeAudit.cells))
+    flag('DECISION_TIME_CLOSED_CANDLE_REGIME_AUDIT_REQUIRED');
+  for(let foldIndex=0;foldIndex<foldCount;foldIndex++){
+    const subset=regimeAudit?.cells?.filter(c=>c.foldIndex===foldIndex)??[];
+    const allRegimes=[...new Set(subset.map(c=>c.regime))].sort();
+    let attributedSessions=0;
+    const eligible:string[]=[];
+    let consistent=subset.length>0;
+    for(const regime of allRegimes){
+      const rows=subset.filter(c=>c.regime===regime);
+      const identities=new Set(rows.map(c=>key(c.foldIndex,c.arm,c.horizon)));
+      const distinctCounts=new Set(rows.map(c=>c.observedDecisionSessions));
+      const validRegime=['TREND_UP','TREND_DOWN','SIDEWAYS',
+        'VOLATILE','TRANSITION'].includes(regime);
+      const sessions=rows[0]?.observedDecisionSessions??0;
+      if(!validRegime||rows.length!==12||identities.size!==12||
+         distinctCounts.size!==1||!integer(sessions,1,100000)||
+         rows.some(c=>c.productionSafe!==false))
+        consistent=false;
+      if(validRegime&&sessions>=policy.minimumDecisionSessionsPerObservedRegime)
+        eligible.push(regime);
+      attributedSessions+=sessions;
+    }
+    if(attributedSessions!==study.foldWindows[foldIndex]?.testingSessions)
+      consistent=false;
+    if(!consistent)flag('REGIME_AUDIT_SESSIONS_OR_ARM_HORIZON_MATRIX_MISMATCH');
+    if(eligible.length<policy.minimumDistinctMarketRegimesPerFold)
+      flag('INSUFFICIENT_DISTINCT_MARKET_REGIMES_FOR_GENERALIZABILITY_REVIEW');
+    regimeFoldEvidence.push({
+      foldIndex,distinctObservedRegimes:allRegimes,qualifyingRegimes:eligible,
+      attributedDecisionSessions:attributedSessions,
+      expectedTestingSessions:study.foldWindows[foldIndex]?.testingSessions??0,
+      internallyConsistent:consistent
+    });
+  }
   if(!Number.isFinite(Date.parse(policy.prespecifiedAt))||
      Date.parse(policy.prespecifiedAt)>=
        Math.min(...study.foldWindows.map(f=>
@@ -381,6 +436,7 @@ export function evaluateAdaptiveResearchEvidenceGate(
     qualityCells:q.cells,entryFirstCells:ex.cells,
     costStressCells:study.results,
     pairedComparisons:study.pairedOutOfSample,
+    regimeFoldEvidence,
     evidenceCells:cells
   };
   const digest=createHash('sha256').update(JSON.stringify(summary)).digest('hex');
@@ -389,6 +445,6 @@ export function evaluateAdaptiveResearchEvidenceGate(
       'EXTERNAL_REVIEW_REQUIRED',
     datasetId:wf.datasetId,synthetic:wf.synthetic,errors:[],
     policy,blockers:unique(blockers),cells,foldCount,totalTestingSessions,
-    aggregateSummarySha256:digest
+    regimeFoldEvidence,aggregateSummarySha256:digest
   };
 }
