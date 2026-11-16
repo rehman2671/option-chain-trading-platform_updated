@@ -70,8 +70,8 @@ async function main():Promise<void>{
   const result=runAdaptiveWalkForwardStudy(raw);
   let exitReplay=null;
   if(exitPolicyPath){
-    const policy=JSON.parse(Buffer.from(await fileBytes(exitPolicyPath,128*1024)).toString('utf8'))
-      as AdaptiveExitReplayPolicy;
+    const policy=(JSON.parse(Buffer.from(await fileBytes(exitPolicyPath,128*1024)).toString('utf8'))
+      as AdaptiveExitReplayPolicy);
     const input=ingestVendorHistoricalBundle(raw).input;
     if(!input||!result.report){
       exitReplay={
