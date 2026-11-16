@@ -10,7 +10,7 @@ import type {
 } from '../../server/engine/ema15m/historicalAdaptiveComparison.js';
 
 const start='2026-11-16T04:00:00.000Z';
-const end='2026-11-17T04:40:00.000Z';
+const end='2026-11-17T05:12:00.000Z';
 const quote=(when:string,bid:number,depth=100):HistoricalExecutableQuote=>({
   observedAt:when,instrumentKey:'NSE_FO|456789',
   bid,ask:bid+1,bidQty:depth,askQty:depth
@@ -33,7 +33,7 @@ function policy():AdaptiveExitReplayPolicy{
     horizonRules:{'1W':{...rule},'2W':{...rule},
       '4W':{...rule},'8W':{...rule}},
     minQuotesPerDeclaredSession:2,minIntermediateQuotes:2,
-    maxSameSessionQuoteGapMinutes:30,maxTriggerToNextQuoteMinutes:5
+    maxSameSessionQuoteGapMinutes:120,maxTriggerToNextQuoteMinutes:5
   };
 }
 function caseStudy(series:HistoricalExecutableQuote[],fixedExitBid:number,opts:{
