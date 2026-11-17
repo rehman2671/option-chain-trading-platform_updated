@@ -184,13 +184,13 @@ describe('Phase20 conditional fold diagnostics — pure mathematical sensitiviti
   it('exact one-sided sign tail is Bonferroni corrected across 36 predeclared variant/contrast views',()=>{
     const a=describeChronologicalFoldPnl([1,1,1,1,1,1]);
     assert.equal(a.positiveFoldCount,6);
-    assert.equal(a.exploratoryOneSidedPositiveSignP,.0156);
+    assert.equal(a.exploratoryOneSidedPositiveSignP,.015625);
     assert.equal(a.exploratoryBonferroniAdjustedP36,.5625);
     assert.equal(a.statisticalSignificanceProven,false);
     assert.equal(a.profitabilityProven,false);
     const b=describeChronologicalFoldPnl(Array(12).fill(1));
-    assert.equal(b.exploratoryOneSidedPositiveSignP,.0002);
-    assert.equal(b.exploratoryBonferroniAdjustedP36,.0088);
+    assert.equal(b.exploratoryOneSidedPositiveSignP,.000244140625);
+    assert.equal(b.exploratoryBonferroniAdjustedP36,.0087890625);
     assert.equal(b.statisticalSignificanceProven,false);
   });
   it('one lucky fold masks losses: concentrated gain, leave-best-fold-out negative, chronological drawdown preserved',()=>{
