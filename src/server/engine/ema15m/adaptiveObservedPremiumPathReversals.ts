@@ -41,8 +41,7 @@ const decisionKey=(x:{
   foldIndex:number;arm:HistoricalArm;horizon:HorizonBucket;decisionAt:string
 })=>[x.foldIndex,x.arm,x.horizon,x.decisionAt].join('|');
 
-export interface ObservedPremiumRunupPolicy {
-  schemaVersion:'ADAPTIVE_OBSERVED_PREMIUM_RUNUP_REVERSAL_V1';
+export interface ObservedPremiumRunupHorizonRule {
   /** OPTION-BID point gains vs original ASK, NOT index points. */
   firstRunupPoints:number;
   secondRunupPoints:number;
@@ -53,6 +52,12 @@ export interface ObservedPremiumRunupPolicy {
   minimumDisplayedBidDepthLots:number;
   /** Predeclared minimum fully priceable paths PER fold × arm × horizon × variant. */
   minimumFullyObservedPathsPerVariantCell:number;
+}
+export interface ObservedPremiumRunupPolicy
+  extends ObservedPremiumRunupHorizonRule {
+  schemaVersion:'ADAPTIVE_OBSERVED_PREMIUM_RUNUP_REVERSAL_V1';
+  /** Optional 4-horizon predeclared overrides; no partial mixed set allowed. */
+  horizonRules?:Record<HorizonBucket,ObservedPremiumRunupHorizonRule>;
 }
 export interface PremiumVariantPathSummary {
   enrolledEntries:number;
@@ -132,18 +137,25 @@ const warnings=[
   'REAL_IV_THETA_GAMMA_LIQUIDITY_AND_BROKER_STOP_FILLED_PRICE_NOT_PROVEN',
   'NO_NRML_15_15_AUTO_SQUARE_OFF_NO_LIVE_ORDER'
 ];
+function validRule(p:ObservedPremiumRunupHorizonRule|undefined):boolean{
+  return !!p&&validNum(p.firstRunupPoints,.05,100000)&&
+    validNum(p.secondRunupPoints,.05,100000)&&
+    validNum(p.candidateTargetPoints,.05,100000)&&
+    p.firstRunupPoints<p.secondRunupPoints&&
+    p.secondRunupPoints<p.candidateTargetPoints&&
+    validNum(p.reversalGivebackPoints,.05,100000)&&
+    int(p.minimumDisplayedBidDepthLots,1,10)&&
+    int(p.minimumFullyObservedPathsPerVariantCell,1,100000);
+}
 export function validateObservedPremiumRunupPolicy(
   p:ObservedPremiumRunupPolicy
 ):string[]{
   if(!p||p.schemaVersion!=='ADAPTIVE_OBSERVED_PREMIUM_RUNUP_REVERSAL_V1'||
-     !validNum(p.firstRunupPoints,.05,100000)||
-     !validNum(p.secondRunupPoints,.05,100000)||
-     !validNum(p.candidateTargetPoints,.05,100000)||
-     !(p.firstRunupPoints<p.secondRunupPoints&&
-       p.secondRunupPoints<p.candidateTargetPoints)||
-     !validNum(p.reversalGivebackPoints,.05,100000)||
-     !int(p.minimumDisplayedBidDepthLots,1,10)||
-     !int(p.minimumFullyObservedPathsPerVariantCell,1,100000))
+     !validRule(p)||
+     (p.horizonRules!==undefined&&(
+       !p.horizonRules||
+       HORIZONS.some(h=>!validRule(p.horizonRules?.[h]))||
+       Object.keys(p.horizonRules).length!==HORIZONS.length)))
     return ['INVALID_PREDECLARED_OPTION_PREMIUM_PATH_THRESHOLDS'];
   return [];
 }
@@ -175,7 +187,7 @@ function auditSinglePath(
   a:CohortDecision,
   o:EntryFirstExitOutcome|undefined,
   quoteMap:Map<string,HistoricalExecutableQuote[]>,
-  p:ObservedPremiumRunupPolicy
+  p:ObservedPremiumRunupHorizonRule
 ){
   const unknown={valid:false,reason:'UNOBSERVED_OR_CENSORED_EXIT',
     rawGain:null as number|null,qualifiedGain:null as number|null,
@@ -343,6 +355,7 @@ export function auditAdaptiveObservedPremiumRunupReversals(
   const cells:PremiumPathReversalCell[]=[];
   for(let fold=0;fold<input.policy.folds.length;fold++)
     for(const arm of ARMS)for(const horizon of HORIZONS){
+      const rule=pathPolicy.horizonRules?.[horizon]??pathPolicy;
       const a=[...oi.attempts.values()].filter(x=>
         belongs(x,fold,arm,horizon));
       const b=[...hi.attempts.values()].filter(x=>
@@ -377,7 +390,7 @@ export function auditAdaptiveObservedPremiumRunupReversals(
           c.enrolled++;
           const outcome=(label==='ORIGINAL'?oi:hi).exits.get(
             decisionKey(record));
-          const path=auditSinglePath(record,outcome,quotes,pathPolicy);
+          const path=auditSinglePath(record,outcome,quotes,rule);
           if(!path.valid){c.censored++;return;}
           c.priced++;c.rawGains+=path.rawGain!;
           c.qualifiedGains+=path.qualifiedGain!;
@@ -413,9 +426,9 @@ export function auditAdaptiveObservedPremiumRunupReversals(
       if(stats.ORIGINAL.censored||stats.HYSTERESIS.censored)
         flag('UNOBSERVED_PRETRIGGER_BID_PATH_OR_PRICE_CENSORED');
       if(stats.ORIGINAL.priced<
-         pathPolicy.minimumFullyObservedPathsPerVariantCell||
+         rule.minimumFullyObservedPathsPerVariantCell||
          stats.HYSTERESIS.priced<
-         pathPolicy.minimumFullyObservedPathsPerVariantCell)
+         rule.minimumFullyObservedPathsPerVariantCell)
         flag('PREDECLARED_FULLY_OBSERVED_SAMPLE_MINIMUM_NOT_MET');
       cells.push({
         foldIndex:fold,arm,horizon,allOutOfSampleDecisions:a.length,
