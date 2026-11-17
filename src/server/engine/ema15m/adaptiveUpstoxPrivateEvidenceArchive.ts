@@ -14,9 +14,14 @@ import {createHash,randomBytes} from 'node:crypto';
 import type {
   SensitiveReadOnlyCaptureArchive,AuthorizedOfflineCaptureReport
 } from './adaptiveUpstoxAuthorizedGetCapture.js';
-import type {
-  Phase28ReadOnlyWitnessReport,ExternalOfflineWitnessTrustPolicy
+import {
+  auditPhase28OfflineDualWitnessEvidence,
+  type Phase28ReadOnlyWitnessReport,
+  type ExternalOfflineWitnessTrustPolicy,
+  type Phase28OfflineWitnessPackage
 } from './adaptiveUpstoxOfflineDualWitnessGate.js';
+import type {ReadOnlyNrmlAuditPolicy}
+  from './adaptiveReadOnlyNrmlProtectionAudit.js';
 
 const SHA=/^[a-f0-9]{64}$/;
 type ArchiveReason=
@@ -118,7 +123,7 @@ export function persistPrivateReadOnlyCapture(
  * this registry even by parallel processes. This is NOT distributed or
  * externally notarized anti-replay protection.
  */
-export function claimVerifiedOfflineNonceOnce(
+function claimVerifiedOfflineNonceOnce(
   privateNonceDirectory:string,
   signedReport:Phase28ReadOnlyWitnessReport,
   trust:ExternalOfflineWitnessTrustPolicy
@@ -153,4 +158,27 @@ export function claimVerifiedOfflineNonceOnce(
   }catch{
     return {...base,status:'CHALLENGE_ALREADY_USED_OR_REGISTRY_UNAVAILABLE'};
   }
+}
+
+/**
+ * Important: do not accept a caller-declared "signature verified" report.
+ * First independently rerun the Phase28 cryptographic+Phase27 audit here,
+ * then atomically claim the challenge. A second process cannot reuse it.
+ */
+export function verifyAndClaimPhase28OfflineNonce(
+  pkg:Phase28OfflineWitnessPackage,
+  policy:ReadOnlyNrmlAuditPolicy,
+  trust:ExternalOfflineWitnessTrustPolicy,
+  privateNonceDirectory:string
+):{witness:Phase28ReadOnlyWitnessReport;claim:NonceClaimResult}{
+  const witness=auditPhase28OfflineDualWitnessEvidence(pkg,policy,trust);
+  if(witness.status!=='SIGNATURES_VALID_OFFLINE_UNVERIFIED')
+    return {witness,claim:{
+      status:'INVALID_INDEPENDENT_SIGNED_WITNESS',
+      executionAuthorized:false,brokerAuthenticated:false,
+      productionSafe:false
+    }};
+  return {witness,
+    claim:claimVerifiedOfflineNonceOnce(privateNonceDirectory,witness,trust)
+  };
 }
