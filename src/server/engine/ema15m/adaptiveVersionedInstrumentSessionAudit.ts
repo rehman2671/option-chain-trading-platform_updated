@@ -225,6 +225,10 @@ export function auditAdaptiveVersionedInstrumentSessions(
        s.sessionDate>version.effectiveThrough)
       return {...result,errors:['RULE_APPLIED_OUTSIDE_DECLARED_EFFECTIVE_DATE']};
     const win=d as Extract<typeof d,{kind:'TRADING'}>;
+    // A rule published after the effective session opened must NEVER be
+    // used to reinterpret earlier market prices in that same trading day.
+    if(Date.parse(version.sourcePublishedAt)>Date.parse(win.openAt))
+      return {...result,errors:['RULE_PUBLISHED_AFTER_ORIGINAL_SESSION_OPEN']};
     const envelope={openAt:win.openAt,closeAt:win.closeAt};
     const ix=validateWindows(s.underlyingIndexWindows,s.sessionDate,envelope);
     const normal=validateWindows(s.nonExpiringOptionWindows,s.sessionDate,envelope);
