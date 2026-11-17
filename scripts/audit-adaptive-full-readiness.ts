@@ -20,7 +20,8 @@
  *  --premium-stress-policy <phase14.json> \
  *  --instrument-session-evidence <phase18-versioned-segment-sessions.json> \
  *  --premium-path-policy <phase19-premium-point-thresholds.json> \\
- *  --oos-robustness-policy <phase20-oos-fold-robustness.json>
+ *  --oos-robustness-policy <phase20-oos-fold-robustness.json> \\
+ *  --original-source-intake <phase21-real-source-delivery-ledger.json>
  *
  * A zero exit code (when evidence is internally consistent) is NOT an
  * authentication, safety or production trading authorization.
@@ -48,7 +49,8 @@ const PATH_FLAGS={
   '--premium-stress-policy':'premiumCostDepthStress',
   '--instrument-session-evidence':'instrumentSessionSchedule',
   '--premium-path-policy':'premiumPathReversal',
-  '--oos-robustness-policy':'chronologicalOosRobustness'
+  '--oos-robustness-policy':'chronologicalOosRobustness',
+  '--original-source-intake':'originalSourceIntake'
 } as const;
 const PIN_FLAGS=[
   '--pinned-reviewer-trust-sha256',
@@ -63,7 +65,8 @@ const isFile=(flag:string):flag is FileFlag=>
 const maxBytes=(flag:FileFlag)=>
   ['--source-artifact','--calendar-source-document'].includes(flag)?
     50*1024*1024:
-  ['--exchange-calendar-evidence','--instrument-session-evidence'].includes(flag)?1024*1024:
+  ['--exchange-calendar-evidence','--instrument-session-evidence',
+    '--original-source-intake'].includes(flag)?1024*1024:
   256*1024;
 async function bytes(file:string,max:number):Promise<Uint8Array>{
   const s=await stat(file);
@@ -112,7 +115,8 @@ async function main(){
     premiumCostDepthStress:get('--premium-stress-policy'),
     instrumentSessionSchedule:get('--instrument-session-evidence'),
     premiumPathReversal:get('--premium-path-policy'),
-    chronologicalOosRobustness:get('--oos-robustness-policy')
+    chronologicalOosRobustness:get('--oos-robustness-policy'),
+    originalSourceIntake:get('--original-source-intake')
   };
   const report=runAdaptiveFullResearchReadiness({
     bundleBytes:await bytes(bundle,50*1024*1024),
