@@ -54,6 +54,8 @@ Example policy for **SYNTHETIC adversarial tests ONLY**, not recommended investm
 }
 ```
 
+**Expiry-horizon-specific research (not automatically optimized):** The policy additionally accepts an optional `horizonRules` object with **all four** `1W`, `2W`, `4W`, `8W` keys and the exact same six numeric fields for each. If supplied, every horizon must be complete; partial/invalid rules are **REJECTED**. The default example above uses global thresholds for illustration only. In an authentic OOS study the analyst can lock distinct, economically justified option-premium thresholds for each horizon **before seeing test results**, without assuming +100 is optimal for 1W and therefore optimal for 2W/4W/8W. Identical global thresholds and differently predeclared thresholds are both descriptive hypotheses, not market recommendations.
+
 The full-readiness report adds observed bid reversals and candidate target crossing counts per arm/horizon but **keeps every `liveHorizonRecommendation=null`** and refuses portfolio-level premium P&L conclusions when ANY matched or path cell is censored or inconsistent. Different test cohorts and opportunity costs are not causally comparable without rigorous external review.
 
 ### Market-provenance and execution blockers remain
