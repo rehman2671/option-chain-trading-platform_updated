@@ -47,6 +47,10 @@ import {
   auditAdaptiveSignedEvidenceWitness,type SignedEvidenceReviewReport,
   type ResearchEvidenceWitnessEnvelope
 } from './adaptiveSignedEvidenceWitness.js';
+import {auditAdaptiveVersionedInstrumentSessions,
+  type VersionedInstrumentSessionEvidence,
+  type VersionedInstrumentSessionReport
+} from './adaptiveVersionedInstrumentSessionAudit.js';
 import type {AdaptiveExitReplayPolicy} from './adaptivePositionalExitReplay.js';
 import type {HistoricalArm} from './historicalAdaptiveComparison.js';
 import type {HorizonBucket} from './adaptiveOptionRanker.js';
@@ -92,6 +96,7 @@ export interface PinnedResearchPolicyLock {
     regimeHysteresis:string;
     matchedOos:string;
     premiumCostDepthStress:string;
+    instrumentSessionSchedule:string;
   };
 }
 export type PolicyRole=keyof PinnedResearchPolicyLock['policyFileSha256'];
@@ -102,12 +107,14 @@ export interface ReadinessPolicyBytes {
   regimeHysteresis:Uint8Array;
   matchedOos:Uint8Array;
   premiumCostDepthStress:Uint8Array;
+  instrumentSessionSchedule:Uint8Array;
 }
 export interface FullResearchReadinessInput {
   bundleBytes:Uint8Array|null|undefined;
   vendorArchiveBytes:Uint8Array|null|undefined;
   calendarManifestBytes:Uint8Array|null|undefined;
   calendarDocumentBytes:Uint8Array|null|undefined;
+  instrumentSessionEvidenceBytes:Uint8Array|null|undefined;
   witnessEnvelope:ResearchEvidenceWitnessEnvelope|unknown;
   reviewerTrustRegistryBytes:Uint8Array|null|undefined;
   pinnedReviewerTrustRegistrySha256:string|null|undefined;
@@ -176,6 +183,7 @@ export interface FullResearchReadinessReport {
     policyLockManifestSha256:string|null;
   };
   matchedPolicyLock:boolean;
+  instrumentSessionScheduleSha256:string|null;
   independentlySignedArchiveBindingsValid:boolean;
   marketSessionsCrossSourceConsistent:boolean;
   expectedFoldCount:number;
@@ -198,6 +206,7 @@ export interface ReadinessPhaseReports {
   premiumStress:PremiumCostDepthStressReport|null;
   calendar:CrossSourceCalendarReport|null;
   witness:SignedEvidenceReviewReport|null;
+  instrumentSessions:VersionedInstrumentSessionReport|null;
 }
 export interface ReadinessAssessmentContext {
   datasetId:string;
@@ -245,7 +254,8 @@ function blank():FullResearchReadinessReport {
       calendarManifestSha256:null,calendarDocumentSha256:null,
       reviewerTrustRegistrySha256:null,policyLockManifestSha256:null
     },
-    matchedPolicyLock:false,independentlySignedArchiveBindingsValid:false,
+    matchedPolicyLock:false,instrumentSessionScheduleSha256:null,
+    independentlySignedArchiveBindingsValid:false,
     marketSessionsCrossSourceConsistent:false,
     expectedFoldCount:0,foldCount:0,
     expectedArmHorizonCells:0,expectedPremiumStressCells:0,
@@ -273,7 +283,8 @@ export function validatePinnedResearchPolicyLock(
   const m=manifest as PinnedResearchPolicyLock|null;
   const roles:PolicyRole[]=[
     'entryFirstExit','marketDataQuality','researchEvidenceGate',
-    'regimeHysteresis','matchedOos','premiumCostDepthStress'
+    'regimeHysteresis','matchedOos','premiumCostDepthStress',
+    'instrumentSessionSchedule'
   ];
   if(!m||m.schemaVersion!=='ADAPTIVE_PRESPECIFIED_RESEARCH_POLICY_LOCK_V1'||
      !m.policyFileSha256||
@@ -304,7 +315,8 @@ function statusOf(p:ReadinessPhaseReports):Record<string,string>{
     matchedOos:p.matched?.status??'MISSING',
     premiumCostDepthStress:p.premiumStress?.status??'MISSING',
     separateExchangeCalendar:p.calendar?.status??'MISSING',
-    detachedReviewerWitness:p.witness?.status??'MISSING'
+    detachedReviewerWitness:p.witness?.status??'MISSING',
+    versionedInstrumentSessions:p.instrumentSessions?.status??'MISSING'
   };
 }
 const required={
@@ -317,7 +329,8 @@ const required={
   matchedOos:'DESCRIPTIVE_ONLY',
   premiumCostDepthStress:'DESCRIPTIVE_ONLY',
   separateExchangeCalendar:'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED',
-  detachedReviewerWitness:'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED'
+  detachedReviewerWitness:'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED',
+  versionedInstrumentSessions:'SEGMENT_WINDOWS_CONSISTENT_AUTHENTICITY_UNVERIFIED'
 } as const;
 const topCell=<T extends {foldIndex:number;arm:HistoricalArm;horizon:HorizonBucket}>(
   rows:T[],fold:number,arm:HistoricalArm,horizon:HorizonBucket
@@ -384,6 +397,8 @@ export function evaluateAdaptiveFullResearchReadiness(
     fatal('REJECT_SEPARATE_CALENDAR_DOCUMENT_OR_SCHEMA_FAILURE');
   if(reports.witness?.status==='REJECTED')
     fatal('REJECT_DETACHED_WITNESS_OR_PINNED_REVIEWER_TRUST_FAILURE');
+  if(reports.instrumentSessions?.status==='REJECTED')
+    fatal('REJECT_INSTRUMENT_SESSION_VERSION_OR_BOUND_CALENDAR');
   for(const [name,expected] of Object.entries(required)){
     const actual=out.phaseStatuses[name];
     if(actual!==expected)block(name.toUpperCase()+'_INSUFFICIENT_'+actual);
@@ -394,7 +409,8 @@ export function evaluateAdaptiveFullResearchReadiness(
      reports.matched?.datasetId!==ctx.datasetId||
      reports.premiumStress?.datasetId!==ctx.datasetId||
      reports.calendar?.datasetId!==ctx.datasetId||
-     reports.witness?.datasetId!==ctx.datasetId)
+     reports.witness?.datasetId!==ctx.datasetId||
+     reports.instrumentSessions?.datasetId!==ctx.datasetId)
     fatal('PHASE_DATASET_IDS_DO_NOT_MATCH_SINGLE_SOURCE_ARCHIVE');
   if(reports.researchGate?.synthetic!==ctx.synthetic||
      reports.quality?.synthetic!==ctx.synthetic||
@@ -402,7 +418,8 @@ export function evaluateAdaptiveFullResearchReadiness(
      reports.matched?.synthetic!==ctx.synthetic||
      reports.premiumStress?.synthetic!==ctx.synthetic||
      reports.calendar?.synthetic!==ctx.synthetic||
-     reports.witness?.synthetic!==ctx.synthetic)
+     reports.witness?.synthetic!==ctx.synthetic||
+     reports.instrumentSessions?.synthetic!==ctx.synthetic)
     fatal('SOURCE_SYNTHETIC_PROVENANCE_INCONSISTENT_ACROSS_PHASES');
   if(reports.researchGate?.policy?.studyProtocolId!==ctx.protocolId)
     fatal('RESEARCH_EVIDENCE_GATE_PROTOCOL_NOT_SIGNED_BY_WITNESS');
@@ -413,6 +430,15 @@ export function evaluateAdaptiveFullResearchReadiness(
     fatal('ORIGINAL_CALENDAR_DOCUMENT_SHA256_NOT_IDENTICAL_ACROSS_PHASES');
   if(reports.witness?.bundleSha256!==ctx.originalBundleSha256)
     fatal('RAW_BUNDLE_BYTES_NOT_IDENTICAL_TO_DUAL_SIGNED_WITNESS');
+  if(reports.instrumentSessions?.studyProtocolId!==ctx.protocolId)
+    fatal('INSTRUMENT_SESSION_SCHEDULE_NOT_BOUND_TO_REVIEW_PROTOCOL');
+  if(reports.instrumentSessions?.originalCalendarManifestSha256!==
+     reports.witness?.calendarManifestSha256)
+    fatal('SEGMENT_RULES_NOT_BOUND_TO_SAME_SIGNED_CALENDAR_BYTES');
+  if(reports.instrumentSessions?.tradingDaysCovered!==
+     reports.instrumentSessions?.tradingDaysExpected||
+     !reports.instrumentSessions?.tradingDaysCovered)
+    block('SEGMENT_SPECIFIC_TRADING_DAY_LEDGER_INCOMPLETE');
   if(reports.walk?.foldWindows.length!==ctx.expectedTestSessions.length||
      reports.researchGate?.foldCount!==ctx.expectedTestSessions.length||
      reports.calendar?.foldCoverage.length!==ctx.expectedTestSessions.length||
@@ -579,10 +605,12 @@ export function runAdaptiveFullResearchReadiness(
   const raw=parseJson<VerifiedHistoricalBundleV1>(input.bundleBytes,50*1024*1024);
   const cal=parseJson<IndependentlySuppliedCalendarEvidence>(
     input.calendarManifestBytes,1024*1024);
+  const segmentEvidence=parseJson<VersionedInstrumentSessionEvidence>(
+    input.instrumentSessionEvidenceBytes,1024*1024);
   const manifest=parseJson<PinnedResearchPolicyLock>(
     input.policyLockManifestBytes,128*1024);
   const p=input.policies;
-  if(!raw||!cal||!manifest||!p)
+  if(!raw||!cal||!segmentEvidence||!manifest||!p)
     return {...initial,errors:['MALFORMED_BUNDLE_CALENDAR_POLICY_LOCK_OR_REQUIRED_POLICIES']};
   const ep=parseJson<AdaptiveExitReplayPolicy>(p.entryFirstExit,128*1024);
   const qp=parseJson<AdaptiveMarketDataQualityPolicy>(p.marketDataQuality,128*1024);
@@ -592,6 +620,9 @@ export function runAdaptiveFullResearchReadiness(
   const sp=parseJson<PremiumCostDepthStressPolicy>(p.premiumCostDepthStress,128*1024);
   if(!ep||!qp||!gp||!hp||!mp||!sp)
     return {...initial,errors:['MALFORMED_OR_MISSING_PREDECLARED_POLICY_FILES']};
+  const segmentSessionAudit=auditAdaptiveVersionedInstrumentSessions(
+    raw,cal,input.calendarManifestBytes,
+    segmentEvidence,input.instrumentSessionEvidenceBytes);
   const archive=auditAdaptiveSourceArtifact(raw,input.vendorArchiveBytes);
   const calendar=auditAdaptiveCrossSourceExchangeCalendar(
     raw,cal,input.calendarDocumentBytes);
@@ -668,7 +699,8 @@ export function runAdaptiveFullResearchReadiness(
         d.sessionDate<=f.testEnd).length);
     const review=evaluateAdaptiveFullResearchReadiness({
       source:archive,walk,entry,quality,researchGate:gate,
-      hysteresis,matched,premiumStress,calendar,witness
+      hysteresis,matched,premiumStress,calendar,witness,
+      instrumentSessions:segmentSessionAudit
     },{
       datasetId:raw.provenance.datasetId,
       synthetic:raw.provenance.synthetic,
@@ -678,6 +710,7 @@ export function runAdaptiveFullResearchReadiness(
     },true);
     return {...review,
       inputDigests:result.inputDigests,
+      instrumentSessionScheduleSha256:segmentSessionAudit.evidenceSha256,
       matchedPolicyLock:true
     };
   }catch{

@@ -2,7 +2,7 @@
  * Explicit OFFLINE Phase 17 full evidence dossier. No trading API, tokens,
  * broker, exchange fetch, order placement, paper order or live activation.
  *
- * Exactly one original bundle path and fourteen distinct named arguments:
+ * Exactly one original bundle path and fourteen named evidence/policy options (plus SHA pins):
  * npx tsx scripts/audit-adaptive-full-readiness.ts <source-bundle.json> \
  *  --source-artifact <original-feed-bytes> \
  *  --exchange-calendar-evidence <independent-ledger.json> \
@@ -17,7 +17,8 @@
  *  --evidence-gate-policy <phase11.json> \
  *  --hysteresis-policy <phase12.json> \
  *  --matched-hysteresis-policy <phase13.json> \
- *  --premium-stress-policy <phase14.json>
+ *  --premium-stress-policy <phase14.json> \
+ *  --instrument-session-evidence <phase18-versioned-segment-sessions.json>
  *
  * A zero exit code (when evidence is internally consistent) is NOT an
  * authentication, safety or production trading authorization.
@@ -42,7 +43,8 @@ const PATH_FLAGS={
   '--evidence-gate-policy':'researchEvidenceGate',
   '--hysteresis-policy':'regimeHysteresis',
   '--matched-hysteresis-policy':'matchedOos',
-  '--premium-stress-policy':'premiumCostDepthStress'
+  '--premium-stress-policy':'premiumCostDepthStress',
+  '--instrument-session-evidence':'instrumentSessionSchedule'
 } as const;
 const PIN_FLAGS=[
   '--pinned-reviewer-trust-sha256',
@@ -57,7 +59,7 @@ const isFile=(flag:string):flag is FileFlag=>
 const maxBytes=(flag:FileFlag)=>
   ['--source-artifact','--calendar-source-document'].includes(flag)?
     50*1024*1024:
-  ['--exchange-calendar-evidence'].includes(flag)?1024*1024:
+  ['--exchange-calendar-evidence','--instrument-session-evidence'].includes(flag)?1024*1024:
   256*1024;
 async function bytes(file:string,max:number):Promise<Uint8Array>{
   const s=await stat(file);
@@ -103,13 +105,15 @@ async function main(){
     researchEvidenceGate:get('--evidence-gate-policy'),
     regimeHysteresis:get('--hysteresis-policy'),
     matchedOos:get('--matched-hysteresis-policy'),
-    premiumCostDepthStress:get('--premium-stress-policy')
+    premiumCostDepthStress:get('--premium-stress-policy'),
+    instrumentSessionSchedule:get('--instrument-session-evidence')
   };
   const report=runAdaptiveFullResearchReadiness({
     bundleBytes:await bytes(bundle,50*1024*1024),
     vendorArchiveBytes:get('--source-artifact'),
     calendarManifestBytes:get('--exchange-calendar-evidence'),
     calendarDocumentBytes:get('--calendar-source-document'),
+    instrumentSessionEvidenceBytes:get('--instrument-session-evidence'),
     witnessEnvelope:evidenceEnvelope,
     reviewerTrustRegistryBytes:get('--reviewer-trust-registry'),
     pinnedReviewerTrustRegistrySha256:
