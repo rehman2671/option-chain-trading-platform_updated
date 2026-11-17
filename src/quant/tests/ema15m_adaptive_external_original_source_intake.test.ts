@@ -125,6 +125,10 @@ function fixture():{
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 function build(complete:boolean){
   const f=fixture();
+  // Phase15's calendar fixture intentionally sets a 3-second maximum even
+  // though its fake snapshots are 60 seconds apart. This Phase21 fixture
+  // explicitly models a source-declared 120-second allowed original lag.
+  f.raw.maximumOriginalFeedLatencySeconds=120;
   const vendorArchiveBytes=Buffer.from('FAKE_VENDOR_ARCHIVE_NOT_AN_AUTHENTIC_L1_FEED');
   f.raw.provenance.sourceArtifactSha256=sha(vendorArchiveBytes);
   if(complete){
