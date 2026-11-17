@@ -181,7 +181,17 @@ export function buildAdaptiveEntryFirstCohort(
           ms(q.observedAt)<=decisionTime+input.policy.maxEntryDelayMinutes*60_000 &&
           q.askQty>=candidate.lotSize && q.bidQty>=candidate.lotSize);
         if(!entry){
-          attempts.push({...basic,disposition:'MISSING_EXECUTABLE_ENTRY_L1'});continue;
+          // The contract choice is fixed ONLY by the decision-time chain.
+          // Preserve its key/expiry and intended lot so that missing source
+          // BID/ASK is attributable to the actual 1W–8W choice, rather than
+          // disappearing into another liquid contract's feed coverage.
+          // NO entry observation, trigger, cooldown, or exit price invented.
+          attempts.push({
+            ...basic,disposition:'MISSING_EXECUTABLE_ENTRY_L1',
+            instrumentKey:candidate.instrumentKey,expiry:candidate.expiry,
+            quantity:candidate.lotSize
+          });
+          continue;
         }
         attempts.push({
           ...basic,disposition:'ENTRY_OBSERVED',
