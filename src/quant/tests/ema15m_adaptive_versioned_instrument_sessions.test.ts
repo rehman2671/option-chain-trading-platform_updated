@@ -315,6 +315,22 @@ describe('Phase 18 effective-dated instrument-level index/option time split',()=
     assert.equal(c.report().status,'INCOMPLETE_EVIDENCE');
     assert.equal(c.report().missingInstrumentContractExpiryMappings,1);
   });
+  it('duplicate original source row or unused future circular cannot attest any observed trading day',()=>{
+    const same=setup();
+    same.schedule.tradingDays[1].sourceRecordId=
+      same.schedule.tradingDays[0].sourceRecordId;
+    assert.ok(same.report().errors.includes(
+      'INVALID_UNSORTED_OR_DUPLICATE_SEGMENT_TRADING_DAYS'));
+    const future=setup();
+    future.schedule.versions.push({
+      versionId:'UNOBSERVED_FUTURE_CHANGE',
+      sourceCircularId:'UNVERIFIED_FUTURE_SOURCE',
+      sourcePublishedAt:'2026-11-05T12:00:00+05:30',
+      effectiveFrom:'2026-12-01',effectiveThrough:'2026-12-31'
+    });
+    assert.ok(future.report().errors.includes(
+      'UNUSED_OR_FUTURE_VERSION_WITH_NO_SOURCE_TRADING_DAY'));
+  });
   it('segment windows cannot escape the separate broad session or hide a gap/overlap',()=>{
     const a=setup();
     a.schedule.tradingDays[0].nonExpiringOptionWindows[0].closeAt=
