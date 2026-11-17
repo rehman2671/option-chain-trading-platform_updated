@@ -270,7 +270,7 @@ describe('Phase27 offline NRML lifecycle trade vs order reconciliation',()=>{
     const c=bundle();c.frames[1].sequence=4;
     assert.equal(audit(c).status,'INVALID_EVIDENCE');
     const d=bundle();
-    d.frames[1].asOf=time(epoch,8*60_000);
+    d.frames[1]=frame(2,time(epoch,8*60_000));
     blocked(d,'TEMPORAL_EVIDENCE_GAP_EXCEEDS_LOCKED_POLICY');
     const e=bundle();e.frames[1].asOf=e.frames[0].asOf;
     assert.equal(audit(e).status,'INVALID_EVIDENCE');
