@@ -323,6 +323,27 @@ describe('Phase22 offline original native option CSV importer, unverified source
     const z=setup();z.quotes[0][7]='0';
     assert.equal(z.execute().result.report.invalidQuoteRows,1);
   });
+  it('malformed retained CSV syntax and inconsistent original column widths reject even with recomputed fake SHA',()=>{
+    const a=setup();
+    a.quotes[0][0]='"UNTERMINATED_FAKE_ORIGINAL_SOURCE';
+    const first=a.execute().result;
+    assert.equal(first.report.status,'REJECTED');
+    assert.ok(first.report.errors.includes('MALFORMED_OR_OVERSIZED_ORIGINAL_CSV'));
+    const b=setup();
+    b.quotes[0].push('UNDECLARED_EXTRA_FIELD');
+    const second=b.execute().result;
+    assert.equal(second.report.status,'REJECTED');
+    assert.ok(second.report.errors.includes('MALFORMED_OR_OVERSIZED_ORIGINAL_CSV'));
+  });
+  it('original quote cannot be resold on a calendar closed session or uploaded as an expired underlying symbol',()=>{
+    const x=setup();
+    x.quotes[0][3]=at('2026-11-01','09:30');
+    x.quotes[0][4]=x.quotes[0][3];
+    const r=x.execute().result;
+    assert.equal(r.report.status,'INCOMPLETE_EVIDENCE');
+    assert.ok(r.report.unknownContractRows>=1);
+    assert.equal(r.report.executionAuthorized,false);
+  });
   it('same original source ID or original eventAt cannot be reused in one instrument',()=>{
     const x=setup();const dup=[...x.quotes[0]];
     dup[1]='2';dup[0]='EXTRA_SAME_EVENT_ID';
