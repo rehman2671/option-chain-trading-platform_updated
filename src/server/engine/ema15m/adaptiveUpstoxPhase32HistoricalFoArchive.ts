@@ -218,12 +218,12 @@ export function decryptHistoricalFoArchive(
     decipher.setAAD(Buffer.from(AAD));decipher.setAuthTag(tag);
     const plain=Buffer.concat([decipher.update(ct),decipher.final()]);
     if(plain.length>2_000_000)return null;
-    const record=JSON.parse(plain.toString('utf8')) as Record<string,unknown>;
-    if(!record||record.schemaVersion!==
+    const decryptedRecord=JSON.parse(plain.toString('utf8')) as Record<string,unknown>;
+    if(!decryptedRecord||decryptedRecord.schemaVersion!==
       'ADAPTIVE_UPSTOX_PHASE32_FO_STORAGE_PLAINTEXT_V1')
       return null;
-    const report=record.report as Phase32HistoricalFoCaptureReport;
-    const archive=record.archive as PrivateHistoricalFoArchive;
+    const report=decryptedRecord.report as Phase32HistoricalFoCaptureReport;
+    const archive=decryptedRecord.archive as PrivateHistoricalFoArchive;
     return verifyPrivateHistoricalFoArchive(archive,report).status===
       'ARCHIVED_FO_PAGES_MATCH_UNVERIFIED'?{report,archive}:null;
   }catch{return null;
