@@ -39,6 +39,8 @@ export interface VendorExecutionL1 {
   availableAt: string;
   sourceRecordId: string;
   instrumentKey: string;
+  /** Optional original vendor sequence, preserved by Phase 22 CSV adapter. */
+  sourceSequence?: number;
   bid: number; ask: number; bidQty: number; askQty: number;
 }
 
@@ -336,6 +338,8 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
   const quotes: HistoricalExecutableQuote[] = [];
   const seenQuotes = new Set<string>();
   const seenAvailableQuotes = new Set<string>();
+  const sourceSeqByContractDay=new Map<string,{sequence:number;event:number}>();
+  const sourceSequencePresence=new Map<string,boolean>();
   x.executionL1.forEach(q=>{
     counts.optionL1Observations++;
     if (!validateClocked({
@@ -348,6 +352,23 @@ export function ingestVendorHistoricalBundle(raw: unknown): IngestionResult {
         !Number.isInteger(q.bidQty) || !Number.isInteger(q.askQty) ||
         !allKeys.has(q.instrumentKey)) {
       err(errors,'INVALID_OR_UNLISTED_OPTION_L1_QUOTE'); return;
+    }
+    const dateKey=q.instrumentKey+':'+canonicalDay(q.eventAt);
+    const withSequence=q.sourceSequence!==undefined;
+    if(sourceSequencePresence.has(dateKey)&&
+       sourceSequencePresence.get(dateKey)!==withSequence){
+      err(errors,'PARTIALLY_MISSING_ORIGINAL_SOURCE_SEQUENCE');return;
+    }
+    sourceSequencePresence.set(dateKey,withSequence);
+    if(withSequence){
+      const prev=sourceSeqByContractDay.get(dateKey);
+      const seq=q.sourceSequence!;
+      const eventMs=Date.parse(q.eventAt);
+      if(!Number.isSafeInteger(seq)||seq<=0||
+         (prev&&(seq<=prev.sequence||eventMs<=prev.event))){
+        err(errors,'INVALID_OR_NONMONOTONIC_ORIGINAL_SOURCE_SEQUENCE');return;
+      }
+      sourceSeqByContractDay.set(dateKey,{sequence:seq,event:eventMs});
     }
     const duplicateKey = q.instrumentKey+':'+q.eventAt;
     const availableKey = q.instrumentKey+':'+q.availableAt;
