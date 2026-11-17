@@ -239,7 +239,7 @@ describe('Phase20 conditional fold diagnostics — pure mathematical sensitiviti
       {...policy,minimumSeparatedOosFolds:0},
       {...policy,maximumAbsoluteSingleFoldContributionFraction:1.1},
       {...policy,maximumAllowedSingleFoldLossINR:-1}
-    ]){
+    ] as unknown as ChronologicalOosRobustnessPolicy[]){
       assert.deepEqual(validateChronologicalOosRobustnessPolicy(p),
         ['INVALID_PREDECLARED_OOS_FOLD_ROBUSTNESS_AND_MULTIPLICITY_POLICY']);
     }
