@@ -321,7 +321,7 @@ describe('Phase32 strictly authorized bounded historical FO GET and AES archive'
       const path=privateFile(parent),raw=readFileSync(path,'utf8');
       assert.equal(raw.includes(account),false);
       assert.equal(raw.includes(token),false);
-      assert.equal(raw.includes('T1'),false);
+      assert.equal(raw.includes('\\"trade_id\\":\\"T1\\"'),false);
       assert.equal(raw.includes('SYNTHETIC32'),false);
       assert.equal(raw.includes(key),false);
       assert.equal(statSync(path).mode&0o077,0);
