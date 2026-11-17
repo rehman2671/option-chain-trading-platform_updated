@@ -53,6 +53,7 @@ function mockReports():ReadinessPhaseReports{
       bothEntered:2,originalOnlyEntries:0,stabilizedOnlyEntries:0,
       neitherEntered:1,jointlyPricedPairs:2,
       originalCensoredExits:0,stabilizedCensoredExits:0,
+      originalPricedExits:2,stabilizedPricedExits:2,
       originalCompleteCohortNetPnlINR:100,
       stabilizedCompleteCohortNetPnlINR:80,
       skippedOriginalWinnersObserved:0,skippedOriginalLosersObserved:0,
