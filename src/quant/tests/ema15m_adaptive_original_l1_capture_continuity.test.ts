@@ -271,6 +271,33 @@ describe('Phase23 original L1 capture coverage, no false source or fill authenti
         ['INVALID_PREDECLARED_ORIGINAL_L1_CAPTURE_CONTINUITY_POLICY']);
     }
   });
+  it('an option row with crossed BID/ASK, zero depth or reused contract metadata ID is never coverage proof',()=>{
+    const a=fixture();
+    a.raw.executionL1[0].bid=110;
+    a.raw.executionL1[0].ask=100;
+    assert.equal(a.audit().status,'INCOMPLETE_EVIDENCE');
+    assert.equal(a.audit().invalidOriginalBestBidAskOrQuantity,1);
+    assert.ok(a.audit().blockers.includes(
+      'INVALID_OR_UNPRICED_ORIGINAL_OPTION_BID_ASK_OR_DEPTH'));
+    const b=fixture();
+    b.raw.executionL1[0].bidQty=0;
+    assert.equal(b.audit().invalidOriginalBestBidAskOrQuantity,1);
+    const c=fixture();
+    c.raw.executionL1[0].sourceRecordId=
+      c.raw.sessions[0].contracts.sourceRecordId;
+    assert.equal(c.audit().duplicateSourceIdsOrClocks,1);
+    assert.equal(c.audit().status,'INCOMPLETE_EVIDENCE');
+  });
+  it('source-declared maximum feed latency cannot be NaN, absent, negative or deliberately unbounded',()=>{
+    const a=fixture();
+    a.raw.maximumOriginalFeedLatencySeconds=301;
+    assert.equal(a.audit().status,'REJECTED');
+    assert.ok(a.audit().errors.includes(
+      'UNBOUNDED_OR_INVALID_ORIGINAL_FEED_RECEIPT_LATENCY'));
+    const b=fixture();
+    b.raw.maximumOriginalFeedLatencySeconds=-1;
+    assert.equal(b.audit().status,'REJECTED');
+  });
   it('special sessions use source-calendar clock times, not a hardcoded cash/index cutoff',()=>{
     const x=fixture();
     const special=x.audit().dayCoverage[2];
