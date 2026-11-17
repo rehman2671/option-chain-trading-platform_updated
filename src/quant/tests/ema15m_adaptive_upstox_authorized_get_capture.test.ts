@@ -32,7 +32,7 @@ const urls=[
   'https://api.upstox.com/v3/order/gtt',
   'https://api.upstox.com/v2/order/trades/get-trades-for-day'
 ] as const;
-const json=(data:unknown)=>({status:'success',data});
+const json=<T>(data:T):{status:'success';data:T}=>({status:'success',data});
 const original={
   profile:json({user_id:scope,broker:'UPSTOX',is_active:true,
     products:['D','I'],order_types:['SL','SL-M']}),
