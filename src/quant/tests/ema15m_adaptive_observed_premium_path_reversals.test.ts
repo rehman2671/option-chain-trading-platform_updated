@@ -173,11 +173,12 @@ const pathPolicy=():ObservedPremiumRunupPolicy=>({
   minimumFullyObservedPathsPerVariantCell:1
 });
 function updateQuote(
-  f:ReturnType<typeof sample>,dt:number,bid:number,bidQty=1000
+  f:ReturnType<typeof sample>,dt:number,bid:number,bidQty=1000,
+  instrumentKey=f.key
 ){
   const entry=origin+11*DAY+391*MIN;
   const q=f.input.executionQuotes.find(q=>
-    q.instrumentKey===f.key&&q.observedAt===iso(entry+dt*MIN));
+    q.instrumentKey===instrumentKey&&q.observedAt===iso(entry+dt*MIN));
   assert.ok(q);
   q.bid=bid;q.ask=bid+1;q.bidQty=bidQty;
 }
@@ -297,6 +298,35 @@ describe('Phase 19 premium-bid partial-runup reversal vs +100 candidate threshol
     assert.ok(c.originalOnlyFirstRunupReversals>=1);
     assert.equal(c.originalOnlyReachedCandidateTarget,0);
     assert.equal(c.cohortSelectionsHeldConstant,true);
+  });
+  it('horizon overrides can require 1W +50/+70 while 2W requires larger locked premium moves',()=>{
+    const f=sample();
+    const secondKey='NSE_FO|'+(100000+11*4+1);
+    for(const key of [f.key,secondKey]){
+      updateQuote(f,5,160,1000,key);
+      updateQuote(f,10,175,1000,key);
+      updateQuote(f,15,150,1000,key);
+      updateQuote(f,20,149,1000,key);
+    }
+    const p=pathPolicy();
+    p.horizonRules={
+      '1W':{...pathPolicy()},
+      '2W':{...pathPolicy(),firstRunupPoints:100,secondRunupPoints:120,
+        candidateTargetPoints:150},
+      '4W':{...pathPolicy()},
+      '8W':{...pathPolicy()}
+    };
+    assert.equal(validateObservedPremiumRunupPolicy(p).length,0);
+    const {report}=run(f,p);
+    assert.equal(report.status,'DESCRIPTIVE_ONLY');
+    assert.equal(cell(report,'EMA_BASELINE','1W').original.firstRunupReversalBeforeTarget,1);
+    assert.equal(cell(report,'EMA_BASELINE','2W').original.firstRunupReversalBeforeTarget,0);
+    assert.equal(cell(report,'EMA_BASELINE','2W').original.qualifiedBidFirstRunupCrossings,0);
+    const incomplete=pathPolicy();
+    incomplete.horizonRules={
+      '1W':{...pathPolicy()}
+    } as ObservedPremiumRunupPolicy['horizonRules'];
+    assert.equal(run(sample(),incomplete).report.status,'REJECTED');
   });
   it('strict predeclared thresholds and displayed quantity gates reject malformed policies',()=>{
     const f=sample();
