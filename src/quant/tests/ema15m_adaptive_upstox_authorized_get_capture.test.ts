@@ -1,6 +1,7 @@
 import {describe,it} from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync, mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {chmodSync, mkdtempSync,rmSync} from 'node:fs';
+import {generateKeyPairSync,sign} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {
@@ -10,10 +11,16 @@ import {
   type AllowedUpstoxGetUrl
 } from '../../server/engine/ema15m/adaptiveUpstoxAuthorizedGetCapture.js';
 import {
-  persistPrivateReadOnlyCapture,claimVerifiedOfflineNonceOnce
+  persistPrivateReadOnlyCapture,verifyAndClaimPhase28OfflineNonce
 } from '../../server/engine/ema15m/adaptiveUpstoxPrivateEvidenceArchive.js';
-import type {Phase28ReadOnlyWitnessReport,ExternalOfflineWitnessTrustPolicy}
-  from '../../server/engine/ema15m/adaptiveUpstoxOfflineDualWitnessGate.js';
+import {
+  preparePhase28OfflineWitnessPayload,phase28CapturerMessage,
+  phase28ReviewerMessage,
+  type Phase28OfflineWitnessPackage,
+  type ExternalOfflineWitnessTrustPolicy
+} from '../../server/engine/ema15m/adaptiveUpstoxOfflineDualWitnessGate.js';
+import type {OfflineUpstoxLifecycleInput}
+  from '../../server/engine/ema15m/adaptiveUpstoxOfflineNrmlLifecycle.js';
 
 const scope='SYNTHETIC_UPSTOX_UCC_ONLY';
 const contract='NSE_FO|SYNTHETIC29';
@@ -79,6 +86,7 @@ function transport(body=original){
 }
 const run=(r=request(),t=transport().transport)=>
   captureExplicitlyAuthorizedUpstoxGetEvidence(r,t);
+const policyFrom=(r:AuthorizedOfflineCaptureRequest)=>r.phase25Policy;
 describe('Phase29 explicitly authorized GET-only private capture',()=>{
   it('performs exactly 5 allowlisted GETs with profile UCC first, no order write',async()=>{
     const {calls,transport:mock}=transport();
@@ -242,34 +250,75 @@ describe('Phase29 explicitly authorized GET-only private capture',()=>{
       assert.equal(insecure.status,'PRIVATE_PARENT_MISSING_OR_INSECURE');
     }finally{chmodSync(temp,0o700);rmSync(temp,{recursive:true,force:true});}
   });
-  it('one-use independent challenge claims survive repeat calls in durable directory',()=>{
+  it('valid dual signatures are required before an atomic one-time nonce claim',async()=>{
     const dir=mkdtempSync(join(tmpdir(),'phase29-nonce-'));
     chmodSync(dir,0o700);
+    const a=await run();
+    const next=request();
+    let tick=0;
+    next.sequence=2;
+    next.clock=()=>baseMs+60_000+tick++*1000;
+    const b=await run(next);
+    assert.ok(a.privateArchive&&b.privateArchive);
+    const capturer=generateKeyPairSync('ed25519'),
+      reviewer=generateKeyPairSync('ed25519');
+    const der=(k:typeof capturer)=>k.publicKey.export({
+      type:'spki',format:'der'}).toString('base64');
     const trust:ExternalOfflineWitnessTrustPolicy={
       schemaVersion:'EXTERNALLY_PINNED_ED25519_REVIEW_KEYS_V1',
       expectedAccountScopeId:scope,expectedChallengeHex:'ab'.repeat(32),
-      capturerPublicKeySpkiDerBase64:'TEST_ONLY',
-      reviewerPublicKeySpkiDerBase64:'TEST_ONLY',
-      maximumReviewAgeMinutes:5,verificationAsOf:'2026-11-17T10:00:00Z'
+      capturerPublicKeySpkiDerBase64:der(capturer),
+      reviewerPublicKeySpkiDerBase64:der(reviewer),
+      maximumReviewAgeMinutes:5,verificationAsOf:
+        '2026-11-17T10:01:45.000Z'
     };
-    const report={
-      status:'SIGNATURES_VALID_OFFLINE_UNVERIFIED',
-      signaturesVerified:true,responseBodiesMatched:true,
-      attestedPayloadSha256:'cd'.repeat(32)
-    } as Phase28ReadOnlyWitnessReport;
+    const lifecycle:OfflineUpstoxLifecycleInput={
+      schemaVersion:'ADAPTIVE_UPSTOX_OFFLINE_LIFECYCLE_V1',
+      source:'OPERATOR_SUPPLIED_UNVERIFIED',
+      maximumFrameGapMinutes:5,
+      frames:[a.privateArchive!.frame,b.privateArchive!.frame]
+    };
+    const pkg:Phase28OfflineWitnessPackage={
+      schemaVersion:'ADAPTIVE_UPSTOX_OFFLINE_DUAL_WITNESS_V1',
+      source:'OPERATOR_SUPPLIED_UNVERIFIED',
+      claimedOrigin:'https://api.upstox.com',
+      challengeHex:trust.expectedChallengeHex,
+      lifecycle,byteWitnesses:[
+        ...a.privateArchive!.byteWitnesses,
+        ...b.privateArchive!.byteWitnesses
+      ],
+      capturer:{signedAt:'2026-11-17T10:01:15.000Z',
+        signatureBase64:''},
+      reviewer:{signedAt:'2026-11-17T10:01:30.000Z',
+        signatureBase64:''}
+    };
+    const pre=preparePhase28OfflineWitnessPayload(pkg,policyFrom(next));
+    assert.deepEqual(pre.reasonCodes,[]);
+    pkg.capturer.signatureBase64=sign(null,Buffer.from(
+      phase28CapturerMessage(pre.payload,pkg.capturer.signedAt)),
+      capturer.privateKey).toString('base64');
+    pkg.reviewer.signatureBase64=sign(null,Buffer.from(
+      phase28ReviewerMessage(pre.payload,pkg.capturer,pkg.reviewer.signedAt)),
+      reviewer.privateKey).toString('base64');
     try{
-      const first=claimVerifiedOfflineNonceOnce(dir,report,trust);
-      assert.equal(first.status,'CHALLENGE_CLAIMED_OFFLINE_UNVERIFIED');
-      const repeated=claimVerifiedOfflineNonceOnce(dir,report,trust);
-      assert.equal(repeated.status,'CHALLENGE_ALREADY_USED_OR_REGISTRY_UNAVAILABLE');
+      const first=verifyAndClaimPhase28OfflineNonce(pkg,policyFrom(next),trust,dir);
+      assert.equal(first.witness.status,
+        'SIGNATURES_VALID_OFFLINE_UNVERIFIED');
+      assert.equal(first.claim.status,'CHALLENGE_CLAIMED_OFFLINE_UNVERIFIED');
+      const repeated=verifyAndClaimPhase28OfflineNonce(
+        pkg,policyFrom(next),trust,dir);
+      assert.equal(repeated.claim.status,
+        'CHALLENGE_ALREADY_USED_OR_REGISTRY_UNAVAILABLE');
       assert.equal(JSON.stringify(repeated).includes(scope),false);
-      const unsupported=claimVerifiedOfflineNonceOnce(dir,
-        {...report,status:'BLOCKED_OR_UNKNOWN'},trust);
-      assert.equal(unsupported.status,'INVALID_INDEPENDENT_SIGNED_WITNESS');
+      const corrupted=structuredClone(pkg);
+      corrupted.reviewer.signatureBase64='A'.repeat(88);
+      const refused=verifyAndClaimPhase28OfflineNonce(
+        corrupted,policyFrom(next),trust,dir);
+      assert.equal(refused.claim.status,'INVALID_INDEPENDENT_SIGNED_WITNESS');
       chmodSync(dir,0o755);
-      assert.equal(claimVerifiedOfflineNonceOnce(dir,report,{
-        ...trust,expectedChallengeHex:'ef'.repeat(32)
-      }).status,'PRIVATE_NONCE_REGISTRY_UNAVAILABLE');
+      const inaccessible=verifyAndClaimPhase28OfflineNonce(
+        pkg,policyFrom(next),trust,dir);
+      assert.equal(inaccessible.claim.status,'PRIVATE_NONCE_REGISTRY_UNAVAILABLE');
     }finally{chmodSync(dir,0o700);rmSync(dir,{recursive:true,force:true});}
   });
 });
