@@ -234,6 +234,25 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     d.witness!.datasetId='ANOTHER_DATASET';
     assert.equal(assess(d).status,'REJECTED');
   });
+  it('a corrupted original L1 SHA or invalid signed witness is REJECTED, not merely underpowered',()=>{
+    const badArchive=mockReports();
+    badArchive.source!.status='CHECKSUM_MISMATCH';
+    const a=assess(badArchive);
+    assert.equal(a.status,'REJECTED');
+    assert.ok(a.errors.includes('REJECT_ORIGINAL_VENDOR_ARCHIVE_INTEGRITY_FAILURE'));
+    assert.equal(a.executionAuthorized,false);
+    const badSignature=mockReports();
+    badSignature.witness!.status='REJECTED';
+    const b=assess(badSignature);
+    assert.equal(b.status,'REJECTED');
+    assert.ok(b.errors.includes(
+      'REJECT_DETACHED_WITNESS_OR_PINNED_REVIEWER_TRUST_FAILURE'));
+    const wrongCalendar=mockReports();
+    wrongCalendar.calendar!.status='REJECTED';
+    const c=assess(wrongCalendar);
+    assert.equal(c.status,'REJECTED');
+    assert.ok(c.errors.includes('REJECT_SEPARATE_CALENDAR_DOCUMENT_OR_SCHEMA_FAILURE'));
+  });
   it('predeclared evidence protocol must match signed bundle and pinned lock',()=>{
     const p=mockReports();
     p.researchGate!.policy!.studyProtocolId='UNSIGNED_RESEARCH_PROTOCOL';
