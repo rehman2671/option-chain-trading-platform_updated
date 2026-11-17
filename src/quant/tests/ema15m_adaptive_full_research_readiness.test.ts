@@ -109,13 +109,14 @@ function lockFixture(){
     JSON.stringify({schemaVersion:'SYNTHETIC_POLICY_'+i,
       example:'not a trading threshold'}))
   ])) as unknown as ReadinessPolicyBytes;
+  const lockedHashes={} as PinnedResearchPolicyLock['policyFileSha256'];
+  for(const role of policyRoles)lockedHashes[role]=sha(policies[role]);
   const manifest:PinnedResearchPolicyLock={
     schemaVersion:'ADAPTIVE_PRESPECIFIED_RESEARCH_POLICY_LOCK_V1',
     datasetId:DATASET,studyProtocolId:PROTOCOL,
     originalBundleSha256:BUNDLE_DIGEST,
     prespecifiedAt:'2026-01-01T00:00:00.000Z',
-    policyFileSha256:Object.fromEntries(policyRoles.map(r=>[r,sha(policies[r])]))
-      as PinnedResearchPolicyLock['policyFileSha256']
+    policyFileSha256:lockedHashes
   };
   const file=bytes(JSON.stringify(manifest));
   const check=()=>validatePinnedResearchPolicyLock(
