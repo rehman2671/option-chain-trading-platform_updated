@@ -281,7 +281,8 @@ export function bridgeAdaptiveNativeL1Csv(
     k,header.indexOf(map.columns[k])
   ])) as Record<Column,number>;
   const ids=new Set<string>(originalSessionSourceIds),seenEvents=new Set<string>(),
-    seenAvailable=new Set<string>(),seq=new Map<string,number>();
+    seenAvailable=new Set<string>(),seq=new Map<string,number>(),
+    lastEvent=new Map<string,number>();
   const onDays=new Set<string>(),out:VendorExecutionL1[]=[];
   for(let i=1;i<csv.length;i++){
     r.scannedRows++;
@@ -320,10 +321,12 @@ export function bridgeAdaptiveNativeL1Csv(
       arrivalKey=instrumentKey+'|'+availableAt;
     if(ids.has(sourceRecordId)||seenEvents.has(eventKey)||
        seenAvailable.has(arrivalKey)||
-       n<=(seq.get(k)??0)){
+       n<=(seq.get(k)??0)||
+       Date.parse(eventAt)<=(lastEvent.get(k)??-Infinity)){
       r.duplicateEventOrSequenceRows++;continue;
     }
-    seq.set(k,n);seenEvents.add(eventKey);seenAvailable.add(arrivalKey);
+    seq.set(k,n);lastEvent.set(k,Date.parse(eventAt));
+    seenEvents.add(eventKey);seenAvailable.add(arrivalKey);
     ids.add(sourceRecordId);onDays.add(session);
     out.push({sourceRecordId,instrumentKey,eventAt,availableAt,
       bid,ask,bidQty,askQty});
