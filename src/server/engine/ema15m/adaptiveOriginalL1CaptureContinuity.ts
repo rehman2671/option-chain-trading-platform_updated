@@ -304,15 +304,16 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
     }
     let failures=0,dateHoles=0;
     for(const items of instrumentQuotes.values()){
-      if(items.length<p.minimumEventsPerObservedInstrumentDay){
-        failures++;continue;
-      }
+      // Run ALL independent checks even when quote count is insufficient;
+      // an early continue here would conceal vendor source-sequence holes.
+      let instrumentIncomplete=
+        items.length<p.minimumEventsPerObservedInstrumentDay;
       // A per-contract market can go quiet legitimately: this counts
       // observed silence as RISK, never labels it proven data packet loss.
       for(let i=1;i<items.length;i++){
         const diff=(ms(items[i].eventAt)-ms(items[i-1].eventAt))/MIN;
         if(diff>p.maximumPerInstrumentObservedSilenceMinutes){
-          failures++;break;
+          instrumentIncomplete=true;break;
         }
       }
       if(p.originalSequenceSemantics===
@@ -320,23 +321,27 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
         for(let i=0;i<items.length;i++){
           const seq=items[i].sourceSequence;
           if(!Number.isSafeInteger(seq)||seq!<=0){
-            failures++;flag('ORIGINAL_L1_SOURCE_SEQUENCE_NOT_PRESERVED');
+            instrumentIncomplete=true;
+            flag('ORIGINAL_L1_SOURCE_SEQUENCE_NOT_PRESERVED');
             break;
           }
           if(i>0){
             const prior=items[i-1].sourceSequence!;
             if(seq!<=prior){
-              failures++;flag('ORIGINAL_L1_SOURCE_SEQUENCE_NOT_MONOTONIC');
+              instrumentIncomplete=true;
+              flag('ORIGINAL_L1_SOURCE_SEQUENCE_NOT_MONOTONIC');
               break;
             }
             if(seq!>prior+1){
               const jump=seq!-prior-1;
               dateHoles+=jump;holes+=jump;
+              instrumentIncomplete=true;
               flag('DECLARED_CONTIGUOUS_SOURCE_SEQUENCE_HAS_MISSING_EVENTS');
             }
           }
         }
       }
+      if(instrumentIncomplete)failures++;
     }
     instrumentFailures+=failures;
     if(failures)flag('UNOBSERVED_OR_STALE_PER_CONTRACT_OPTION_L1_PATH');
