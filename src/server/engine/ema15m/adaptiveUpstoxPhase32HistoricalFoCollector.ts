@@ -192,7 +192,7 @@ export function createStrictHistoricalFoGetTransport():HistoricalFoPageTransport
       const size=Number(u.searchParams.get('page_size'));
       if(!day(u.searchParams.get('start_date'))||
         !day(u.searchParams.get('end_date'))||
-        u.searchParams.get('end_date')!>=u.searchParams.get('start_date')!||
+        u.searchParams.get('end_date')! < u.searchParams.get('start_date')!||
         !Number.isInteger(page)||page<1||page>16||
         !Number.isInteger(size)||size<1||size>100)
         throw Error('INVALID_CANONICAL_FO_QUERY');
