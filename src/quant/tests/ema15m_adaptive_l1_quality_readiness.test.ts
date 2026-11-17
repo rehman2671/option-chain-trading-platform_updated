@@ -160,6 +160,10 @@ describe('Phase 10 predeclared OOS market-data quality and liquidity',()=>{
     assert.equal(r.errors.length,0);
     assert.equal(r.totalOutOfSampleDecisions,1);
     assert.equal(r.cells.length,12);
+    assert.equal(r.originalSelectedCandidateEntries.length,
+      r.observedEntryCount+r.missingEntryCount);
+    assert.ok(r.originalSelectedCandidateEntries.every(x=>
+      x.sourceQuoteOrActualBrokerFillAuthenticated===false));
     assert.ok(r.paths.length>0);
     assert.equal(select(r)!.disposition,'SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS');
     for(const h of horizons){
@@ -172,6 +176,83 @@ describe('Phase 10 predeclared OOS market-data quality and liquidity',()=>{
     assert.equal(r.exchangeCalendarIndependentlyVerified,false);
     assert.equal(r.originalAvailabilityClocksIndependentlyVerified,false);
     assert.equal(r.cells.every(c=>c.productionEligible===false),true);
+  });
+  it('a liquid OTHER option cannot cover the 1W selected contract absent original entry BID/ASK',()=>{
+    const f=sample();
+    const decision=f.testDay+390*MINUTE;
+    f.input.executionQuotes=f.input.executionQuotes.filter(q=>
+      q.instrumentKey!==f.testKey||
+      Date.parse(q.observedAt)<=decision||
+      Date.parse(q.observedAt)>decision+10*MINUTE);
+    const cohort=buildAdaptiveEntryFirstCohort(f.input);
+    const miss=cohort.attempts.find(a=>a.arm==='EMA_BASELINE'&&a.horizon==='1W')!;
+    assert.equal(miss.disposition,'MISSING_EXECUTABLE_ENTRY_L1');
+    assert.equal(miss.instrumentKey,f.testKey);
+    assert.ok(miss.expiry);
+    assert.equal(miss.quantity,65);
+    assert.equal(miss.entryAt,null);
+    assert.equal(miss.entryAsk,null);
+    assert.equal(miss.scheduledFixedHoldAt,null);
+    const report=run(f);
+    const selected=report.originalSelectedCandidateEntries.find(x=>
+      x.arm==='EMA_BASELINE'&&x.horizon==='1W')!;
+    assert.equal(selected.entryDisposition,'MISSING_EXECUTABLE_ENTRY_L1');
+    assert.equal(selected.originalSelectedContractKnown,true);
+    assert.equal(selected.originalOptionQuotesWithinEntryWindow,0);
+    assert.ok(selected.otherContractsQuotedSameDecisionDay>0);
+    assert.ok(selected.sourceQualityReasons.includes(
+      'NO_ORIGINAL_SELECTED_CONTRACT_OPTION_L1_AT_ENTRY'));
+    assert.equal(selected.entrySourceQuoteReconciled,false);
+    const cell=report.cells.find(x=>x.arm==='EMA_BASELINE'&&x.horizon==='1W')!;
+    assert.equal(cell.originalSelectedCandidateCount,1);
+    assert.equal(cell.originalSelectedCandidateMissingEntryQuoteCount,1);
+    assert.equal(cell.observedEntryCount,0);
+    assert.equal(report.status,'INCOMPLETE_EVIDENCE');
+    assert.equal(report.executionAuthorized,false);
+  });
+  it('selected contract with original quotes but thin BID depth is not a feasible entry',()=>{
+    const f=sample(),decision=f.testDay+390*MINUTE;
+    for(const q of f.input.executionQuotes){
+      if(q.instrumentKey===f.testKey&&
+         Date.parse(q.observedAt)>decision&&
+         Date.parse(q.observedAt)<=decision+10*MINUTE)
+        q.bidQty=1;
+    }
+    const cohort=buildAdaptiveEntryFirstCohort(f.input);
+    const a=cohort.attempts.find(x=>
+      x.arm==='EMA_BASELINE'&&x.horizon==='1W')!;
+    assert.equal(a.disposition,'MISSING_EXECUTABLE_ENTRY_L1');
+    assert.equal(a.instrumentKey,f.testKey);
+    const report=run(f);
+    const entry=report.originalSelectedCandidateEntries.find(x=>
+      x.arm==='EMA_BASELINE'&&x.horizon==='1W')!;
+    assert.ok(entry.originalOptionQuotesWithinEntryWindow>0);
+    assert.equal(entry.sufficientOriginalBidAskDepthQuotes,0);
+    assert.ok(entry.sourceQualityReasons.includes(
+      'SELECTED_CONTRACT_ENTRY_BID_ASK_DEPTH_INSUFFICIENT'));
+    assert.equal(report.cells.find(x=>x.arm==='EMA_BASELINE'&&
+      x.horizon==='1W')!.originalSelectedCandidateThinBidAskCount,1);
+    assert.equal(report.status,'INCOMPLETE_EVIDENCE');
+    assert.equal(report.productionSafe,false);
+  });
+  it('candidate-specific historical receipt lag invalidates apparent entry even with ample quote volume',()=>{
+    const f=sample(),raw=original(f.input);
+    const decision=f.testDay+390*MINUTE;
+    for(const q of raw)if(q.instrumentKey===f.testKey&&
+      Date.parse(q.availableAt)>decision&&
+      Date.parse(q.availableAt)<=decision+10*MINUTE)
+      q.eventAt=iso(Date.parse(q.availableAt)-30_000);
+    const report=run(f,policy(),raw);
+    const entry=report.originalSelectedCandidateEntries.find(x=>
+      x.arm==='EMA_BASELINE'&&x.horizon==='1W')!;
+    assert.equal(entry.entryDisposition,'ENTRY_OBSERVED');
+    assert.ok(entry.originalEventReceiptLagViolations>0);
+    assert.ok(entry.sourceQualityReasons.includes(
+      'SELECTED_CONTRACT_SOURCE_EVENT_RECEIPT_LAG_TOO_LONG'));
+    assert.equal(report.cells.find(c=>
+      c.arm==='EMA_BASELINE'&&c.horizon==='1W')!.
+      sufficientForDescriptiveQualityReview,false);
+    assert.equal(report.executionAuthorized,false);
   });
   it('keeps entry cohort unchanged when future fixed due quotes disappear',()=>{
     const f=sample();
