@@ -25,8 +25,8 @@ const expected:ReadOnlyExpectedPosition={
 const epoch='2026-11-17T10:00:00.000Z';
 const time=(asOf:string,offsetMs:number)=>
   new Date(Date.parse(asOf)+offsetMs).toISOString();
-const rows=(c:{response:unknown})=>
-  (c.response as {status:string;data:Array<Record<string,unknown>>}).data;
+const rows=(response:unknown)=>
+  (response as {status:string;data:Array<Record<string,unknown>>}).data;
 function stop(id='SYNTHETIC_SL_A'){
   return {
     order_id:id,instrument_token:instrument,product:'D',
