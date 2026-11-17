@@ -119,8 +119,9 @@ function base():NativeL1CsvBridgeReport{
     errors:[],blockers:[],warnings:WARN
   };
 }
-function json<T>(raw:Uint8Array|null|undefined):T|null{
-  if(!raw?.length||raw.length>MAX_JSON_BYTES)return null;
+function json<T>(raw:Uint8Array|null|undefined,
+  cap=MAX_JSON_BYTES):T|null{
+  if(!raw?.length||raw.length>cap)return null;
   try{
     const x=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw));
     return x&&typeof x==='object'&&!Array.isArray(x)?x as T:null;
@@ -201,7 +202,7 @@ export function bridgeAdaptiveNativeL1Csv(
      !separateCalendarManifestBytes?.length||
      !originalColumnMapBytes?.length)
     return reject('MISSING_OR_OVERSIZED_ORIGINAL_SOURCE_BRIDGE_FILES');
-  const b=json<VerifiedHistoricalBundleV1>(originalBundleBytes);
+  const b=json<VerifiedHistoricalBundleV1>(originalBundleBytes,MAX_CSV_BYTES);
   const cal=json<IndependentlySuppliedCalendarEvidence>(
     separateCalendarManifestBytes);
   const map=json<NativeL1CsvColumnMap>(originalColumnMapBytes);
