@@ -164,7 +164,11 @@ export function auditOfflineHistoricalFoFills(
     !/^(NSE_FO|BSE_FO)\|/.test(input.expected.instrumentKey)||
     !id(input.expected.accountScopeId)||
     !qty(input.expected.lotSize)||input.expected.lotSize===0||
+    !qty(input.expected.expectedNetLongQuantity)||
+    input.expected.expectedNetLongQuantity%input.expected.lotSize!==0||
     !qty(input.openingNetLongQuantity)||!qty(input.closingNetLongQuantity)||
+    input.openingNetLongQuantity%input.expected.lotSize!==0||
+    input.closingNetLongQuantity%input.expected.lotSize!==0||
     !date(input.startDate)||!date(input.endDate)||
     input.endDate<input.startDate||
     !Number.isFinite(clock(input.asOf))||
@@ -291,6 +295,8 @@ export function auditOfflineHistoricalFoFills(
       pagesReviewed:input.pages.length,totalFoRows:totalRows});
   if(net!==input.closingNetLongQuantity)
     flag('HISTORICAL_FO_FILLS_DO_NOT_EXPLAIN_POSITION_DELTA');
+  if(input.closingNetLongQuantity!==input.expected.expectedNetLongQuantity)
+    flag('HISTORICAL_FO_CLOSE_DISAGREES_WITH_EXPECTED_POSITION');
   if(net<0)
     flag('HISTORICAL_RECONCILIATION_IMPLIES_UNEXPECTED_SHORT');
   // An FO historical trade (no order id in the provider example) cannot
@@ -300,7 +306,7 @@ export function auditOfflineHistoricalFoFills(
     'HISTORICAL_FILLS_RECONCILED_UNVERIFIED';
   return {...out,status,reasons,operatorActions:reasonActions(reasons),
     rangeSpansMultipleIndiaDates:multiDay,
-    selectedContractDescriptorsMatched:true,
+    selectedContractDescriptorsMatched:selected>0,
     openingNetQuantity:input.openingNetLongQuantity,
     closingNetQuantity:input.closingNetLongQuantity,
     computedClosingNetQuantity:net,
