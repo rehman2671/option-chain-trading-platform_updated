@@ -206,6 +206,24 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.ok(r.horizonMechanicalRisk[0].reasons.includes(
       'OOS_DECISION_DENOMINATOR_CHANGED_ACROSS_PHASES'));
   });
+  it('one duplicated stress scenario cannot replace a missing scenario and still count as four',()=>{
+    const p=mockReports();
+    const index=p.premiumStress!.cells.findIndex(x=>
+      x.arm==='REGIME_FILTER'&&x.horizon==='2W'&&
+      x.scenario==='WIDEN_ENTRY_ASK_AND_EXIT_BID');
+    assert.ok(index>=0);
+    p.premiumStress!.cells[index]={
+      ...p.premiumStress!.cells[index],scenario:'DOUBLE_ORIGINAL_COSTS'
+    };
+    assert.equal(p.premiumStress!.cells.length,48);
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    const row=r.horizonMechanicalRisk.find(x=>
+      x.arm==='REGIME_FILTER'&&x.horizon==='2W')!;
+    assert.ok(row.reasons.includes('MISSING_OR_DUPLICATED_FOLD_ARM_HORIZON_CELL'));
+    assert.equal(row.sampleComplete,false);
+    assert.equal(row.hysteresisCombinedStressNetPnlINR,null);
+  });
   it('an extra duplicate original stress cell cannot be counted twice',()=>{
     const p=mockReports();
     p.premiumStress!.cells.push({...p.premiumStress!.cells[0]});
