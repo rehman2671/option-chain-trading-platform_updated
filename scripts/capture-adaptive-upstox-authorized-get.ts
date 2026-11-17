@@ -11,8 +11,10 @@ import {
   createStrictNativeUpstoxAnalyticsGetTransport
 } from '../src/server/engine/ema15m/adaptiveUpstoxAuthorizedGetCapture.js';
 import {
-  persistPrivateReadOnlyCapture,privateEvidenceParentReady
+  privateEvidenceParentReady
 } from '../src/server/engine/ema15m/adaptiveUpstoxPrivateEvidenceArchive.js';
+import {persistEncryptedPrivateReadOnlyCapture}
+  from '../src/server/engine/ema15m/adaptiveUpstoxPhase30EncryptedArchive.js';
 import type {
   ReadOnlyExpectedPosition,ReadOnlyNrmlAuditPolicy
 } from '../src/server/engine/ema15m/adaptiveReadOnlyNrmlProtectionAudit.js';
@@ -25,13 +27,15 @@ const expectedFile=flag('--expected'),policyFile=flag('--policy'),
   parent=flag('--private-parent'),seq=Number(flag('--sequence'));
 const approved=process.argv.includes('--approve-get-only'),
   whitelisted=process.argv.includes('--confirm-whitelisted-static-ip'),
-  token=process.env.UPSTOX_ANALYTICS_READONLY_TOKEN;
+  token=process.env.UPSTOX_ANALYTICS_READONLY_TOKEN,
+  evidenceKey=process.env.ADAPTIVE_V2_EVIDENCE_AES256_KEY_HEX;
 if(!approved||!whitelisted||!expectedFile||!policyFile||!parent||
   !Number.isInteger(seq)||seq<1||seq>64||
   !privateEvidenceParentReady(parent)||
-  !token||token.length<12){
-  console.error('READ_ONLY_CAPTURE_NOT_ENABLED_OR_PRIVATE_DIR_NOT_SECURE');
-  console.error('Usage: UPSTOX_ANALYTICS_READONLY_TOKEN=<secret managed by operator> npx tsx scripts/capture-adaptive-upstox-authorized-get.ts --approve-get-only --confirm-whitelisted-static-ip --expected <private-expected-FO-NRML.json> --policy <private-locked-policy.json> --private-parent <existing owner-private 0700 absolute directory> --sequence 1');
+  !token||token.length<12||!evidenceKey||
+  !/^[0-9a-f]{64}$/i.test(evidenceKey)){
+  console.error('READ_ONLY_CAPTURE_NOT_ENABLED_OR_PRIVATE_ENCRYPTION_UNAVAILABLE');
+  console.error('Usage: UPSTOX_ANALYTICS_READONLY_TOKEN=<secret> ADAPTIVE_V2_EVIDENCE_AES256_KEY_HEX=<32-byte-random-key-in-hex> npx tsx scripts/capture-adaptive-upstox-authorized-get.ts --approve-get-only --confirm-whitelisted-static-ip --expected <private-expected-FO-NRML.json> --policy <private-locked-policy.json> --private-parent <existing owner-private 0700 absolute directory> --sequence 1');
   process.exitCode=2;
 }else{
   try{
@@ -49,15 +53,16 @@ if(!approved||!whitelisted||!expectedFile||!policyFile||!parent||
       sequence:seq,timeoutMs:7500
     },createStrictNativeUpstoxAnalyticsGetTransport());
     const stored=outcome.privateArchive?
-      persistPrivateReadOnlyCapture(parent,outcome.report,outcome.privateArchive):
+      persistEncryptedPrivateReadOnlyCapture(
+        parent,outcome.report,outcome.privateArchive,evidenceKey):
       null;
     // Explicitly never print archive, raw profile UCC, order ids, trade ids,
     // bearer token, full URL, exception object or filesystem path.
     console.log(JSON.stringify({report:outcome.report,
       privateStorageStatus:stored?.status??'NO_PRIVATE_ARCHIVE',
-      privateArchiveSha256:stored?.evidenceJsonSha256??null},null,2));
+      privateCiphertextSha256:stored?.ciphertextSha256??null},null,2));
     if(outcome.report.status!=='CAPTURE_RECORDED_UNVERIFIED'||
-      stored?.status!=='PRIVATE_EVIDENCE_WRITTEN_UNVERIFIED'||
+      stored?.status!=='ENCRYPTED_PRIVATE_CAPTURE_WRITTEN'||
       outcome.report.phase26Status!=='STRUCTURAL_REVIEW_ONLY')
       process.exitCode=2;
   }catch{
