@@ -559,7 +559,7 @@ export function evaluateAdaptiveFullResearchReadiness(
          !rc.calendarFoldHoldOverlapAbsent||rc.blockers.length||
          rc.original.completeNetINR===null||
          rc.hysteresis.completeNetINR===null||
-         rc.policyTotalContrast.completeNetINR===null){
+         rc.policyTotalContrast?.completeNetINR==null){
         risk.reasons.push('OOS_FOLD_ROBUSTNESS_NOT_INDEPENDENT_LIKE_OR_COMPLETE');
         block('OOS_FOLD_ROBUSTNESS_NOT_INDEPENDENT_LIKE_OR_COMPLETE_'+
           arm+'_'+horizon);
