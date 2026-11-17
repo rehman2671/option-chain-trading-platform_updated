@@ -51,6 +51,11 @@ import {auditAdaptiveVersionedInstrumentSessions,
   type VersionedInstrumentSessionEvidence,
   type VersionedInstrumentSessionReport
 } from './adaptiveVersionedInstrumentSessionAudit.js';
+import {
+  auditAdaptiveObservedPremiumRunupReversals,
+  type ObservedPremiumRunupPolicy,
+  type ObservedPremiumPathReversalReport
+} from './adaptiveObservedPremiumPathReversals.js';
 import type {AdaptiveExitReplayPolicy} from './adaptivePositionalExitReplay.js';
 import type {HistoricalArm} from './historicalAdaptiveComparison.js';
 import type {HorizonBucket} from './adaptiveOptionRanker.js';
@@ -97,6 +102,7 @@ export interface PinnedResearchPolicyLock {
     matchedOos:string;
     premiumCostDepthStress:string;
     instrumentSessionSchedule:string;
+    premiumPathReversal:string;
   };
 }
 export type PolicyRole=keyof PinnedResearchPolicyLock['policyFileSha256'];
@@ -108,6 +114,7 @@ export interface ReadinessPolicyBytes {
   matchedOos:Uint8Array;
   premiumCostDepthStress:Uint8Array;
   instrumentSessionSchedule:Uint8Array;
+  premiumPathReversal:Uint8Array;
 }
 export interface FullResearchReadinessInput {
   bundleBytes:Uint8Array|null|undefined;
@@ -140,6 +147,11 @@ export interface HorizonMechanicalRisk {
   originalOvernightGapTriggers:number;
   hysteresisOvernightGapTriggers:number;
   stressDepthBlockedExits:number;
+  originalObservedFirstRunupReversals:number;
+  hysteresisObservedFirstRunupReversals:number;
+  originalObservedTargetCrossings:number;
+  hysteresisObservedTargetCrossings:number;
+  missedOriginalFirstRunupReversals:number;
   /** Null when ANY fold is censored, missing or unreconciled. */
   originalCompleteNetPnlINR:number|null;
   hysteresisCompleteNetPnlINR:number|null;
@@ -190,6 +202,7 @@ export interface FullResearchReadinessReport {
   foldCount:number;
   expectedArmHorizonCells:number;
   expectedPremiumStressCells:number;
+  expectedPremiumPathCells:number;
   horizonMechanicalRisk:HorizonMechanicalRisk[];
   /** Hashes only AGGREGATE diagnostics; not licensed L1 files or a signature. */
   aggregateEvidenceSummarySha256:string|null;
@@ -204,6 +217,7 @@ export interface ReadinessPhaseReports {
   hysteresis:HysteresisResearchReport|null;
   matched:HysteresisMatchedOosReport|null;
   premiumStress:PremiumCostDepthStressReport|null;
+  premiumPath:ObservedPremiumPathReversalReport|null;
   calendar:CrossSourceCalendarReport|null;
   witness:SignedEvidenceReviewReport|null;
   instrumentSessions:VersionedInstrumentSessionReport|null;
@@ -259,6 +273,7 @@ function blank():FullResearchReadinessReport {
     marketSessionsCrossSourceConsistent:false,
     expectedFoldCount:0,foldCount:0,
     expectedArmHorizonCells:0,expectedPremiumStressCells:0,
+    expectedPremiumPathCells:0,
     horizonMechanicalRisk:[],aggregateEvidenceSummarySha256:null,
     manualExternalRequirements:REQ
   };
@@ -284,7 +299,7 @@ export function validatePinnedResearchPolicyLock(
   const roles:PolicyRole[]=[
     'entryFirstExit','marketDataQuality','researchEvidenceGate',
     'regimeHysteresis','matchedOos','premiumCostDepthStress',
-    'instrumentSessionSchedule'
+    'instrumentSessionSchedule','premiumPathReversal'
   ];
   if(!m||m.schemaVersion!=='ADAPTIVE_PRESPECIFIED_RESEARCH_POLICY_LOCK_V1'||
      !m.policyFileSha256||
@@ -314,6 +329,7 @@ function statusOf(p:ReadinessPhaseReports):Record<string,string>{
     decisionRegimeHysteresis:p.hysteresis?.status??'MISSING',
     matchedOos:p.matched?.status??'MISSING',
     premiumCostDepthStress:p.premiumStress?.status??'MISSING',
+    observedOptionPremiumPath:p.premiumPath?.status??'MISSING',
     separateExchangeCalendar:p.calendar?.status??'MISSING',
     detachedReviewerWitness:p.witness?.status??'MISSING',
     versionedInstrumentSessions:p.instrumentSessions?.status??'MISSING'
@@ -328,6 +344,7 @@ const required={
   decisionRegimeHysteresis:'DESCRIPTIVE_ONLY',
   matchedOos:'DESCRIPTIVE_ONLY',
   premiumCostDepthStress:'DESCRIPTIVE_ONLY',
+  observedOptionPremiumPath:'DESCRIPTIVE_ONLY',
   separateExchangeCalendar:'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED',
   detachedReviewerWitness:'SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED',
   versionedInstrumentSessions:'SEGMENT_WINDOWS_CONSISTENT_AUTHENTICITY_UNVERIFIED'
@@ -346,6 +363,11 @@ const emptyRisk=(arm:HistoricalArm,horizon:HorizonBucket):HorizonMechanicalRisk=
   hysteresisCensoredExitCount:0,skippedBaselineWinnersObserved:0,
   skippedBaselineLosersObserved:0,originalOvernightGapTriggers:0,
   hysteresisOvernightGapTriggers:0,stressDepthBlockedExits:0,
+  originalObservedFirstRunupReversals:0,
+  hysteresisObservedFirstRunupReversals:0,
+  originalObservedTargetCrossings:0,
+  hysteresisObservedTargetCrossings:0,
+  missedOriginalFirstRunupReversals:0,
   originalCompleteNetPnlINR:null,hysteresisCompleteNetPnlINR:null,
   originalCombinedStressNetPnlINR:null,
   hysteresisCombinedStressNetPnlINR:null,
@@ -373,6 +395,7 @@ export function evaluateAdaptiveFullResearchReadiness(
   out.expectedFoldCount=ctx.expectedTestSessions.length;
   out.expectedArmHorizonCells=ctx.expectedTestSessions.length*12;
   out.expectedPremiumStressCells=ctx.expectedTestSessions.length*48;
+  out.expectedPremiumPathCells=ctx.expectedTestSessions.length*12;
   out.foldCount=reports.walk?.foldWindows.length??0;
   out.independentlySignedArchiveBindingsValid=
     reports.witness?.status==='SIGNED_BINDINGS_VALID_EXTERNAL_REVIEW_REQUIRED';
@@ -408,6 +431,7 @@ export function evaluateAdaptiveFullResearchReadiness(
      reports.hysteresis?.datasetId!==ctx.datasetId||
      reports.matched?.datasetId!==ctx.datasetId||
      reports.premiumStress?.datasetId!==ctx.datasetId||
+     reports.premiumPath?.datasetId!==ctx.datasetId||
      reports.calendar?.datasetId!==ctx.datasetId||
      reports.witness?.datasetId!==ctx.datasetId||
      reports.instrumentSessions?.datasetId!==ctx.datasetId)
@@ -417,6 +441,7 @@ export function evaluateAdaptiveFullResearchReadiness(
      reports.hysteresis?.synthetic!==ctx.synthetic||
      reports.matched?.synthetic!==ctx.synthetic||
      reports.premiumStress?.synthetic!==ctx.synthetic||
+     reports.premiumPath?.synthetic!==ctx.synthetic||
      reports.calendar?.synthetic!==ctx.synthetic||
      reports.witness?.synthetic!==ctx.synthetic||
      reports.instrumentSessions?.synthetic!==ctx.synthetic)
@@ -446,6 +471,7 @@ export function evaluateAdaptiveFullResearchReadiness(
      reports.researchGate?.cells.length!==ctx.expectedTestSessions.length*12||
      reports.matched?.cells.length!==ctx.expectedTestSessions.length*12||
      reports.premiumStress?.cells.length!==ctx.expectedTestSessions.length*48||
+     reports.premiumPath?.cells.length!==ctx.expectedTestSessions.length*12||
      reports.hysteresis?.foldCells.length!==ctx.expectedTestSessions.length*4||
      reports.entry?.cells.length!==ctx.expectedTestSessions.length*12)
     block('MISSING_COMPLETE_FOLD_ARM_HORIZON_SOURCE_EVIDENCE_MATRIX');
@@ -465,6 +491,7 @@ export function evaluateAdaptiveFullResearchReadiness(
   const entryCells=reports.entry?.cells??[];
   const matchedCells=reports.matched?.cells??[];
   const allStress=reports.premiumStress?.cells??[];
+  const premiumPaths=reports.premiumPath?.cells??[];
   if(!ctx.expectedTestSessions.length)
     return {...out,status:'REJECTED',errors,blockers:blocks};
   for(const arm of ARMS)for(const horizon of HORIZONS){
@@ -477,6 +504,7 @@ export function evaluateAdaptiveFullResearchReadiness(
       const g=topCell(reportCell,fold,arm,horizon);
       const e=topCell(entryCells,fold,arm,horizon);
       const m=topCell(matchedCells,fold,arm,horizon);
+      const path=topCell(premiumPaths,fold,arm,horizon);
       const bs=reports.premiumStress?
         stressCell(reports.premiumStress,fold,arm,horizon,'UNCHANGED_P8_COSTS'):[];
       const ws=reports.premiumStress?
@@ -486,7 +514,8 @@ export function evaluateAdaptiveFullResearchReadiness(
         reports.premiumStress&&stressCell(reports.premiumStress,
           fold,arm,horizon,scenario).length===1);
       if(q.length!==1||g.length!==1||e.length!==1||m.length!==1||
-         bs.length!==1||ws.length!==1||!eachScenarioExactlyOnce){
+         bs.length!==1||ws.length!==1||path.length!==1||
+         !eachScenarioExactlyOnce){
         reasons.push('MISSING_OR_DUPLICATED_FOLD_ARM_HORIZON_CELL');
       }else{
         const qr=q[0],gr=g[0],er=e[0],mr=m[0],base=bs[0],worst=ws[0];
@@ -498,6 +527,29 @@ export function evaluateAdaptiveFullResearchReadiness(
            base.allOutOfSampleDecisions!==expected||
            worst.allOutOfSampleDecisions!==expected)
           reasons.push('OOS_DECISION_DENOMINATOR_CHANGED_ACROSS_PHASES');
+        const pr=path[0];
+        if(pr.allOutOfSampleDecisions!==expected||
+           pr.original.enrolledEntries!==mr.originalObservedEntries||
+           pr.hysteresis.enrolledEntries!==mr.stabilizedObservedEntries||
+           pr.original.pricedAndFullyObservedPaths!==mr.originalPricedExits||
+           pr.hysteresis.pricedAndFullyObservedPaths!==mr.stabilizedPricedExits||
+           pr.original.censoredOrSourceMismatchedPaths!==mr.originalCensoredExits||
+           pr.hysteresis.censoredOrSourceMismatchedPaths!==mr.stabilizedCensoredExits)
+          reasons.push('OPTION_PREMIUM_BID_RUNUP_NOT_MATCHED_TO_ORIGINAL_EXITS');
+        if(!pr.fullyObservedForDescriptiveReview||pr.blockers.length||
+           pr.original.completeCohortMeanMaxQualifiedBidGainPoints===null||
+           pr.hysteresis.completeCohortMeanMaxQualifiedBidGainPoints===null)
+          reasons.push('UNPRICED_OPTION_PRETRIGGER_RUNUP_CANNOT_ESTABLISH_GAIN');
+        risk.originalObservedFirstRunupReversals+=
+          pr.original.firstRunupReversalBeforeTarget;
+        risk.hysteresisObservedFirstRunupReversals+=
+          pr.hysteresis.firstRunupReversalBeforeTarget;
+        risk.originalObservedTargetCrossings+=
+          pr.original.qualifiedBidTargetCrossings;
+        risk.hysteresisObservedTargetCrossings+=
+          pr.hysteresis.qualifiedBidTargetCrossings;
+        risk.missedOriginalFirstRunupReversals+=
+          pr.originalOnlyFirstRunupReversals;
         if(er.entryObservedCount!==qr.observedEntryCount||
            mr.originalObservedEntries!==er.entryObservedCount||
            base.original.enrolledEntries!==mr.originalObservedEntries||
@@ -618,7 +670,8 @@ export function runAdaptiveFullResearchReadiness(
   const hp=parseJson<HysteresisResearchPolicy>(p.regimeHysteresis,128*1024);
   const mp=parseJson<HysteresisMatchedOosPolicy>(p.matchedOos,128*1024);
   const sp=parseJson<PremiumCostDepthStressPolicy>(p.premiumCostDepthStress,128*1024);
-  if(!ep||!qp||!gp||!hp||!mp||!sp)
+  const pp=parseJson<ObservedPremiumRunupPolicy>(p.premiumPathReversal,128*1024);
+  if(!ep||!qp||!gp||!hp||!mp||!sp||!pp)
     return {...initial,errors:['MALFORMED_OR_MISSING_PREDECLARED_POLICY_FILES']};
   const segmentSessionAudit=auditAdaptiveVersionedInstrumentSessions(
     raw,cal,input.calendarManifestBytes,
@@ -694,12 +747,14 @@ export function runAdaptiveFullResearchReadiness(
       decisions,raw.declaredExchangeSessions,ep,hp,mp);
     const premiumStress=auditAdaptiveMatchedPremiumCostDepthStress(
       decisions,raw.declaredExchangeSessions,ep,hp,mp,sp);
+    const premiumPath=auditAdaptiveObservedPremiumRunupReversals(
+      decisions,raw.declaredExchangeSessions,ep,hp,matched,pp);
     const expectedTestSessions=raw.policy.folds.map(f=>
       decisions.decisions.filter(d=>d.sessionDate>=f.testStart&&
         d.sessionDate<=f.testEnd).length);
     const review=evaluateAdaptiveFullResearchReadiness({
       source:archive,walk,entry,quality,researchGate:gate,
-      hysteresis,matched,premiumStress,calendar,witness,
+      hysteresis,matched,premiumStress,premiumPath,calendar,witness,
       instrumentSessions:segmentSessionAudit
     },{
       datasetId:raw.provenance.datasetId,

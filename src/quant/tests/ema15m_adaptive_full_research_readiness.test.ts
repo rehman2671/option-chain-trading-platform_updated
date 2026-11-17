@@ -32,7 +32,7 @@ const stresses:StressCase[]=[
 const policyRoles=( [
   'entryFirstExit','marketDataQuality','researchEvidenceGate',
   'regimeHysteresis','matchedOos','premiumCostDepthStress',
-  'instrumentSessionSchedule'
+  'instrumentSessionSchedule','premiumPathReversal'
 ] as const);
 const context=():ReadinessAssessmentContext=>({
   datasetId:DATASET,synthetic:false,
@@ -40,7 +40,7 @@ const context=():ReadinessAssessmentContext=>({
   expectedTestSessions:[3],originalBundleSha256:BUNDLE_DIGEST
 });
 function mockReports():ReadinessPhaseReports{
-  const q=[],gate=[],entry=[],matched=[],stress=[],hyst=[];
+  const q=[],gate=[],entry=[],matched=[],stress=[],hyst=[],premiumPath=[];
   for(const arm of arms)for(const horizon of horizons){
     q.push({foldIndex:0,arm,horizon,decisionCount:3,observedEntryCount:2,
       sufficientForDescriptiveQualityReview:true});
@@ -53,11 +53,24 @@ function mockReports():ReadinessPhaseReports{
       bothEntered:2,originalOnlyEntries:0,stabilizedOnlyEntries:0,
       neitherEntered:1,jointlyPricedPairs:2,
       originalCensoredExits:0,stabilizedCensoredExits:0,
+      originalPricedExits:2,stabilizedPricedExits:2,
       originalCompleteCohortNetPnlINR:100,
       stabilizedCompleteCohortNetPnlINR:80,
       skippedOriginalWinnersObserved:0,skippedOriginalLosersObserved:0,
       originalOvernightGapTriggers:1,stabilizedOvernightGapTriggers:0,
       descriptivePairedSampleSufficient:true,blockers:[]});
+    premiumPath.push({foldIndex:0,arm,horizon,
+      allOutOfSampleDecisions:3,
+      original:{enrolledEntries:2,pricedAndFullyObservedPaths:2,
+        censoredOrSourceMismatchedPaths:0,
+        completeCohortMeanMaxQualifiedBidGainPoints:35,
+        firstRunupReversalBeforeTarget:1,qualifiedBidTargetCrossings:0},
+      hysteresis:{enrolledEntries:2,pricedAndFullyObservedPaths:2,
+        censoredOrSourceMismatchedPaths:0,
+        completeCohortMeanMaxQualifiedBidGainPoints:25,
+        firstRunupReversalBeforeTarget:0,qualifiedBidTargetCrossings:1},
+      originalOnlyFirstRunupReversals:0,
+      fullyObservedForDescriptiveReview:true,blockers:[]});
     for(const scenario of stresses)
       stress.push({foldIndex:0,arm,horizon,scenario,
         allOutOfSampleDecisions:3,
@@ -90,6 +103,8 @@ function mockReports():ReadinessPhaseReports{
       cells:matched},
     premiumStress:{status:'DESCRIPTIVE_ONLY',datasetId:DATASET,
       synthetic:false,cells:stress},
+    premiumPath:{status:'DESCRIPTIVE_ONLY',datasetId:DATASET,
+      synthetic:false,cells:premiumPath},
     calendar:{status:'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED',
       datasetId:DATASET,synthetic:false,
       originalCalendarDocumentSha256:CAL_DIGEST,
@@ -142,6 +157,7 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(r.blockers.length,0);
     assert.equal(r.horizonMechanicalRisk.length,12);
     assert.equal(r.expectedPremiumStressCells,48);
+    assert.equal(r.expectedPremiumPathCells,12);
     assert.equal(r.expectedArmHorizonCells,12);
     assert.equal(r.foldCount,1);
     assert.equal(r.executionAuthorized,false);
@@ -163,6 +179,8 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(c.originalStressDeteriorationINR,60);
     assert.equal(c.hysteresisStressDeteriorationINR,45);
     assert.equal(c.originalOvernightGapTriggers,1);
+    assert.equal(c.originalObservedFirstRunupReversals,1);
+    assert.equal(c.hysteresisObservedTargetCrossings,1);
     assert.equal(c.hysteresisOvernightGapTriggers,0);
     assert.equal(r.aggregateEvidenceSummarySha256?.length,64);
     assert.deepEqual(assess(),r);
@@ -171,7 +189,7 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     const ctx=context();ctx.synthetic=true;
     const p=mockReports();
     for(const k of ['quality','researchGate','hysteresis','matched',
-      'premiumStress','calendar','witness','instrumentSessions'] as const)
+      'premiumStress','premiumPath','calendar','witness','instrumentSessions'] as const)
       (p[k] as {synthetic:boolean}).synthetic=true;
     const r=assess(p,ctx);
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
@@ -262,6 +280,32 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.ok(r.errors.includes('REJECT_INSTRUMENT_SESSION_VERSION_OR_BOUND_CALENDAR'));
     assert.equal(r.productionSafe,false);
   });
+  it('rejects a future-only fake +100 BID target when original matched OOS exit was censored',()=>{
+    const p=mockReports();
+    p.premiumPath!.cells[0].original.censoredOrSourceMismatchedPaths=1;
+    p.premiumPath!.cells[0].original.pricedAndFullyObservedPaths=1;
+    p.premiumPath!.cells[0].original.completeCohortMeanMaxQualifiedBidGainPoints=null;
+    p.premiumPath!.cells[0].fullyObservedForDescriptiveReview=false;
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    const c=r.horizonMechanicalRisk[0];
+    assert.equal(c.sampleComplete,false);
+    assert.equal(c.originalCompleteNetPnlINR,null);
+    assert.ok(c.reasons.includes(
+      'OPTION_PREMIUM_BID_RUNUP_NOT_MATCHED_TO_ORIGINAL_EXITS'));
+  });
+  it('an absent or duplicated option-premium path cell cannot certify profitable horizon',()=>{
+    const a=mockReports();
+    a.premiumPath!.cells=a.premiumPath!.cells.filter(c=>
+      !(c.arm==='REGIME_FILTER'&&c.horizon==='8W'));
+    const missing=assess(a);
+    assert.equal(missing.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    const b=mockReports();
+    b.premiumPath!.cells.push({...b.premiumPath!.cells[0]});
+    const duplicated=assess(b);
+    assert.equal(duplicated.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.equal(duplicated.horizonMechanicalRisk[0].sampleComplete,false);
+  });
   it('a missing or unpaired independent source session blocks readiness',()=>{
     const p=mockReports();
     p.calendar!.foldCoverage[0].expectedTradingDecisions=4;
@@ -344,6 +388,11 @@ describe('Phase 17 raw policy-file precommitment SHA256',()=>{
         prespecifiedAt:f.manifest.prespecifiedAt
       });
     assert.ok(wrong.errors.includes('OUT_OF_BAND_RESEARCH_POLICY_LOCK_PIN_MISMATCH'));
+  });
+  it('post-hoc changes to premium-point thresholds invalidate eighth predeclared SHA policy lock',()=>{
+    const f=lockFixture();
+    f.policies.premiumPathReversal=bytes('{"candidateTargetPoints":9999}');
+    assert.ok(f.check().errors.includes('RESEARCH_POLICY_FILE_DIGEST_MISMATCH'));
   });
   it('source replay with missing original archive/calendar/signers never returns permission',()=>{
     const input:FullResearchReadinessInput={

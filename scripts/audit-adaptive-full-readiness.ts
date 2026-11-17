@@ -18,7 +18,8 @@
  *  --hysteresis-policy <phase12.json> \
  *  --matched-hysteresis-policy <phase13.json> \
  *  --premium-stress-policy <phase14.json> \
- *  --instrument-session-evidence <phase18-versioned-segment-sessions.json>
+ *  --instrument-session-evidence <phase18-versioned-segment-sessions.json> \
+ *  --premium-path-policy <phase19-premium-point-thresholds.json>
  *
  * A zero exit code (when evidence is internally consistent) is NOT an
  * authentication, safety or production trading authorization.
@@ -44,7 +45,8 @@ const PATH_FLAGS={
   '--hysteresis-policy':'regimeHysteresis',
   '--matched-hysteresis-policy':'matchedOos',
   '--premium-stress-policy':'premiumCostDepthStress',
-  '--instrument-session-evidence':'instrumentSessionSchedule'
+  '--instrument-session-evidence':'instrumentSessionSchedule',
+  '--premium-path-policy':'premiumPathReversal'
 } as const;
 const PIN_FLAGS=[
   '--pinned-reviewer-trust-sha256',
@@ -106,7 +108,8 @@ async function main(){
     regimeHysteresis:get('--hysteresis-policy'),
     matchedOos:get('--matched-hysteresis-policy'),
     premiumCostDepthStress:get('--premium-stress-policy'),
-    instrumentSessionSchedule:get('--instrument-session-evidence')
+    instrumentSessionSchedule:get('--instrument-session-evidence'),
+    premiumPathReversal:get('--premium-path-policy')
   };
   const report=runAdaptiveFullResearchReadiness({
     bundleBytes:await bytes(bundle,50*1024*1024),

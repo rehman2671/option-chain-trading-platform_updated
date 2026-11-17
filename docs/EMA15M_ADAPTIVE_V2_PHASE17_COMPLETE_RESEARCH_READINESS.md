@@ -1,5 +1,7 @@
 # Adaptive Swing v2 Phase 17 — full fail-closed source-to-risk review package
 
+**Phase 19 update (17 November 2026):** The full offline preflight now additionally locks **the eighth research policy**, `premiumPathReversal`, which tests option BID premium +50/+70 observed run-ups reversing before a predeclared +100 candidate threshold. It distinguishes low-depth raw quote spikes from full-lot displayed bid opportunities and never counts unknown exit bids as observed gains. See `docs/EMA15M_ADAPTIVE_V2_PHASE19_OBSERVED_PREMIUM_PATH_REVERSALS.md`.
+
 **Phase 18 update (17 November 2026):** The former six-policy Phase 17 preflight is extended to require a **seventh exact SHA256-pinned artifact**, the original effective-date and expiry-class instrument session ledger. See `docs/EMA15M_ADAPTIVE_V2_PHASE18_VERSIONED_INSTRUMENT_SESSION_AUDIT.md`. This schedule must agree with the separately supplied signed Phase 15 calendar; broad day windows no longer by themselves establish that an option quote is valid for its expiry class.
 
 **STRICTLY OFFLINE / DRAFT / UNMERGED. No real/paper NRML broker orders or changes to the existing EMA23/50 MIS engine, 15:15 MIS square-off or broker-native protective exits. No automatic strategy deployment or endorsement.**
@@ -11,7 +13,7 @@ Phase 5–16 implemented many separate, useful research checks. However there wa
 Phase 17 adds:
 
 1. A **single raw-byte-only entrypoint** `runAdaptiveFullResearchReadiness(...)` that recomputes all lower-level reports itself. It does **not** accept externally claimed aggregate passing reports in its production research path.
-2. Seven **pinned predeclared policy/source SHA256 checks** and a separately pinned policy-lock manifest, bound to the exact original vendor bundle SHA256, self-declared protocol ID, dataset ID and prespecified date. This detects edits/re-optimization AFTER the trusted pin is established; it does **not prove** the third-party preregistration date or the person who pinned it.
+2. Eight **pinned predeclared policy/source SHA256 checks** and a separately pinned policy-lock manifest, bound to the exact original vendor bundle SHA256, self-declared protocol ID, dataset ID and prespecified date. This detects edits/re-optimization AFTER the trusted pin is established; it does **not prove** the third-party preregistration date or the person who pinned it.
 3. Mandatory Phase 6 source-artifact checksum, Phase 15 full-day/expiry calendar cross-source audit, and Phase 16 dual reviewer detached Ed25519 witness tied to the **same exact source bytes**.
 4. Mandatory Phase 5 walk-forward, Phase 8 entry-first option exit, Phase 10 quote/spread/depth/overnight-gap quality, Phase 11 trend + nontrend regime review, Phase 12 hysteresis advisories, Phase 13 independently-enrolled matched cohorts and Phase 14 option-premium entry/exit cost-depth stress.
 5. Strict OOS fold, exchange trading-day, dataset ID, synthetic provenance, source SHA, source-window, arm and horizon **denominator reconciliation**: every fold × EMA_BASELINE/REGIME_FILTER/REGIME_AND_RANK × 1W/2W/4W/8W must have one complete original, quality, regime, matched and stress set. All four Phase 14 predeclared scenarios must be present for each cell.
@@ -24,7 +26,7 @@ Phase 17 adds:
 - `BLOCKED_INCOMPLETE_EVIDENCE`: any missing source quote, unobserved/censored positional bid exit, omitted trading session, incomplete fold × arm × expiry × stress matrix, incomplete source audit, underpowered comparisons, failed stress quality or synthetic data.
 - `INTERNALLY_CONSISTENT_EXTERNAL_REVIEW_REQUIRED`: the supplied historical files, independent reviewer-key signatures, every predeclared policy and all mandatory evidence matrices are internally consistent enough to **request a fresh external audit**. This is **NOT** licensed-feed validation, confirmed stock exchange provenance, statistical profitability, real broker operational safety, NRML production approval or trading guidance.
 
-## Seven policy/source-file roles and externally pinned lock
+## Eight policy/source-file roles and externally pinned lock
 
 The exact original JSON files supplied with the offline command are bound as raw bytes (not merely equivalent parsed JSON):
 
@@ -37,8 +39,9 @@ The exact original JSON files supplied with the offline command are bound as raw
 | `matchedOos` | Phase 13 original-vs-filtered paired sample and censor limits |
 | `premiumCostDepthStress` | Phase 14 per-horizon slippage, adverse spread, gap and depth sensitivities |
 | `instrumentSessionSchedule` | Phase 18 effective-date underlying-index versus expiring/nonexpiring option session windows |
+| `premiumPathReversal` | Phase 19 predeclared +50/+70/+100 BID-premium runup/giveback and displayed-depth sensitivity |
 
-The separate `ADAPTIVE_PRESPECIFIED_RESEARCH_POLICY_LOCK_V1` JSON contains exactly these seven SHA256 hashes, plus `studyProtocolId`, `datasetId`, `prespecifiedAt` and `originalBundleSha256`. The exact bytes of this lock manifest must match **`--pinned-policy-lock-sha256`**, obtained through an independently approved, out-of-band channel. A checksum calculated from a tampered file **and trusted as its own reference is not proof** of immutable preregistration. The lock protocol must match the Phase 11 evidence policy AND the Phase 16 signed envelope. There is no claim that a self-supplied timestamp is externally registered.
+The separate `ADAPTIVE_PRESPECIFIED_RESEARCH_POLICY_LOCK_V1` JSON contains exactly these eight SHA256 hashes, plus `studyProtocolId`, `datasetId`, `prespecifiedAt` and `originalBundleSha256`. The exact bytes of this lock manifest must match **`--pinned-policy-lock-sha256`**, obtained through an independently approved, out-of-band channel. A checksum calculated from a tampered file **and trusted as its own reference is not proof** of immutable preregistration. The lock protocol must match the Phase 11 evidence policy AND the Phase 16 signed envelope. There is no claim that a self-supplied timestamp is externally registered.
 
 ### Single command: every input mandatory
 
@@ -59,7 +62,8 @@ npx tsx scripts/audit-adaptive-full-readiness.ts \
   --hysteresis-policy /secure/phase12-prespecified-hysteresis-policy.json \
   --matched-hysteresis-policy /secure/phase13-prespecified-paired-policy.json \
   --premium-stress-policy /secure/phase14-prespecified-cost-depth-policy.json \\
-  --instrument-session-evidence /secure/phase18-versioned-instrument-windows.json
+  --instrument-session-evidence /secure/phase18-versioned-instrument-windows.json \\
+  --premium-path-policy /secure/phase19-prespecified-premium-bid-path.json
 ```
 
 The executable validates that all source/evidence/policy files are **different real paths** (including symlink aliases); pinned values must be lowercase 64-character SHA256 hex. It rejects missing flags or evidence. On a blocked/rejected package it exits nonzero; if internally consistent it returns zero **only for successful offline evidence package generation**, not broker execution or production permission. Output is a JSON aggregate: no instrument-level licensed option L1 quotes, source file bytes, signatures, reviewer PEM keys or private keys are printed.
@@ -90,7 +94,7 @@ Official primary-source starting points identified for independently acquiring a
 
 ## Files
 
-- `src/server/engine/ema15m/adaptiveFullResearchReadiness.ts` — strict source-to-risk runner, aggregate-phase reviewer, seven exact policy/source hashes, per-horizon risk dossier.
+- `src/server/engine/ema15m/adaptiveFullResearchReadiness.ts` — strict source-to-risk runner, aggregate-phase reviewer, eight exact policy/source hashes, per-horizon risk dossier.
 - `scripts/audit-adaptive-full-readiness.ts` — a separate, offline-only, all-inputs-required command.
 - `src/quant/tests/ema15m_adaptive_full_research_readiness.test.ts` — adversarial state manipulation: missing fold/scenario, duplicate cells, changed source digest, tampered policy lock, cross-phase dataset mismatch, full-cohort censored exit, mismatched exchange dates, no live eligibility flags.
 - `docs/EMA15M_ADAPTIVE_V2_PHASE17_COMPLETE_RESEARCH_READINESS.md` — this source procurement and release-boundary guide.
