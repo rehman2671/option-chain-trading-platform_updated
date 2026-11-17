@@ -22,6 +22,7 @@ const DATASET='TEST_ONLY_SOURCE_DATASET';
 const BUNDLE_DIGEST='c'.repeat(64);
 const VENDOR_DIGEST='a'.repeat(64);
 const CAL_DIGEST='b'.repeat(64);
+const CAL_MANIFEST_DIGEST='e'.repeat(64);
 const arms:HistoricalArm[]=['EMA_BASELINE','REGIME_FILTER','REGIME_AND_RANK'];
 const horizons:HorizonBucket[]=['1W','2W','4W','8W'];
 const stresses:StressCase[]=[
@@ -30,7 +31,8 @@ const stresses:StressCase[]=[
 ];
 const policyRoles=( [
   'entryFirstExit','marketDataQuality','researchEvidenceGate',
-  'regimeHysteresis','matchedOos','premiumCostDepthStress'
+  'regimeHysteresis','matchedOos','premiumCostDepthStress',
+  'instrumentSessionSchedule'
 ] as const);
 const context=():ReadinessAssessmentContext=>({
   datasetId:DATASET,synthetic:false,
@@ -98,7 +100,12 @@ function mockReports():ReadinessPhaseReports{
       datasetId:DATASET,synthetic:false,
       bundleSha256:BUNDLE_DIGEST,
       originalVendorArchiveSha256:VENDOR_DIGEST,
-      calendarSourceDocumentSha256:CAL_DIGEST}
+      calendarSourceDocumentSha256:CAL_DIGEST,
+      calendarManifestSha256:CAL_MANIFEST_DIGEST},
+    instrumentSessions:{status:'SEGMENT_WINDOWS_CONSISTENT_AUTHENTICITY_UNVERIFIED',
+      datasetId:DATASET,synthetic:false,studyProtocolId:PROTOCOL,
+      originalCalendarManifestSha256:CAL_MANIFEST_DIGEST,
+      tradingDaysCovered:9,tradingDaysExpected:9,evidenceSha256:'f'.repeat(64)}
   } as unknown as ReadinessPhaseReports;
 }
 const assess=(p=mockReports(),ctx=context(),lock=true)=>
@@ -164,7 +171,7 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     const ctx=context();ctx.synthetic=true;
     const p=mockReports();
     for(const k of ['quality','researchGate','hysteresis','matched',
-      'premiumStress','calendar','witness'] as const)
+      'premiumStress','calendar','witness','instrumentSessions'] as const)
       (p[k] as {synthetic:boolean}).synthetic=true;
     const r=assess(p,ctx);
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
@@ -231,6 +238,29 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
     assert.equal(r.horizonMechanicalRisk[0].sampleComplete,false);
     assert.equal(r.horizonMechanicalRisk[0].originalCombinedStressNetPnlINR,null);
+  });
+  it('expired-contract timing audit cannot be bypassed by green calendar and witness',()=>{
+    const p=mockReports();
+    p.instrumentSessions!.status='INCOMPLETE_EVIDENCE';
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.ok(r.blockers.some(x=>x.startsWith('VERSIONEDINSTRUMENTSESSIONS_INSUFFICIENT')));
+    assert.equal(r.executionAuthorized,false);
+    assert.equal(r.horizonMechanicalRisk[0].liveHorizonRecommendation,null);
+    const wrong=mockReports();
+    wrong.instrumentSessions!.originalCalendarManifestSha256='d'.repeat(64);
+    const mismatch=assess(wrong);
+    assert.equal(mismatch.status,'REJECTED');
+    assert.ok(mismatch.errors.includes(
+      'SEGMENT_RULES_NOT_BOUND_TO_SAME_SIGNED_CALENDAR_BYTES'));
+  });
+  it('tampered out-of-date segment rules are rejected instead of labeled merely underpowered',()=>{
+    const p=mockReports();
+    p.instrumentSessions!.status='REJECTED';
+    const r=assess(p);
+    assert.equal(r.status,'REJECTED');
+    assert.ok(r.errors.includes('REJECT_INSTRUMENT_SESSION_VERSION_OR_BOUND_CALENDAR'));
+    assert.equal(r.productionSafe,false);
   });
   it('a missing or unpaired independent source session blocks readiness',()=>{
     const p=mockReports();
@@ -319,7 +349,8 @@ describe('Phase 17 raw policy-file precommitment SHA256',()=>{
     const input:FullResearchReadinessInput={
       bundleBytes:Buffer.from(JSON.stringify({some:'junk'})),
       vendorArchiveBytes:null,calendarManifestBytes:null,
-      calendarDocumentBytes:null,witnessEnvelope:null,
+      calendarDocumentBytes:null,instrumentSessionEvidenceBytes:null,
+      witnessEnvelope:null,
       reviewerTrustRegistryBytes:null,
       pinnedReviewerTrustRegistrySha256:null,
       policyLockManifestBytes:null,
