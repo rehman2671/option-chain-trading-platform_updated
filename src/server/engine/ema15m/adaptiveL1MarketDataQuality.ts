@@ -70,11 +70,32 @@ export interface L1PathDiagnostic {
   observedBidGivebackAlert:boolean;
   firstFixedDueExitBidObservedAt:string|null;
 }
+/** Selected at ORIGINAL decision time, including candidates with no later entry L1.
+ * No option key, licensed individual bid or vendor record ID is exposed.
+ */
+export interface SelectedCandidateEntryL1Diagnostic {
+  foldIndex:number;arm:HistoricalArm;horizon:HorizonBucket;
+  decisionAt:string;
+  entryDisposition:'ENTRY_OBSERVED'|'MISSING_EXECUTABLE_ENTRY_L1';
+  originalSelectedContractKnown:boolean;
+  originalOptionQuotesWithinEntryWindow:number;
+  otherContractsQuotedSameDecisionDay:number;
+  firstOriginalAvailableAt:string|null;
+  sufficientOriginalBidAskDepthQuotes:number;
+  originalEventReceiptLagViolations:number;
+  entrySourceQuoteReconciled:boolean;
+  sourceQualityReasons:string[];
+  sourceQuoteOrActualBrokerFillAuthenticated:false;
+}
 export interface MarketDataQualityCell {
   foldIndex:number;arm:HistoricalArm;horizon:HorizonBucket;
   decisionCount:number;
   observedEntryCount:number;
   missingEntryCount:number;
+  originalSelectedCandidateCount:number;
+  originalSelectedCandidateMissingEntryQuoteCount:number;
+  originalSelectedCandidateThinBidAskCount:number;
+  originalSelectedCandidateInvalidClockCount:number;
   qualityPassCount:number;
   incompleteL1PathCount:number;
   noSignalOrIneligibleCount:number;
@@ -104,6 +125,8 @@ export interface AdaptiveMarketDataQualityReport {
   totalOutOfSampleDecisions:number;
   observedEntryCount:number;
   missingEntryCount:number;
+  /** Source option data for ORIGINAL selected candidates, not other liquid symbols. */
+  originalSelectedCandidateEntries:SelectedCandidateEntryL1Diagnostic[];
   paths:L1PathDiagnostic[];
   cells:MarketDataQualityCell[];
   warnings:string[];
@@ -114,6 +137,7 @@ const warnings=[
   'EXCHANGE_CALENDAR_MUST_BE_AUDITED_AGAINST_OFFICIAL_HISTORY',
   'FUTURE_L1_NEVER_SELECTS_ENTRY_ONLY_PHASE8_ENTRY_FIRST_DECISIONS',
   'NO_FILLS_OR_PROFITS_ARE_INFERRED_FROM_BID_OR_ASK',
+  'LIQUID_OTHER_CONTRACT_L1_CANNOT_FILL_MISSING_1W_2W_4W_8W_SELECTED_OPTION',
   'L1_DEPTH_IS_DISPLAYED_NOT_BROKER_CONFIRMED_EXECUTION',
   'LARGE_OVERNIGHT_PRICE_GAPS_ARE_PRESERVED_AND_FLAGGED_NOT_NORMALIZED',
   'OBSERVED_PREMIUM_GIVEBACK_IS_NOT_AN_INDEX_TARGET_OR_BROKER_STOP_FILL',
@@ -195,7 +219,7 @@ export function auditAdaptiveL1MarketDataQuality(
     synthetic:input?.provenance?.synthetic??true,
     errors:[],policy:null,
     totalOutOfSampleDecisions:0,observedEntryCount:0,missingEntryCount:0,
-    paths:[],cells:[],warnings
+    originalSelectedCandidateEntries:[],paths:[],cells:[],warnings
   };
   const errors:string[]=[];
   if(!validPolicy(policy))errors.push('INVALID_PREDECLARED_MARKET_QUALITY_POLICY');
@@ -239,6 +263,69 @@ export function auditAdaptiveL1MarketDataQuality(
   if(source.size!==input.executionQuotes.length)
     return {...base,errors:['SOURCE_AND_REPLAY_QUOTE_COUNTS_MISMATCH']};
   for(const qs of byKey.values())qs.sort((a,b)=>time(a.observedAt)-time(b.observedAt));
+  // Count SOURCE quote presence for the original selected contract, not merely
+  // the rest of the liquid option universe. The selected contract comes from
+  // decision-time candles/contracts/chain; missing future entry L1 NEVER
+  // reselects a different contract or erases the denominator.
+  const rawByContract=new Map<string,VendorExecutionL1[]>();
+  const otherQuotesByDay=new Map<string,number>();
+  for(const q of originalL1){
+    const list=rawByContract.get(q.instrumentKey)??[];
+    list.push(q);rawByContract.set(q.instrumentKey,list);
+    const d=istDay(time(q.availableAt));
+    otherQuotesByDay.set(d,(otherQuotesByDay.get(d)??0)+1);
+  }
+  for(const series of rawByContract.values())
+    series.sort((a,b)=>time(a.availableAt)-time(b.availableAt));
+  const originalSelectedCandidateEntries:SelectedCandidateEntryL1Diagnostic[]=[];
+  for(const a of cohort!.attempts){
+    if(a.disposition!=='ENTRY_OBSERVED'&&
+       a.disposition!=='MISSING_EXECUTABLE_ENTRY_L1')continue;
+    const key=a.instrumentKey,decisionAt=time(a.decisionAt),
+      until=decisionAt+input.policy.maxEntryDelayMinutes*MINUTE;
+    const matched=key?(rawByContract.get(key)??[]).filter(q=>
+      time(q.availableAt)>decisionAt&&time(q.availableAt)<=until):[];
+    const selectedDepth=matched.filter(q=>
+      a.quantity!==null&&q.bidQty>=a.quantity&&q.askQty>=a.quantity);
+    const longLag=matched.filter(q=>
+      (time(q.availableAt)-time(q.eventAt))/1000>
+        policy.maximumSourceEventToAvailabilitySeconds).length;
+    const exact=a.disposition==='ENTRY_OBSERVED'&&matched.some(q=>
+      q.availableAt===a.entryAt&&q.ask===a.entryAsk&&
+      q.bid===a.entryBid&&a.quantity!==null&&
+      q.bidQty>=a.quantity&&q.askQty>=a.quantity);
+    const reasons:string[]=[];
+    if(!key||!a.expiry||a.quantity===null||a.quantity<=0)
+      reasons.push('ORIGINAL_SELECTED_CONTRACT_IDENTITY_OR_LOT_NOT_RETAINED');
+    if(!matched.length)
+      reasons.push('NO_ORIGINAL_SELECTED_CONTRACT_OPTION_L1_AT_ENTRY');
+    else if(!selectedDepth.length)
+      reasons.push('SELECTED_CONTRACT_ENTRY_BID_ASK_DEPTH_INSUFFICIENT');
+    if(longLag)
+      reasons.push('SELECTED_CONTRACT_SOURCE_EVENT_RECEIPT_LAG_TOO_LONG');
+    if(a.disposition==='ENTRY_OBSERVED'&&!exact)
+      reasons.push('ORIGINAL_SELECTED_ENTRY_QUOTE_NOT_SOURCE_RECONCILED');
+    if(a.disposition==='MISSING_EXECUTABLE_ENTRY_L1'&&selectedDepth.length)
+      reasons.push('SELECTED_COHORT_MISSING_ENTRY_CONTRADICTS_SOURCE_L1');
+    const decisionDay=istDay(decisionAt);
+    const inDay=matched.filter(q=>istDay(time(q.availableAt))===decisionDay);
+    originalSelectedCandidateEntries.push({
+      foldIndex:a.foldIndex,arm:a.arm,horizon:a.horizon,
+      decisionAt:a.decisionAt,
+      entryDisposition:a.disposition,
+      originalSelectedContractKnown:!!key&&!!a.expiry&&
+        a.quantity!==null&&a.quantity>0,
+      originalOptionQuotesWithinEntryWindow:matched.length,
+      otherContractsQuotedSameDecisionDay:Math.max(0,
+        (otherQuotesByDay.get(decisionDay)??0)-inDay.length),
+      firstOriginalAvailableAt:matched[0]?.availableAt??null,
+      sufficientOriginalBidAskDepthQuotes:selectedDepth.length,
+      originalEventReceiptLagViolations:longLag,
+      entrySourceQuoteReconciled:exact,
+      sourceQualityReasons:reasons,
+      sourceQuoteOrActualBrokerFillAuthenticated:false
+    });
+  }
   const paths:L1PathDiagnostic[]=[];
   const allObserved=cohort!.attempts.filter(a=>a.disposition==='ENTRY_OBSERVED');
   for(const entry of allObserved){
@@ -378,6 +465,14 @@ export function auditAdaptiveL1MarketDataQuality(
         p.horizon===horizon);
       const passed=subset.filter(p=>
         p.disposition==='SUFFICIENT_SOURCE_ATTESTED_OBSERVATIONS');
+      const candidates=originalSelectedCandidateEntries.filter(x=>
+        x.foldIndex===foldIndex&&x.arm===arm&&x.horizon===horizon);
+      const missingCandidateQuotes=candidates.filter(x=>
+        !x.originalOptionQuotesWithinEntryWindow).length;
+      const thinCandidates=candidates.filter(x=>x.sourceQualityReasons.includes(
+        'SELECTED_CONTRACT_ENTRY_BID_ASK_DEPTH_INSUFFICIENT')).length;
+      const laggedCandidates=candidates.filter(x=>
+        x.originalEventReceiptLagViolations>0).length;
       const spreads=subset.flatMap(p=>p.spreadBpsP95===null?[]:[p.spreadBpsP95]);
       const lags=subset.flatMap(p=>
         p.eventToAvailableLagSecondsP95===null?[]:[p.eventToAvailableLagSecondsP95]);
@@ -387,6 +482,10 @@ export function auditAdaptiveL1MarketDataQuality(
       cells.push({
         foldIndex,arm,horizon,decisionCount:attempts.length,
         observedEntryCount:observed.length,missingEntryCount:missing.length,
+        originalSelectedCandidateCount:candidates.length,
+        originalSelectedCandidateMissingEntryQuoteCount:missingCandidateQuotes,
+        originalSelectedCandidateThinBidAskCount:thinCandidates,
+        originalSelectedCandidateInvalidClockCount:laggedCandidates,
         qualityPassCount:passed.length,
         incompleteL1PathCount:subset.length-passed.length,
         noSignalOrIneligibleCount:attempts.length-observed.length-missing.length,
@@ -400,7 +499,10 @@ export function auditAdaptiveL1MarketDataQuality(
         sufficientForDescriptiveQualityReview:observed.length>=
           policy.minimumObservedEntriesPerArmHorizon &&
           subset.length===observed.length &&
-          passed.length===observed.length && missing.length===0,
+          passed.length===observed.length && missing.length===0&&
+          candidates.length===observed.length&&
+          candidates.every(x=>x.entrySourceQuoteReconciled&&
+            x.sourceQualityReasons.length===0),
         productionEligible:false
       });
     }
@@ -411,6 +513,6 @@ export function auditAdaptiveL1MarketDataQuality(
     policy,totalOutOfSampleDecisions:cohort!.counts.testDecisions,
     observedEntryCount:allObserved.length,
     missingEntryCount:cohort!.counts.missingEntryCount,
-    paths,cells
+    originalSelectedCandidateEntries,paths,cells
   };
 }

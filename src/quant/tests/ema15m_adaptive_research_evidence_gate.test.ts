@@ -52,7 +52,12 @@ function fixture():Fixture{
   for(const arm of arms)for(const horizon of horizons){
     qualityCells.push({
       foldIndex:0,arm,horizon,decisionCount:20,observedEntryCount:20,
-      missingEntryCount:0,qualityPassCount:20,incompleteL1PathCount:0,
+      missingEntryCount:0,
+      originalSelectedCandidateCount:20,
+      originalSelectedCandidateMissingEntryQuoteCount:0,
+      originalSelectedCandidateThinBidAskCount:0,
+      originalSelectedCandidateInvalidClockCount:0,
+      qualityPassCount:20,incompleteL1PathCount:0,
       noSignalOrIneligibleCount:0,adverseOvernightGapAlertCount:0,
       largestAdverseOvernightBidGapPercent:0,
       observedBidGivebackAlertCount:0,spreadBpsP95:100,
@@ -130,7 +135,8 @@ function fixture():Fixture{
     status:'DESCRIPTIVE_ONLY',datasetId:'FAKE_DECLARED_REAL_REVIEW',
     synthetic:false,errors:[],policy:null,
     totalOutOfSampleDecisions:20,observedEntryCount:240,
-    missingEntryCount:0,paths,cells:qualityCells,warnings:[]
+    missingEntryCount:0,originalSelectedCandidateEntries:[],
+    paths,cells:qualityCells,warnings:[]
   } as AdaptiveMarketDataQualityReport;
   const entry={
     mode:'RESEARCH_ONLY',executionAuthorized:false,productionSafe:false,
