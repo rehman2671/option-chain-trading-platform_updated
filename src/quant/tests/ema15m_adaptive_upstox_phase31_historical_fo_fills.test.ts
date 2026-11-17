@@ -164,6 +164,15 @@ describe('Phase31 Upstox historical FO pages vs NRML stop limits',()=>{
       'FREEZE_NEW_NRML_ENTRIES_PENDING_INDEPENDENT_REVIEW'));
     assert.equal(r.computedClosingNetQuantity,65);
   });
+  it('closing position cannot contradict the independently expected NRML long',()=>{
+    const p=packet([row('T1','BUY',65)]);
+    p.closingNetLongQuantity=195;
+    const r=fails(p,'HISTORICAL_FO_CLOSE_DISAGREES_WITH_EXPECTED_POSITION');
+    assert.equal(r.computedClosingNetQuantity,195);
+    const bad=packet();bad.expected.expectedNetLongQuantity=131;
+    fails(bad,'INVALID_FO_CONTRACT_RANGE_OR_BOUNDED_PAGINATION_ENVELOPE',
+      'INVALID_EVIDENCE');
+  });
   it('descriptor conflict with nonempty different broker instrument key blocks',()=>{
     const p=packet([row('WRONG_KEY','BUY',65,{
       instrument_token:'NSE_FO|OTHER'})]);
