@@ -192,6 +192,29 @@ describe('Adaptive Phase 5 event-time ingestion and OOS cost sensitivity',()=>{
     x.executionL1[0].availableAt=at(Date.parse(x.executionL1[0].eventAt)+10000);
     assert.equal(ingestVendorHistoricalBundle(x).status,'REJECTED');
   });
+  it('retains original source sequence and rejects duplicate, reversed or partly omitted packet IDs',()=>{
+    const b=fixture();
+    const first=b.executionL1[0];
+    first.sourceSequence=100;
+    b.executionL1.push({...first,
+      sourceRecordId:'ADDITIONAL_ORIGINAL_SOURCE_SEQUENCE',
+      sourceSequence:101,
+      eventAt:at(Date.parse(first.eventAt)+500),
+      availableAt:at(Date.parse(first.availableAt)+500)
+    });
+    assert.equal(ingestVendorHistoricalBundle(b).status,
+      'SOURCE_ATTESTED_NOT_INDEPENDENTLY_VERIFIED');
+    b.executionL1[b.executionL1.length-1].sourceSequence=100;
+    assert.ok(ingestVendorHistoricalBundle(b).errors.includes(
+      'INVALID_OR_NONMONOTONIC_ORIGINAL_SOURCE_SEQUENCE'));
+    b.executionL1[b.executionL1.length-1].sourceSequence=101;
+    delete b.executionL1[b.executionL1.length-1].sourceSequence;
+    assert.ok(ingestVendorHistoricalBundle(b).errors.includes(
+      'PARTIALLY_MISSING_ORIGINAL_SOURCE_SEQUENCE'));
+    b.executionL1[b.executionL1.length-1].sourceSequence=NaN;
+    assert.ok(ingestVendorHistoricalBundle(b).errors.includes(
+      'INVALID_OR_NONMONOTONIC_ORIGINAL_SOURCE_SEQUENCE'));
+  });
   it('rejects duplicate vendor L1 events and conflicting exact contract identities',()=>{
     const x=fixture();
     x.executionL1.push({...x.executionL1[0],sourceRecordId:'OTHER'});
