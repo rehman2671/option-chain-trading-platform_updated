@@ -44,6 +44,9 @@ const archiveResult=(status:ArchiveReason,hash:string|null=null,
   status,evidenceJsonSha256:hash,filesCreated:count,
   executionAuthorized:false,brokerAuthenticated:false,productionSafe:false
 });
+export function privateEvidenceParentReady(parent:string):boolean{
+  return secureParent(parent)!==null;
+}
 function secureParent(parent:string):string|null{
   if(typeof parent!=='string'||!parent.startsWith('/')||
     parent.length>1024||parent.includes('\0'))return null;
