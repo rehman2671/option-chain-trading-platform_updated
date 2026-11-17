@@ -98,6 +98,7 @@ export interface OriginalSourceIntakeReport {
   status:'REJECTED'|'INCOMPLETE_EVIDENCE'|
     'SOURCE_DECLARATIONS_RECONCILED_EXTERNAL_AUTHENTICATION_REQUIRED';
   datasetId:string|null;
+  synthetic:boolean|null;
   studyProtocolId:string|null;
   originalBundleSha256:string|null;
   originalVendorArchiveSha256:string|null;
@@ -146,6 +147,7 @@ function blank(raw:VerifiedHistoricalBundleV1|null):OriginalSourceIntakeReport{
     profitabilityProven:false,
     status:'REJECTED',
     datasetId:raw?.provenance?.datasetId??null,
+    synthetic:raw?.provenance?.synthetic??null,
     studyProtocolId:null,
     originalBundleSha256:null,
     originalVendorArchiveSha256:null,
