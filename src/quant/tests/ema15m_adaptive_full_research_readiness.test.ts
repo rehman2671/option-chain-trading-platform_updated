@@ -33,7 +33,7 @@ const policyRoles=( [
   'entryFirstExit','marketDataQuality','researchEvidenceGate',
   'regimeHysteresis','matchedOos','premiumCostDepthStress',
   'instrumentSessionSchedule','premiumPathReversal',
-  'chronologicalOosRobustness'
+  'chronologicalOosRobustness','originalSourceIntake'
 ] as const);
 const context=():ReadinessAssessmentContext=>({
   datasetId:DATASET,synthetic:false,
@@ -132,6 +132,15 @@ function mockReports():ReadinessPhaseReports{
       originalVendorArchiveSha256:VENDOR_DIGEST,
       calendarSourceDocumentSha256:CAL_DIGEST,
       calendarManifestSha256:CAL_MANIFEST_DIGEST},
+    originalSourceIntake:{
+      status:'SOURCE_DECLARATIONS_RECONCILED_EXTERNAL_AUTHENTICATION_REQUIRED',
+      datasetId:DATASET,synthetic:false,studyProtocolId:PROTOCOL,
+      originalBundleSha256:BUNDLE_DIGEST,
+      originalVendorArchiveSha256:VENDOR_DIGEST,
+      calendarManifestSha256:CAL_MANIFEST_DIGEST,
+      calendarDocumentSha256:CAL_DIGEST,
+      expectedTradingDays:9,declaredTradingDays:9,sourceTradingDaysWithNoL1:0
+    },
     instrumentSessions:{status:'SEGMENT_WINDOWS_CONSISTENT_AUTHENTICITY_UNVERIFIED',
       datasetId:DATASET,synthetic:false,studyProtocolId:PROTOCOL,
       originalCalendarManifestSha256:CAL_MANIFEST_DIGEST,
@@ -174,6 +183,8 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(r.expectedPremiumStressCells,48);
     assert.equal(r.expectedPremiumPathCells,12);
     assert.equal(r.expectedOosRobustnessCells,12);
+    assert.equal(r.phaseStatuses.originalSourceAcquisition,
+      'SOURCE_DECLARATIONS_RECONCILED_EXTERNAL_AUTHENTICATION_REQUIRED');
     assert.equal(r.expectedArmHorizonCells,12);
     assert.equal(r.foldCount,1);
     assert.equal(r.executionAuthorized,false);
@@ -207,7 +218,8 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     const ctx=context();ctx.synthetic=true;
     const p=mockReports();
     for(const k of ['quality','researchGate','hysteresis','matched',
-      'premiumStress','premiumPath','oosRobustness','calendar','witness','instrumentSessions'] as const)
+      'premiumStress','premiumPath','oosRobustness','calendar','witness',
+      'instrumentSessions','originalSourceIntake'] as const)
       (p[k] as {synthetic:boolean}).synthetic=true;
     const r=assess(p,ctx);
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
@@ -350,6 +362,42 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(risk.originalCombinedStressNetPnlINR,null);
     assert.ok(r.blockers.some(x=>x.includes('PHASE20_ORIGINAL_OOS_FOLD_NET_NOT_RECONCILED')));
   });
+  it('the Phase21 raw source intake must be complete: trade-only evidence cannot spoof successful lower-level reports',()=>{
+    const p=mockReports();
+    p.originalSourceIntake!.status='INCOMPLETE_EVIDENCE';
+    p.originalSourceIntake!.sourceTradingDaysWithNoL1=3;
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.ok(r.blockers.some(s=>s.startsWith(
+      'ORIGINALSOURCEACQUISITION_INSUFFICIENT')));
+    assert.equal(r.executionAuthorized,false);
+    assert.equal(r.originalFeedAndAvailabilityClockAuthenticated,false);
+  });
+  it('a swapped intake bundle SHA or calendar SHA is REJECTED, not a source quality warning',()=>{
+    const p=mockReports();
+    p.originalSourceIntake!.originalVendorArchiveSha256='3'.repeat(64);
+    const a=assess(p);
+    assert.equal(a.status,'REJECTED');
+    assert.ok(a.errors.includes(
+      'SOURCE_INTAKE_NOT_BOUND_TO_IDENTICAL_ORIGINAL_SOURCE_AND_CALENDAR_BYTES'));
+    const q=mockReports();
+    q.originalSourceIntake!.calendarManifestSha256='4'.repeat(64);
+    assert.equal(assess(q).status,'REJECTED');
+    const w=mockReports();
+    w.originalSourceIntake!.studyProtocolId='OTHER_UNAPPROVED_PROTOCOL';
+    assert.equal(assess(w).status,'REJECTED');
+  });
+  it('a missing source trading day or a forged green original source acquisition summary cannot pass',()=>{
+    const p=mockReports();
+    p.originalSourceIntake!.declaredTradingDays=8;
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.ok(r.blockers.includes('SOURCE_INTAKE_TRADING_DAY_LEDGER_NOT_COMPLETE'));
+    const q=mockReports();
+    q.originalSourceIntake!.status='REJECTED';
+    assert.ok(assess(q).errors.includes(
+      'REJECT_ORIGINAL_SOURCE_ACQUISITION_DIGEST_OR_INTAKE_LEDGER'));
+  });
   it('a missing or unpaired independent source session blocks readiness',()=>{
     const p=mockReports();
     p.calendar!.foldCoverage[0].expectedTradingDecisions=4;
@@ -442,6 +490,13 @@ describe('Phase 17 raw policy-file precommitment SHA256',()=>{
     const f=lockFixture();
     f.policies.chronologicalOosRobustness=bytes(
       '{"schemaVersion":"ADAPTIVE_CHRONOLOGICAL_OOS_ROBUSTNESS_V1","plannedFamilywiseComparisons":1}'
+    );
+    assert.ok(f.check().errors.includes('RESEARCH_POLICY_FILE_DIGEST_MISMATCH'));
+  });
+  it('a post-hoc altered source procurement manifest invalidates tenth separately pinned hash',()=>{
+    const f=lockFixture();
+    f.policies.originalSourceIntake=bytes(
+      '{"schemaVersion":"ADAPTIVE_EXTERNAL_ORIGINAL_SOURCE_INTAKE_V1","sourceProductCategory":"HISTORICAL_TRADE_ONLY"}'
     );
     assert.ok(f.check().errors.includes('RESEARCH_POLICY_FILE_DIGEST_MISMATCH'));
   });
