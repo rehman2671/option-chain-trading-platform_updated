@@ -171,6 +171,15 @@ export function auditOfflineUpstoxNrmlLifecycle(
   input:OfflineUpstoxLifecycleInput,policy:ReadOnlyNrmlAuditPolicy
 ):OfflineUpstoxLifecycleReport {
   const r=base();
+  if(!policy||!Number.isFinite(policy.maximumSnapshotAgeMinutes)||
+    policy.maximumSnapshotAgeMinutes<=0||policy.maximumSnapshotAgeMinutes>60||
+    !Number.isFinite(policy.maximumCrossBookSkewSeconds)||
+    policy.maximumCrossBookSkewSeconds<0||
+    policy.maximumCrossBookSkewSeconds>300||
+    !Number.isInteger(policy.minCalendarDaysBeforeExpiry)||
+    policy.minCalendarDaysBeforeExpiry<1||
+    policy.minCalendarDaysBeforeExpiry>30)
+    return {...r,reasons:['INVALID_LOCKED_PHASE25_POLICY']};
   if(!input||input.schemaVersion!=='ADAPTIVE_UPSTOX_OFFLINE_LIFECYCLE_V1'||
     input.source!=='OPERATOR_SUPPLIED_UNVERIFIED'||
     !Array.isArray(input.frames)||input.frames.length<2||
