@@ -456,11 +456,11 @@ export function evaluateAdaptiveFullResearchReadiness(
       const ws=reports.premiumStress?
         stressCell(reports.premiumStress,fold,arm,horizon,
           'COMBINED_OVERNIGHT_GAP_AND_DEPTH'):[];
-      const sCount=STRESS.reduce((n,scenario)=>
-        n+(reports.premiumStress?
-          stressCell(reports.premiumStress,fold,arm,horizon,scenario).length:0),0);
+      const eachScenarioExactlyOnce=STRESS.every(scenario=>
+        reports.premiumStress&&stressCell(reports.premiumStress,
+          fold,arm,horizon,scenario).length===1);
       if(q.length!==1||g.length!==1||e.length!==1||m.length!==1||
-         bs.length!==1||ws.length!==1||sCount!==4){
+         bs.length!==1||ws.length!==1||!eachScenarioExactlyOnce){
         reasons.push('MISSING_OR_DUPLICATED_FOLD_ARM_HORIZON_CELL');
       }else{
         const qr=q[0],gr=g[0],er=e[0],mr=m[0],base=bs[0],worst=ws[0];
