@@ -32,7 +32,8 @@ const stresses:StressCase[]=[
 const policyRoles=( [
   'entryFirstExit','marketDataQuality','researchEvidenceGate',
   'regimeHysteresis','matchedOos','premiumCostDepthStress',
-  'instrumentSessionSchedule','premiumPathReversal'
+  'instrumentSessionSchedule','premiumPathReversal',
+  'chronologicalOosRobustness'
 ] as const);
 const context=():ReadinessAssessmentContext=>({
   datasetId:DATASET,synthetic:false,
@@ -105,6 +106,20 @@ function mockReports():ReadinessPhaseReports{
       synthetic:false,cells:stress},
     premiumPath:{status:'DESCRIPTIVE_ONLY',datasetId:DATASET,
       synthetic:false,cells:premiumPath},
+    oosRobustness:{status:'DESCRIPTIVE_ONLY',datasetId:DATASET,
+      synthetic:false,cells:arms.flatMap(arm=>horizons.map(horizon=>({
+        arm,horizon,totalOosFolds:1,
+        calendarFoldHoldOverlapAbsent:true,fullySourcedFoldSeries:true,
+        enoughIndependentLikeFoldsToReview:true,
+        original:{completeNetINR:100,worstFoldNetINR:100,
+          maxChronologicalFoldDrawdownINR:0,
+          netIfBestFoldOmittedINR:null,exploratoryBonferroniAdjustedP36:1},
+        hysteresis:{completeNetINR:80,worstFoldNetINR:80,
+          maxChronologicalFoldDrawdownINR:0,
+          netIfBestFoldOmittedINR:null,exploratoryBonferroniAdjustedP36:1},
+        policyTotalContrast:{completeNetINR:-20,worstFoldNetINR:-20},
+        riskFlags:[],blockers:[]
+      })))},
     calendar:{status:'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED',
       datasetId:DATASET,synthetic:false,
       originalCalendarDocumentSha256:CAL_DIGEST,
@@ -158,6 +173,7 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(r.horizonMechanicalRisk.length,12);
     assert.equal(r.expectedPremiumStressCells,48);
     assert.equal(r.expectedPremiumPathCells,12);
+    assert.equal(r.expectedOosRobustnessCells,12);
     assert.equal(r.expectedArmHorizonCells,12);
     assert.equal(r.foldCount,1);
     assert.equal(r.executionAuthorized,false);
@@ -181,6 +197,8 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(c.originalOvernightGapTriggers,1);
     assert.equal(c.originalObservedFirstRunupReversals,1);
     assert.equal(c.hysteresisObservedTargetCrossings,1);
+    assert.equal(c.originalWorstOosFoldNetINR,100);
+    assert.equal(c.hysteresisWorstOosFoldNetINR,80);
     assert.equal(c.hysteresisOvernightGapTriggers,0);
     assert.equal(r.aggregateEvidenceSummarySha256?.length,64);
     assert.deepEqual(assess(),r);
@@ -189,7 +207,7 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     const ctx=context();ctx.synthetic=true;
     const p=mockReports();
     for(const k of ['quality','researchGate','hysteresis','matched',
-      'premiumStress','premiumPath','calendar','witness','instrumentSessions'] as const)
+      'premiumStress','premiumPath','oosRobustness','calendar','witness','instrumentSessions'] as const)
       (p[k] as {synthetic:boolean}).synthetic=true;
     const r=assess(p,ctx);
     assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
@@ -306,6 +324,32 @@ describe('Phase 17 zero-authorization full research audit summary',()=>{
     assert.equal(duplicated.status,'BLOCKED_INCOMPLETE_EVIDENCE');
     assert.equal(duplicated.horizonMechanicalRisk[0].sampleComplete,false);
   });
+  it('a cherry-picked profitable fold cannot make the full package ready when chronological audit blocks',()=>{
+    const p=mockReports();
+    p.oosRobustness!.status='INCOMPLETE_EVIDENCE';
+    p.oosRobustness!.cells[0].calendarFoldHoldOverlapAbsent=false;
+    p.oosRobustness!.cells[0].enoughIndependentLikeFoldsToReview=false;
+    p.oosRobustness!.cells[0].blockers=[
+      'PREVIOUS_OOS_FOLD_HOLD_COOLDOWN_OVERLAPS_NEXT_TEST_DECISION'];
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    assert.equal(r.horizonMechanicalRisk[0].sampleComplete,false);
+    assert.ok(r.horizonMechanicalRisk[0].reasons.includes(
+      'OOS_FOLD_ROBUSTNESS_NOT_INDEPENDENT_LIKE_OR_COMPLETE'));
+    assert.equal(r.profitabilityProven,false);
+    assert.equal(r.statisticalSignificanceProven,false);
+  });
+  it('if best-fold-out PnL conflicts with original source phase13 fold totals, fail closed',()=>{
+    const p=mockReports();
+    p.oosRobustness!.cells[0].original.completeNetINR=102;
+    const r=assess(p);
+    assert.equal(r.status,'BLOCKED_INCOMPLETE_EVIDENCE');
+    const risk=r.horizonMechanicalRisk[0];
+    assert.equal(risk.sampleComplete,false);
+    assert.equal(risk.originalCompleteNetPnlINR,null);
+    assert.equal(risk.originalCombinedStressNetPnlINR,null);
+    assert.ok(r.blockers.some(x=>x.includes('PHASE20_ORIGINAL_OOS_FOLD_NET_NOT_RECONCILED')));
+  });
   it('a missing or unpaired independent source session blocks readiness',()=>{
     const p=mockReports();
     p.calendar!.foldCoverage[0].expectedTradingDecisions=4;
@@ -392,6 +436,13 @@ describe('Phase 17 raw policy-file precommitment SHA256',()=>{
   it('post-hoc changes to premium-point thresholds invalidate eighth predeclared SHA policy lock',()=>{
     const f=lockFixture();
     f.policies.premiumPathReversal=bytes('{"candidateTargetPoints":9999}');
+    assert.ok(f.check().errors.includes('RESEARCH_POLICY_FILE_DIGEST_MISMATCH'));
+  });
+  it('changing Phase20 multiple-testing or fold minimum after pin invalidates the ninth predeclared policy',()=>{
+    const f=lockFixture();
+    f.policies.chronologicalOosRobustness=bytes(
+      '{"schemaVersion":"ADAPTIVE_CHRONOLOGICAL_OOS_ROBUSTNESS_V1","plannedFamilywiseComparisons":1}'
+    );
     assert.ok(f.check().errors.includes('RESEARCH_POLICY_FILE_DIGEST_MISMATCH'));
   });
   it('source replay with missing original archive/calendar/signers never returns permission',()=>{
