@@ -181,6 +181,7 @@ function parseCsv(raw:Uint8Array):string[][]|null{
 }
 const sameQuote=(a:VendorExecutionL1,b:VendorExecutionL1)=>
   a.sourceRecordId===b.sourceRecordId&&
+  a.sourceSequence===b.sourceSequence&&
   a.instrumentKey===b.instrumentKey&&a.eventAt===b.eventAt&&
   a.availableAt===b.availableAt&&a.bid===b.bid&&a.ask===b.ask&&
   a.bidQty===b.bidQty&&a.askQty===b.askQty;
@@ -328,8 +329,8 @@ export function bridgeAdaptiveNativeL1Csv(
     seq.set(k,n);lastEvent.set(k,Date.parse(eventAt));
     seenEvents.add(eventKey);seenAvailable.add(arrivalKey);
     ids.add(sourceRecordId);onDays.add(session);
-    out.push({sourceRecordId,instrumentKey,eventAt,availableAt,
-      bid,ask,bidQty,askQty});
+    out.push({sourceRecordId,sourceSequence:n,
+      instrumentKey,eventAt,availableAt,bid,ask,bidQty,askQty});
   }
   r.convertedRows=out.length;
   r.tradingDaysWithL1=onDays.size;

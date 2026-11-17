@@ -189,6 +189,7 @@ describe('Phase22 offline original native option CSV importer, unverified source
     assert.equal(r.invalidQuoteRows,0);
     assert.equal(r.invalidOrReplayedClocks,0);
     assert.equal(result.derivedBundle!.executionL1[0].bid,99);
+    assert.equal(result.derivedBundle!.executionL1[0].sourceSequence,1);
     assert.equal(result.derivedBundle!.executionL1[0].ask,100);
     assert.equal(result.derivedBundle!.executionL1[0].bidQty,650);
     assert.equal(result.derivedBundle!.executionL1[0].availableAt,
@@ -217,6 +218,13 @@ describe('Phase22 offline original native option CSV importer, unverified source
     assert.ok(altered.report.errors.includes(
       'CSV_AND_EXISTING_ORIGINAL_BUNDLE_L1_ROWS_DISAGREE'));
     assert.equal(altered.derivedBundle,null);
+    const wrongSequence=setup();
+    const original=wrongSequence.execute();
+    wrongSequence.f.raw.executionL1=original.result.derivedBundle!.executionL1;
+    wrongSequence.f.raw.executionL1[0].sourceSequence=99;
+    const conflict=wrongSequence.execute().result;
+    assert.equal(conflict.report.status,'REJECTED');
+    assert.equal(conflict.derivedBundle,null);
   });
   it('missing trading date returns INCOMPLETE, never auto-fill an unseen +100 premium exit',()=>{
     const x=setup();x.quotes.splice(5,1);

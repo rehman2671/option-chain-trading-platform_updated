@@ -6,7 +6,9 @@
  *   --calendar-evidence <full-separate-calendar.json> \
  *   --column-map <native-source-map.json> \
  *   --pinned-column-map-sha256 <independently-approved-64hex> \
- *   [--private-output-bundle /outside/repository/candidate-bundle.json]
+ *   [--continuity-policy <predeclared-source-coverage-policy.json> \\
+ *    --pinned-continuity-policy-sha256 <independent64hex> \\
+ *    --private-output-bundle /outside/repository/candidate-bundle.json]
  *
  * No original licensed prices/quotes are printed or committed by this tool.
  * Optional output requires a FULL Phase5 valid candidate, is owner-only
@@ -20,12 +22,17 @@ import {
 import {
   ingestVendorHistoricalBundle
 } from '../src/server/engine/ema15m/adaptiveVendorIngestion.js';
+import {
+  auditAdaptiveOriginalL1CaptureContinuity
+} from '../src/server/engine/ema15m/adaptiveOriginalL1CaptureContinuity.js';
 
 const mandatory=[
   '--original-native-l1-csv','--calendar-evidence',
   '--column-map','--pinned-column-map-sha256'
 ] as const;
 const OUTPUT='--private-output-bundle';
+const CONTINUITY='--continuity-policy';
+const PIN='--pinned-continuity-policy-sha256';
 const SHA=/^[a-f0-9]{64}$/;
 async function sourceBytes(file:string,max:number){
   const s=await stat(file);
@@ -36,14 +43,16 @@ async function sourceBytes(file:string,max:number){
 async function run(){
   const args=process.argv.slice(2);
   if(!args.length||args[0].startsWith('--')||
-     (args.length!==9&&args.length!==11))
+     args.length<9||args.length>15||args.length%2!==1)
     throw Error('USAGE: <original-bundle.json> '+
       mandatory.map(x=>x+' <value>').join(' ')+
-      ' [--private-output-bundle <outside-repository-path>]');
+      ' [--continuity-policy <source-policy> '+
+      '--pinned-continuity-policy-sha256 <independent-64hex> '+
+      '--private-output-bundle <outside-repository-path>]');
   const flags=new Map<string,string>();
   for(let i=1;i<args.length;i+=2){
     const k=args[i],v=args[i+1];
-    if(![...mandatory,OUTPUT].includes(k as typeof mandatory[number])||
+    if(![...mandatory,OUTPUT,CONTINUITY,PIN].includes(k as typeof mandatory[number])||
        !v||flags.has(k)||v.startsWith('--'))
       throw Error('MISSING_OR_DUPLICATE_VENDOR_CSV_FLAG');
     flags.set(k,v);
@@ -51,17 +60,24 @@ async function run(){
   if(mandatory.some(x=>!flags.has(x))||
      !SHA.test(flags.get('--pinned-column-map-sha256')??''))
     throw Error('INDEPENDENTLY_PINNED_ORIGINAL_COLUMN_MAP_SHA_REQUIRED');
+  const hasContinuity=flags.has(CONTINUITY)||flags.has(PIN);
+  if(hasContinuity&&(!flags.has(CONTINUITY)||
+     !SHA.test(flags.get(PIN)??'')))
+    throw Error('BOTH_ORIGINAL_CONTINUITY_POLICY_AND_INDEPENDENT_SHA_PIN_REQUIRED');
+  if(flags.has(OUTPUT)&&!hasContinuity)
+    throw Error('PRIVATE_BUNDLE_EXPORT_REQUIRES_PINNED_L1_SOURCE_COVERAGE_POLICY');
   const files=[
     resolve(args[0]),
     resolve(flags.get('--original-native-l1-csv')!),
     resolve(flags.get('--calendar-evidence')!),
-    resolve(flags.get('--column-map')!)
+    resolve(flags.get('--column-map')!),
+    ...(flags.has(CONTINUITY)?[resolve(flags.get(CONTINUITY)!)]:[])
   ];
   const real=await Promise.all(files.map(f=>realpath(f)));
   if(new Set(real).size!==files.length)
     throw Error('SAME_FILE_OR_SYMLINK_CANNOT_STAND_FOR_MULTIPLE_SOURCE_TYPES');
-  const [bundle,csv,cal,map]=await Promise.all(files.map((f,i)=>
-    sourceBytes(f,i<2?50*1024*1024:1024*1024)));
+  const [bundle,csv,cal,map,sourcePolicy]=await Promise.all(files.map((f,i)=>
+    sourceBytes(f,i<2?50*1024*1024:i===4?64*1024:1024*1024)));
   const outcome=bridgeAdaptiveNativeL1Csv(
     bundle,csv,cal,map,flags.get('--pinned-column-map-sha256'));
   // Only sanitized, aggregated evidence. NO quotes, broker IDs, license docs,
@@ -73,6 +89,17 @@ async function run(){
     process.exitCode=1;return;
   }
   const output=flags.get(OUTPUT);
+  if(hasContinuity){
+    const audit=auditAdaptiveOriginalL1CaptureContinuity(
+      Buffer.from(JSON.stringify(outcome.derivedBundle)),cal,sourcePolicy,
+      flags.get(PIN));
+    // Source day counts, not licensed option prices or individual vendor IDs.
+    console.log(JSON.stringify(audit,null,2));
+    if(audit.status!==
+       'OBSERVED_SOURCE_COVERAGE_RECONCILED_EXTERNAL_AUTHENTICATION_REQUIRED'){
+      process.exitCode=1;return;
+    }
+  }
   if(!output)return;
   if(!isAbsolute(output))
     throw Error('PRIVATE_OUTPUT_BUNDLE_PATH_MUST_BE_ABSOLUTE');

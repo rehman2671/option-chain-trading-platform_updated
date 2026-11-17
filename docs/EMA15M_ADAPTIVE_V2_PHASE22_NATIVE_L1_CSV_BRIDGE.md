@@ -76,6 +76,8 @@ npx tsx scripts/import-adaptive-native-l1-csv.ts \
 
 The CLI rejects duplicate/aliased input paths, files larger than defined bounds, missing/duplicate headers, malformed RFC-style quoted CSV, invalid UTF-8, broken row widths, missing required fields, nonpositive/invalid bid/ask, bad sizes, duplicate source sequence/record/event/arrival clocks, unlisted or expired contract keys, missing trading-session quotes and raw CSV/source SHA swaps. It prints **only aggregate original-source counts, input hashes, status and blocker codes**, not licensed prices, per-tick data or source invoice/entitlement documents.
 
+**Phase 23 safety update:** A source-wide quote presence check is NOT proof of an uninterrupted bid/ask path; the optional CSV adapter must pass a **separately SHA256-pinned source continuity policy** before exporting a private candidate bundle. See `docs/EMA15M_ADAPTIVE_V2_PHASE23_ORIGINAL_L1_CAPTURE_CONTINUITY.md`. CSV-only validation without export remains available. The source continuity policy does not replace Phase 10 entry-first holding-path quote density, independent source licensing/clock review, or Phase18 expiry-specific option hours.
+
 **Optional** explicit private candidate export, **outside the Git repository and never overwriting any existing file**:
 
 ```bash
@@ -85,6 +87,8 @@ npx tsx scripts/import-adaptive-native-l1-csv.ts \
   --calendar-evidence /secure/independent-original-exchange-calendar.json \
   --column-map /secure/preapproved-native-l1-csv-column-map.json \
   --pinned-column-map-sha256 PUT_SEPARATELY_APPROVED_64_HEX_SHA256_HERE \
+  --continuity-policy /secure/prespecified-original-L1-coverage.json \
+  --pinned-continuity-policy-sha256 PUT_INDEPENDENTLY_APPROVED_64_HEX_SHA256_HERE \
   --private-output-bundle /secure/derived-candidate-research-bundle.json
 ```
 
