@@ -325,7 +325,7 @@ describe('Phase 19 premium-bid partial-runup reversal vs +100 candidate threshol
     const incomplete=pathPolicy();
     incomplete.horizonRules={
       '1W':{...pathPolicy()}
-    } as ObservedPremiumRunupPolicy['horizonRules'];
+    } as unknown as NonNullable<ObservedPremiumRunupPolicy['horizonRules']>;
     assert.equal(run(sample(),incomplete).report.status,'REJECTED');
   });
   it('strict predeclared thresholds and displayed quantity gates reject malformed policies',()=>{
