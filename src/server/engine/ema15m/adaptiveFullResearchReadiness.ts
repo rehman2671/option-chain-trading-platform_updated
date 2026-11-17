@@ -375,6 +375,15 @@ export function evaluateAdaptiveFullResearchReadiness(
   if(!policyLockMatched||ctx.lockStudyProtocolId!==ctx.protocolId)
     fatal('ORIGINAL_PREDECLARED_POLICY_BYTES_NOT_LOCKED_TO_SIGNED_PROTOCOL');
   if(ctx.synthetic)block('SYNTHETIC_SOURCE_CANNOT_ESTABLISH_MARKET_EDGE');
+  // Corrupted/invalid archive, document or detached signature is stronger
+  // than merely missing quality observations; reject the entire package.
+  if(!reports.source||!['CHECKSUM_MATCHED_AUTHENTICITY_UNVERIFIED',
+    'MISSING_SOURCE'].includes(reports.source.status))
+    fatal('REJECT_ORIGINAL_VENDOR_ARCHIVE_INTEGRITY_FAILURE');
+  if(reports.calendar?.status==='REJECTED')
+    fatal('REJECT_SEPARATE_CALENDAR_DOCUMENT_OR_SCHEMA_FAILURE');
+  if(reports.witness?.status==='REJECTED')
+    fatal('REJECT_DETACHED_WITNESS_OR_PINNED_REVIEWER_TRUST_FAILURE');
   for(const [name,expected] of Object.entries(required)){
     const actual=out.phaseStatuses[name];
     if(actual!==expected)block(name.toUpperCase()+'_INSUFFICIENT_'+actual);
