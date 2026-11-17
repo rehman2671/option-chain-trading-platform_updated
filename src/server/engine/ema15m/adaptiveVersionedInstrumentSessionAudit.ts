@@ -211,14 +211,19 @@ export function auditAdaptiveVersionedInstrumentSessions(
   result.tradingDaysExpected=dates.length;
   if(p.tradingDays.length!==dates.length)
     return {...result,errors:['OMITTED_OR_EXTRA_TRADING_DAY_IN_SEGMENT_RULE_LEDGER']};
+  // Reject appended future/unused version blocks: they do not validate any
+  // observed session and could incorrectly imply the date policy was reviewed.
+  if(p.versions.some(v=>!p.tradingDays.some(d=>d.versionId===v.versionId)))
+    return {...result,errors:['UNUSED_OR_FUTURE_VERSION_WITH_NO_SOURCE_TRADING_DAY']};
   const byDay=new Map<string,VersionedInstrumentTradingDay>();
+  const daySourceIds=new Set<string>();
   let special=0,early=0;
   for(let i=0;i<dates.length;i++){
     const d=dates[i];
     const s=p.tradingDays[i];
     if(!s||s.sessionDate!==d.sessionDate||s.sessionKind!==d.sessionKind||
-       !str(s.sourceRecordId)||byDay.has(s.sessionDate)||
-       !seenVersions.has(s.versionId))
+       !str(s.sourceRecordId)||daySourceIds.has(s.sourceRecordId)||
+       byDay.has(s.sessionDate)||!seenVersions.has(s.versionId))
       return {...result,errors:['INVALID_UNSORTED_OR_DUPLICATE_SEGMENT_TRADING_DAYS']};
     const version=seenVersions.get(s.versionId)!;
     if(s.sessionDate<version.effectiveFrom||
@@ -239,6 +244,7 @@ export function auditAdaptiveVersionedInstrumentSessions(
     if(Date.parse(expiry[expiry.length-1].closeAt)<
        Date.parse(normal[normal.length-1].closeAt))early++;
     byDay.set(s.sessionDate,s);
+    daySourceIds.add(s.sourceRecordId);
   }
   result.tradingDaysCovered=byDay.size;
   result.ruleVersionsApplied=new Set(p.tradingDays.map(x=>x.versionId)).size;
