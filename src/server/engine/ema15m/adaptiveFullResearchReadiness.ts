@@ -340,7 +340,8 @@ export function validatePinnedResearchPolicyLock(
     errors.push('RESEARCH_POLICY_LOCK_NOT_BOUND_TO_DATASET_AND_PROTOCOL');
   if(!policies||roles.some(r=>
     !policies[r]?.length||
-    policies[r].length>128*1024||
+    policies[r].length>(r==='originalSourceIntake'?
+      1024*1024:128*1024)||
     !SHA.test(m?.policyFileSha256?.[r]??'')||
     sha(policies[r])!==m?.policyFileSha256?.[r]))
     errors.push('RESEARCH_POLICY_FILE_DIGEST_MISMATCH');
