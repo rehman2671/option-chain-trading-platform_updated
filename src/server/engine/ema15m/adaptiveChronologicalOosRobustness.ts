@@ -210,9 +210,11 @@ export function describeChronologicalFoldPnl(
     largestAbsoluteFoldContributionFraction:absolute>0?
       round(Math.max(...values.map(x=>Math.abs(x)))/absolute):null,
     netIfBestFoldOmittedINR:values.length>=2?round(total-max):null,
-    exploratoryOneSidedPositiveSignP:p===null?null:round(p),
+    // Keep full precision: rounding to 4 decimals could display a tiny
+    // nonzero conditional probability as 0 and falsely imply certainty.
+    exploratoryOneSidedPositiveSignP:p,
     exploratoryBonferroniAdjustedP36:p===null?null:
-      round(Math.min(1,p*FAMILYWISE_VIEWS))
+      Math.min(1,p*FAMILYWISE_VIEWS)
   };
 }
 export function auditAdaptiveChronologicalOosRobustness(
