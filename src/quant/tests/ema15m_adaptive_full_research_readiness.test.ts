@@ -117,6 +117,7 @@ function mockReports():ReadinessPhaseReports{
         hysteresis:{completeNetINR:80,worstFoldNetINR:80,
           maxChronologicalFoldDrawdownINR:0,
           netIfBestFoldOmittedINR:null,exploratoryBonferroniAdjustedP36:1},
+        policyTotalContrast:{completeNetINR:-20,worstFoldNetINR:-20},
         riskFlags:[],blockers:[]
       })))},
     calendar:{status:'CROSS_SOURCE_CONSISTENT_AUTHENTICITY_UNVERIFIED',
