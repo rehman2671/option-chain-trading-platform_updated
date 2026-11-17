@@ -173,8 +173,8 @@ function validRequest(r:ExplicitHistoricalFoCaptureRequest,now:number){
 }
 function canonicalUrl(request:ExplicitHistoricalFoCaptureRequest,
   page:number):Phase32HistoricalUrl{
-  return `${ORIGIN}${HIST_PATH}?segment=FO&start_date=${request.startDate}&end_date=${request.endDate}&page_number=${page}&page_size=${request.pageSize}`
-    as Phase32HistoricalUrl;
+  const url=`${ORIGIN}${HIST_PATH}?segment=FO&start_date=${request.startDate}&end_date=${request.endDate}&page_number=${page}&page_size=${request.pageSize}`;
+  return url as Phase32HistoricalUrl;
 }
 /** Explicit native GET transport. Strict path/query canonicalization,
  * no redirects, no retries, no body streaming into unlimited memory.
