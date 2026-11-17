@@ -101,6 +101,7 @@ export interface OriginalL1CaptureContinuityReport{
   instrumentDaysInsufficientOrStale:number;
   sourceSequenceHoles:number;
   eventReceiptClockViolations:number;
+  invalidOriginalBestBidAskOrQuantity:number;
   duplicateSourceIdsOrClocks:number;
   unknownOrExpiredInstrumentEvents:number;
   dayCoverage:OriginalL1CaptureDay[];
@@ -138,6 +139,7 @@ function base():OriginalL1CaptureContinuityReport{
     originalSourceEvents:0,sourceWideGapDays:0,
     sourceStartOrEndBlindDays:0,instrumentDaysInsufficientOrStale:0,
     sourceSequenceHoles:0,eventReceiptClockViolations:0,
+    invalidOriginalBestBidAskOrQuantity:0,
     duplicateSourceIdsOrClocks:0,unknownOrExpiredInstrumentEvents:0,
     dayCoverage:[]
   };
@@ -189,6 +191,10 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
   const errors=validateOriginalL1CaptureContinuityPolicy(p);
   if(errors.length)return reject(errors[0]);
   r.policy=p;
+  if(!Number.isInteger(b.maximumOriginalFeedLatencySeconds)||
+     b.maximumOriginalFeedLatencySeconds<0||
+     b.maximumOriginalFeedLatencySeconds>300)
+    return reject('UNBOUNDED_OR_INVALID_ORIGINAL_FEED_RECEIPT_LATENCY');
   if(!SHA.test(b.provenance?.sourceArtifactSha256??'')||
      !b.provenance?.datasetId||
      !['NIFTY','BANKNIFTY','SENSEX'].includes(b.instrument)||
@@ -216,7 +222,13 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
     return reject('CALENDAR_TRADING_COVERAGE_INCOMPLETE_OR_UNBOUNDED');
   r.expectedTradingDays=window.size;
   const expiries=new Map<string,string>();
+  const originalMetadataIds=new Set<string>();
   for(const session of b.sessions){
+    if(session?.contracts?.sourceRecordId)
+      originalMetadataIds.add(session.contracts.sourceRecordId);
+    for(const chain of session?.chains??[]){
+      if(chain?.sourceRecordId)originalMetadataIds.add(chain.sourceRecordId);
+    }
     for(const contract of session?.contracts?.data??[]){
       if(typeof contract.instrument_key!=='string'||!date(contract.expiry)||
          (expiries.has(contract.instrument_key)&&
@@ -230,8 +242,15 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
   const uniqueAvailability=new Set<string>();
   const uniqueEvents=new Set<string>();
   const byDay=new Map<string,VendorExecutionL1[]>();
-  let clockErrors=0,dup=0,unknown=0;
+  let clockErrors=0,dup=0,unknown=0,invalidQuotes=0;
   for(const q of b.executionL1){
+    if(!q||typeof q.bid!=='number'||!Number.isFinite(q.bid)||
+       typeof q.ask!=='number'||!Number.isFinite(q.ask)||
+       q.bid<=0||q.ask<=q.bid||
+       !Number.isSafeInteger(q.bidQty)||!Number.isSafeInteger(q.askQty)||
+       q.bidQty<=0||q.askQty<=0){
+      invalidQuotes++;continue;
+    }
     const event=ms(q?.eventAt??''),available=ms(q?.availableAt??'');
     if(!q||!stamp(q.eventAt)||!stamp(q.availableAt)||
        event>available||available-event>
@@ -249,7 +268,8 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
     }
     const eventKey=q.instrumentKey+'|'+q.eventAt,
       availableKey=q.instrumentKey+'|'+q.availableAt;
-    if(!q.sourceRecordId||uniqueSourceIds.has(q.sourceRecordId)||
+    if(!q.sourceRecordId||originalMetadataIds.has(q.sourceRecordId)||
+       uniqueSourceIds.has(q.sourceRecordId)||
        uniqueEvents.has(eventKey)||uniqueAvailability.has(availableKey)){
       dup++;continue;
     }
@@ -260,12 +280,14 @@ export function auditAdaptiveOriginalL1CaptureContinuity(
   }
   r.originalSourceEvents=b.executionL1.length;
   r.eventReceiptClockViolations=clockErrors;
+  r.invalidOriginalBestBidAskOrQuantity=invalidQuotes;
   r.duplicateSourceIdsOrClocks=dup;
   r.unknownOrExpiredInstrumentEvents=unknown;
   const blocker=(code:string)=>{
     if(!r.blockers.includes(code))r.blockers.push(code);
   };
   if(clockErrors)blocker('SOURCE_EVENT_TO_ORIGINAL_RECEIPT_CLOCK_VIOLATIONS');
+  if(invalidQuotes)blocker('INVALID_OR_UNPRICED_ORIGINAL_OPTION_BID_ASK_OR_DEPTH');
   if(dup)blocker('DUPLICATE_ORIGINAL_VENDOR_L1_RECORD_OR_CLOCK');
   if(unknown)blocker('L1_QUOTE_OUTSIDE_ORIGINAL_EXCHANGE_OR_CONTRACT_SESSION');
   const dayCoverage:OriginalL1CaptureDay[]=[];
