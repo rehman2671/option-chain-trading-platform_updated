@@ -293,6 +293,14 @@ describe('Phase 18 effective-dated instrument-level index/option time split',()=
     b.schedule.versions[1].effectiveFrom='2026-11-04';
     assert.ok(b.report().errors.includes(
       'INVALID_DUPLICATE_OVERLAPPING_OR_RETROACTIVE_RULE_VERSION'));
+    const lateSameDay=setup();
+    // The fake new rule can appear valid by calendar DATE, but cannot
+    // retroactively legalize earlier session quotes if first published after
+    // that source session opened (18:00 special session in this fixture).
+    lateSameDay.schedule.versions[1].sourcePublishedAt=
+      '2026-11-05T18:30:00+05:30';
+    assert.ok(lateSameDay.report().errors.includes(
+      'RULE_PUBLISHED_AFTER_ORIGINAL_SESSION_OPEN'));
   });
   it('skipped special session, swapped exchange and expired catalog key are fail-closed',()=>{
     const a=setup();
