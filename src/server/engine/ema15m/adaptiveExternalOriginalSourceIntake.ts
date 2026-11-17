@@ -98,6 +98,11 @@ export interface OriginalSourceIntakeReport {
   status:'REJECTED'|'INCOMPLETE_EVIDENCE'|
     'SOURCE_DECLARATIONS_RECONCILED_EXTERNAL_AUTHENTICATION_REQUIRED';
   datasetId:string|null;
+  studyProtocolId:string|null;
+  originalBundleSha256:string|null;
+  originalVendorArchiveSha256:string|null;
+  calendarManifestSha256:string|null;
+  calendarDocumentSha256:string|null;
   instrument:string|null;
   exchange:string|null;
   sourceCategory:IntakeSourceCategory|null;
@@ -141,8 +146,14 @@ function blank(raw:VerifiedHistoricalBundleV1|null):OriginalSourceIntakeReport{
     profitabilityProven:false,
     status:'REJECTED',
     datasetId:raw?.provenance?.datasetId??null,
+    studyProtocolId:null,
+    originalBundleSha256:null,
+    originalVendorArchiveSha256:null,
+    calendarManifestSha256:null,
+    calendarDocumentSha256:null,
     instrument:raw?.instrument??null,
-    exchange:raw?.instrument==='SENSEX'?'BSE':'NSE',
+    exchange:raw?.instrument==='SENSEX'?'BSE':
+      ['NIFTY','BANKNIFTY'].includes(raw?.instrument??'')?'NSE':null,
     sourceCategory:null,strategyClockClass:null,suppliedIntakeSha256:null,
     errors:[],blockers:[],warnings,
     expectedTradingDays:0,declaredTradingDays:0,
@@ -200,6 +211,11 @@ export function auditAdaptiveExternalOriginalSourceIntake(
   const manifestSha=hex(originalCalendarManifestBytes!);
   const documentSha=hex(originalCalendarDocumentBytes!);
   const bundleSha=hex(originalBundleBytes!);
+  result.studyProtocolId=m.studyProtocolId;
+  result.originalBundleSha256=bundleSha;
+  result.originalVendorArchiveSha256=sourceSha;
+  result.calendarManifestSha256=manifestSha;
+  result.calendarDocumentSha256=documentSha;
   if(!safeId(m.studyProtocolId)||!safeId(m.datasetId)||
      !safeId(m.entitlementDocumentReferenceId)||
      !safeId(m.originalSourceDeliveryReferenceId)||
