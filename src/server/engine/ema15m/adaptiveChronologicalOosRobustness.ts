@@ -26,7 +26,8 @@ const ARMS:HistoricalArm[]=['EMA_BASELINE','REGIME_FILTER','REGIME_AND_RANK'];
 const HORIZONS:HorizonBucket[]=['1W','2W','4W','8W'];
 const FAMILYWISE_VIEWS=36; // 12 * (original + hysteresis + fold-total policy contrasts)
 const round=(n:number)=>Number(n.toFixed(4));
-const numeric=(n:unknown)=>typeof n==='number'&&Number.isFinite(n);
+const numeric=(n:unknown):n is number=>
+  typeof n==='number'&&Number.isFinite(n);
 const unsigned=(n:unknown,lo:number,hi:number)=>
   numeric(n)&&Number.isInteger(n)&&n>=lo&&n<=hi;
 const key=(f:number,a:HistoricalArm,h:HorizonBucket)=>f+'|'+a+'|'+h;
