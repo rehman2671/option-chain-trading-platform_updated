@@ -168,6 +168,15 @@ export function auditAdaptiveVersionedInstrumentSessions(
      !HASH.test(p.originalCalendarManifestSha256??'')||
      !HASH.test(p.originalCalendarDocumentSha256??''))
     return {...result,errors:['INVALID_OR_MISSING_ORIGINAL_INSTRUMENT_SESSION_EVIDENCE']};
+  // The manifest must be the exact parsed content of the operator-pinned
+  // original bytes, not an independently supplied edited in-memory object.
+  try{
+    const source=new TextDecoder('utf-8',{fatal:true}).decode(evidenceBytes);
+    if(JSON.stringify(JSON.parse(source))!==JSON.stringify(p))
+      return {...result,errors:['UNBOUND_IN_MEMORY_SEGMENT_MANIFEST']};
+  }catch{
+    return {...result,errors:['INVALID_OR_UNPARSEABLE_SEGMENT_MANIFEST_BYTES']};
+  }
   const manifestHash=sha(originalCalendarManifestBytes);
   const evidenceHash=sha(evidenceBytes);
   result.evidenceSha256=evidenceHash;
