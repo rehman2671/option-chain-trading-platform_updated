@@ -44,6 +44,7 @@ const warnings=[
 ];
 export type IntakeSourceCategory=
   'CONTEMPORANEOUS_NATIVE_LEVEL1_CAPTURE'|
+  'LICENSED_HISTORICAL_NATIVE_LEVEL1_ARCHIVE'|
   'HISTORICAL_ORDER_TRADE_EVENTS'|
   'HISTORICAL_TRADE_ONLY'|'END_OF_DAY_BHAVCOPY'|'SYNTHETIC';
 export type OriginalOptionQuoteMethod=
@@ -199,10 +200,15 @@ export function auditAdaptiveExternalOriginalSourceIntake(
      !Array.isArray(m.tradingDays))
     return {...result,errors:['MISSING_OR_MALFORMED_ORIGINAL_INTAKE_SOURCE_FILES']};
   try{
-    const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).
-      decode(originalIntakeManifestBytes));
+    const decoder=new TextDecoder('utf-8',{fatal:true});
+    const decoded=JSON.parse(decoder.decode(originalIntakeManifestBytes));
     if(JSON.stringify(decoded)!==JSON.stringify(m))
       return {...result,errors:['INTAKE_MANIFEST_BYTES_DIFFER_FROM_EVALUATED_RECORDS']};
+    const bundle=JSON.parse(decoder.decode(originalBundleBytes));
+    const calendar=JSON.parse(decoder.decode(originalCalendarManifestBytes));
+    if(JSON.stringify(bundle)!==JSON.stringify(b)||
+       JSON.stringify(calendar)!==JSON.stringify(c))
+      return {...result,errors:['SOURCE_BYTES_DIFFER_FROM_SUPPLIED_EVALUATION_OBJECTS']};
   }catch{
     return {...result,errors:['UNREADABLE_ORIGINAL_INTAKE_MANIFEST_BYTES']};
   }
@@ -226,6 +232,7 @@ export function auditAdaptiveExternalOriginalSourceIntake(
      m.coverageStart>m.coverageEnd||
      !Object.values([
        'CONTEMPORANEOUS_NATIVE_LEVEL1_CAPTURE',
+       'LICENSED_HISTORICAL_NATIVE_LEVEL1_ARCHIVE',
        'HISTORICAL_ORDER_TRADE_EVENTS','HISTORICAL_TRADE_ONLY',
        'END_OF_DAY_BHAVCOPY','SYNTHETIC'
      ]).includes(m.sourceProductCategory)||
@@ -362,6 +369,9 @@ export function auditAdaptiveExternalOriginalSourceIntake(
     add(blockers,'HISTORICAL_ORDER_EVENTS_NEED_FULL_BOOK_RECONSTRUCTION_AND_INDEPENDENT_CLOCK_AUDIT');
   if(m.strategyAvailableAtMethod!=='CAPTURED_AT_ORIGINAL_STRATEGY_RECEIPT')
     add(blockers,'REPLAY_OR_DOWNLOAD_TIME_DOES_NOT_PROVE_ORIGINAL_STRATEGY_AVAILABILITY');
+  if(!Number.isFinite(b.maximumOriginalFeedLatencySeconds)||
+     b.maximumOriginalFeedLatencySeconds<0)
+    add(blockers,'INVALID_OR_UNBOUNDED_ORIGINAL_FEED_CLOCK_LATENCY');
   if(!b.executionL1.length||!b.sessions.length)
     add(blockers,'NO_ORIGINAL_SOURCE_QUOTES_OR_DECISION_RECORDS');
   // Even the highest structural result explicitly requires actual external
