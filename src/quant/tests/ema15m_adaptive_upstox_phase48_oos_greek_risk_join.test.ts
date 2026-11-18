@@ -287,7 +287,7 @@ describe('Phase48 real entry-first OOS replay and original L1 Greek-risk join',(
     const q=f.input.historical.executionQuotes.find(x=>
       x.instrumentKey===p.instrumentKey&&
       x.observedAt===p.preCloseQuote.observedAt)!;
-    q.bid+=1;
+    q.bid-=1; // Keep ASK > BID; isolate Phase48 source-exact join gate.
     f.resign();
     denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
   });
