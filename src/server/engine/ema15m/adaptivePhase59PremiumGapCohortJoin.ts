@@ -420,7 +420,7 @@ export function auditPhase59MatchedPremiumReversalGap(
     }
     const result=auditPhase46SingleOriginalGapPath(
       proposed.path,input.phase46GapPolicy);
-    if(!result.ok){
+    if(result.ok===false){
       censored++;cell.incompleteOrCensoredFirstNextOpenGapPaths++;
       cell.hypotheticalFullDebitZeroRecoveryRiskForOvernightEntriesINR=null;
       blockers.add(result.code);
