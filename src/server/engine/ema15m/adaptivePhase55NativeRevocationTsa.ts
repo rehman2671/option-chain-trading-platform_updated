@@ -245,6 +245,7 @@ export function auditPhase55NativeTwoSourceRevocationTsa(
     return fail('PHASE54_ORIGINAL_NATIVE_CMS_OR_OOS_REAUDIT_INCOMPLETE',
       'INCOMPLETE_EVIDENCE',part);
   let cms=0,crl=0,ocsp=0;
+  try{
   for(const role of ROLES){
     const original=input.phase54.pdfDocuments.find(x=>x.role===role)!;
     const evidence=input.revocation.find(x=>x.role===role)!;
@@ -297,6 +298,13 @@ export function auditPhase55NativeTwoSourceRevocationTsa(
           nativeSignedCrlChainsRevalidated:crl,
           nativeOfflineOcspAndRfc3161Revalidated:ocsp});
     ocsp++;
+  }
+  }catch{
+    return fail('NATIVE_CMS_CRL_OCSP_RFC3161_RECHECK_EXCEPTION',
+      'INCOMPLETE_EVIDENCE',{...part,
+        originalPdfCmsDocumentsRevalidated:cms,
+        nativeSignedCrlChainsRevalidated:crl,
+        nativeOfflineOcspAndRfc3161Revalidated:ocsp});
   }
   return {...empty(),...part,
     originalPdfCmsDocumentsRevalidated:cms,
