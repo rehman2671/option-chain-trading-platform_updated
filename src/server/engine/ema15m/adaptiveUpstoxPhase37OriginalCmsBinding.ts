@@ -252,7 +252,7 @@ function privateTempWrite(file:string,data:Uint8Array){
 function signerPem(raw:Uint8Array):Buffer|null{
   if(raw.length<300||raw.length>MAX_OUT)return null;
   const text=Buffer.from(raw).toString('ascii');
-  if(!/^-----BEGIN CERTIFICATE-----\r?\n(?:[A-Za-z0-9+/]{1,76}\r?\n)+-----END CERTIFICATE-----\r?\n?$/.test(text))
+  if(!/^-----BEGIN CERTIFICATE-----\r?\n(?:[A-Za-z0-9+/=]{1,76}\r?\n)+-----END CERTIFICATE-----\r?\n?$/.test(text))
     return null;
   try{
     const x=new X509Certificate(text);
