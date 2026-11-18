@@ -1,4 +1,4 @@
-name: Adaptive Phase50-57 focused offline research checks
+name: Adaptive Phase50-58 focused offline research checks
 on:
   push:
     branches:
@@ -8,6 +8,7 @@ on:
       - 'research/adaptive-v2-phase55-two-source-native-revocation-tsa'
       - 'research/adaptive-v2-phase56-two-source-native-crypto-e2e'
       - 'research/adaptive-v2-phase57-regime-horizon-debit-risk'
+      - 'research/adaptive-v2-phase58-matched-exit-debit-coverage'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -16,6 +17,7 @@ on:
       - 'research/adaptive-v2-phase54-two-document-native-cms-join'
       - 'research/adaptive-v2-phase55-two-source-native-revocation-tsa'
       - 'research/adaptive-v2-phase56-two-source-native-crypto-e2e'
+      - 'research/adaptive-v2-phase57-regime-horizon-debit-risk'
   workflow_dispatch:
 
 permissions:
@@ -36,7 +38,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-57 focused synthetic offline invariants
+      - name: Phase50-58 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -46,4 +48,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase54_two_original_pdf_native_cms.test.ts \
             src/quant/tests/ema15m_adaptive_phase55_two_source_revocation_tsa.test.ts \
             src/quant/tests/ema15m_adaptive_phase56_native_crl_ocsp_tsa_e2e.test.ts \
-            src/quant/tests/ema15m_adaptive_phase57_regime_horizon_debit_risk.test.ts
+            src/quant/tests/ema15m_adaptive_phase57_regime_horizon_debit_risk.test.ts \
+            src/quant/tests/ema15m_adaptive_phase58_exit_asof_risk_join.test.ts
