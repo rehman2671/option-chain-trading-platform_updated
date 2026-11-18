@@ -14,7 +14,7 @@ import {
   type Phase46OriginalL1Snapshot
 } from '../../server/engine/ema15m/adaptiveUpstoxPhase46LongOptionGapRisk.js';
 import {
-  hashPhase47GreekEvidence,
+  auditPhase47FrozenGreekGapResidual,hashPhase47GreekEvidence,
   type Phase47GreekRiskInput,type Phase47GreekRiskPolicy,
   type Phase47IndependentPins,
   type Phase47GreekGapPath
@@ -212,6 +212,11 @@ function fixture(){
     });
   };
   resign();
+  const preflight=auditPhase47FrozenGreekGapResidual(
+    phase47,phase47Pins,phase47Policy);
+  assert.ok(['DESCRIPTIVE_GREEK_RESIDUAL_ONLY',
+    'DESCRIPTIVE_GREEK_RISK_ALERT_ONLY'].includes(preflight.status),
+    JSON.stringify({status:preflight.status,reasons:preflight.reasonCodes}));
   return {input,pins,resign,cohort,entries,original};
 }
 type F=ReturnType<typeof fixture>;
@@ -309,7 +314,7 @@ describe('Phase48 real entry-first OOS replay and original L1 Greek-risk join',(
   it('mismatched exact original expiry date cannot count as a legitimate OOS contract',()=>{
     const f=fixture();
     const p=f.input.phase47.phase46Input.paths[0];
-    p.expiryAt=new Date(Date.parse(p.expiryAt)+86400000).toISOString();
+    p.expiryAt=new Date(Date.parse(p.expiryAt)-86400000).toISOString();
     f.resign();
     denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
   });
@@ -330,10 +335,11 @@ describe('Phase48 real entry-first OOS replay and original L1 Greek-risk join',(
   it('selected entry with missing execution L1 stays in denominator, never zero profit',()=>{
     const f=fixture();
     const chosen=f.entries[0];
+    const decisionAt=Date.parse(chosen.decisionAt);
     f.input.historical.executionQuotes=
       f.input.historical.executionQuotes.filter(q=>
         q.instrumentKey!==chosen.instrumentKey||
-        q.observedAt!==chosen.entryAt);
+        Date.parse(q.observedAt)>decisionAt+10*60000);
     f.resign();
     denied(f,'ORIGINAL_SELECTED_ENTRY_L1_UNPRICED_IN_DENOMINATOR');
     const r=audit(f);
@@ -381,7 +387,7 @@ describe('Phase48 real entry-first OOS replay and original L1 Greek-risk join',(
   });
   it('missing original selected instruments cannot be papered over by different horizon',()=>{
     const f=fixture();
-    f.pins.expectedRiskInstrumentKeys['2W']='OTHER';
+    f.pins.expectedRiskInstrumentKeys['2W']='NSE_FO|OTHER_2W';
     denied(f,'RISK_CONTRACT_KEYS_NOT_PREDECLARED_IN_JOIN_PIN',
       'INVALID_EVIDENCE');
   });
