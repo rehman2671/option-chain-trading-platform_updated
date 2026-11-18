@@ -230,7 +230,7 @@ describe('Phase51 independent session ledger/OOS missing-day audit',()=>{
   it('malformed declared option contract catalog stays incomplete evidence, not no-trade proof',()=>{
     const f=fixture();
     f.historical.decisions.at(-1)!.listedContracts=
-      null as unknown as typeof f.historical.decisions[number]['listedContracts'];
+      null as never;
     f.repin();
     rejected(f,'OOS_ORIGINAL_CONTRACT_OR_CHAIN_UNIVERSE_MISSING');
   });
