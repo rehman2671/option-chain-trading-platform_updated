@@ -298,6 +298,8 @@ export function auditPhase39OfflineOcspAndTsa(
     sha(tsr)!==pins.expectedTimestampResponseDerSha256||
     sha(openssl)!==pins.expectedOpenSslBinarySha256||
     sha(leaf)!==pins.expectedCmsSignerDerSha256||
+    !caCert.ca||tsaCert.ca||!tsaCert.checkIssued(caCert)||
+    !tsaCert.verify(caCert.publicKey)||
     sha(Buffer.from(detached.issuerCertificateDerBase64,'base64'))!==
       pins.expectedCaDerSha256)
     return reject('INVALID_EVIDENCE','PHASE39_PDF_CA_CMS_SIGNER_OCSP_TSA_PIN_MISMATCH');
@@ -332,7 +334,13 @@ export function auditPhase39OfflineOcspAndTsa(
     if(!isSuccess(ocspOut))
       return reject('OCSP_SIGNATURE_OR_STATUS_REJECTED',
         'OPENSSL_OCSP_SIGNATURE_CHAIN_OR_RESPONSE_FAILURE',basic);
-    const parsed=parsePhase39OcspResult(
+    // OpenSSL prints verified response signature on STDERR, while
+    // certificate GOOD/REVOKED status and signed times appear on STDOUT.
+    if(Buffer.from(ocspOut.stderr).toString('utf8').trim()!==
+      'Response verify OK')
+      return reject('OCSP_SIGNATURE_OR_STATUS_REJECTED',
+        'OPENSSL_OCSP_SIGNATURE_VALIDITY_NOT_CONFIRMED',basic);
+    const parsed=parsePhase39OcspResult('Response verify OK\n'+
       Buffer.from(ocspOut.stdout).toString('utf8'));
     if(!parsed.ok||!parsed.thisUpdate||!parsed.nextUpdate)
       return reject('OCSP_SIGNATURE_OR_STATUS_REJECTED',
@@ -362,6 +370,34 @@ export function auditPhase39OfflineOcspAndTsa(
       return reject('RFC3161_TIMESTAMP_REJECTED',
         'OPENSSL_TIMESTAMP_SIGNATURE_CHAIN_OR_PDF_IMPRINT_REJECTED',
         withOcsp);
+    // Independently bind the ACTUAL CMS signer inside this timestamp
+    // response to the externally pinned TSA DER (not merely an untrusted
+    // -untrusted certificate that OpenSSL might ignore).
+    const tokenPath=join(dir,'actual-ts-token.der'),
+      verifiedTsaPath=join(dir,'actual-ts-signer.pem');
+    const extract=runner(request.opensslBinary,[
+      'ts','-reply','-in',tsrPath,'-token_out','-out',tokenPath
+    ],request.timeoutMs);
+    if(!isSuccess(extract))
+      return reject('RFC3161_TIMESTAMP_REJECTED',
+        'RFC3161_SIGNED_TOKEN_EXTRACTION_REJECTED',withOcsp);
+    exclusive(verifiedTsaPath,new Uint8Array());
+    const cms=runner(request.opensslBinary,[
+      'cms','-verify','-inform','DER','-in',tokenPath,
+      '-noverify','-signer',verifiedTsaPath,'-out','/dev/null'
+    ],request.timeoutMs);
+    if(!isSuccess(cms))
+      return reject('RFC3161_TIMESTAMP_REJECTED',
+        'RFC3161_TOKEN_CMS_SIGNER_VERIFICATION_FAILED',withOcsp);
+    const ss=lstatSync(verifiedTsaPath);
+    if(!ss.isFile()||ss.isSymbolicLink()||(ss.mode&0o077)!==0||
+      ss.size<300||ss.size>MAX_CERT)
+      return reject('RFC3161_TIMESTAMP_REJECTED',
+        'INVALID_RFC3161_SIGNER_CERTIFICATE_FILE',withOcsp);
+    const actual=singlePemCert(readFileSync(verifiedTsaPath));
+    if(!actual||sha(actual.raw)!==pins.expectedTsaSignerDerSha256)
+      return reject('RFC3161_TIMESTAMP_REJECTED',
+        'RFC3161_ACTUAL_TOKEN_SIGNER_DER_DIFFERS_FROM_PIN',withOcsp);
     if(!native)
       return reject('RFC3161_TIMESTAMP_REJECTED',
         'MOCKED_OCSP_TSA_OUTPUT_NOT_NATIVE_CRYPTO_EVIDENCE',withOcsp);
