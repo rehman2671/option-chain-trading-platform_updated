@@ -134,7 +134,7 @@ describe('Phase36 actual text-layer annexure match parser',()=>{
   it('missing, duplicate, split or tampered trade rows fail closed',()=>{
     const cases=[
       {input:[first,line(trade),last].join('\n'),
-        reason:'MISSING_OR_SPLIT_TRADE_ANNEXURE_TEXT_ROW'},
+        reason:'MISSING_OR_EXCESSIVE_ANNEXURE_TEXT_LINES'},
       {input:[first,line(trade),line(trade),line(trade2),last].join('\n'),
         reason:'DUPLICATE_OR_AMBIGUOUS_TRADE_ANNEXURE_TEXT_ROW'},
       {input:[first,line(trade).replace('250.0000','260.0000'),
@@ -240,7 +240,7 @@ describe('Phase36 real offline Poppler pdftotext and signed-PDF prerequisite',()
       const a=report(f);safety(a);
       assert.equal(a.status,'PDF_TEXT_EXTRACTION_REJECTED');
       assert.deepEqual(a.reasons,
-        ['MISSING_OR_SPLIT_TRADE_ANNEXURE_TEXT_ROW']);
+        ['MISSING_OR_EXCESSIVE_ANNEXURE_TEXT_LINES']);
     }finally{f.cleanup();}
   });
 });
