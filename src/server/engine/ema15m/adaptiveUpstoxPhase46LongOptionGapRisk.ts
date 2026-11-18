@@ -58,6 +58,10 @@ export interface Phase46GapHorizonPolicy {
   maximumPermittedFullDebitLossINR:number;
   maximumPermittedAdverseBidGapPercent:number;
   minimumPostOpenDisplayedBidLots:number;
+  /** Operator-predeclared all-in entry fees, not verified actual charges. */
+  hypotheticalEntryFeesINR:number;
+  /** Operator-predeclared fees IF a hypothetical exit fill happened. */
+  hypotheticalExitFeesINR:number;
 }
 export interface Phase46GapStressPolicy {
   schemaVersion:'ADAPTIVE_V2_PHASE46_LONG_INDEX_OPTION_GAP_STRESS_V1';
@@ -90,7 +94,9 @@ export interface Phase46GapCell {
   nextOpenSpreadBps:number|null;
   longQuantity:number;
   entryPremiumDebitINR:number;
-  /** No fill, and the option expires for zero. Ignores opportunity cost. */
+  assumedEntryFeesINR:number;
+  assumedExitFeesINR:number;
+  /** No fill and zero eventual recovery, including entry costs. */
   fullDebitLossWithNoRecoveryINR:number;
   /** Unrealistically perfect trigger fill for contrast ONLY. */
   idealStopTriggerLossINR:number;
@@ -139,6 +145,7 @@ const warnings=[
   'CASH_SETTLEMENT_AND_EXPIRY_NOT_INDEPENDENTLY_AUTHENTICATED',
   'OPTION_BID_PREMIUM_NOT_NIFTY_OR_BANKNIFTY_UNDERLYING_POINTS',
   'DEBIT_LOSS_IS_A_DOWNSIDE_STRESS_NOT_A_PREDICTED_PROBABILITY',
+  'COSTS_ARE_OPERATOR_PREDECLARED_ASSUMPTIONS_NOT_ACTUAL_BROKER_FEES',
   'STOP_TRIGGER_PRICE_IS_NOT_EXCHANGE_ACK_OR_EXECUTABLE_FILL_PRICE',
   'GTT_TRIGGER_MAY_GENERATE_AN_ORDER_LATE_OR_GET_REJECTED',
   'DISPLAYED_TOP_OF_BOOK_DEPTH_AND_BID_DO_NOT_GUARANTEE_ANY_EXECUTION',
@@ -183,7 +190,9 @@ function validPolicy(p:Phase46GapStressPolicy):boolean{
     return !!rule&&int(rule.postOpenBidHaircutBps,0,9000)&&
       number(rule.maximumPermittedFullDebitLossINR,0,1e9)&&
       number(rule.maximumPermittedAdverseBidGapPercent,0,100)&&
-      int(rule.minimumPostOpenDisplayedBidLots,1,100);
+      int(rule.minimumPostOpenDisplayedBidLots,1,100)&&
+      number(rule.hypotheticalEntryFeesINR,0,100000)&&
+      number(rule.hypotheticalExitFeesINR,0,100000);
   });
 }
 function validQuote(q:Phase46OriginalL1Snapshot,
@@ -261,11 +270,13 @@ function one(
   const hypotheticalBid=bidPost>0&&displayedExitQty>0?
     round(bidPost*(1-rule.postOpenBidHaircutBps/10000)):null;
   const proceeds=hypotheticalBid!==null?
-    round(hypotheticalBid*displayedExitQty):null;
+    round(hypotheticalBid*displayedExitQty-
+      rule.hypotheticalExitFeesINR):null;
   const debit=round(input.entryQuote.ask*quantity);
-  const fullLoss=debit;
+  const fullLoss=round(debit+rule.hypotheticalEntryFeesINR);
   const idealStop=round((input.entryQuote.ask-
-    input.declaredStopTriggerPremium)*quantity);
+    input.declaredStopTriggerPremium)*quantity+
+    rule.hypotheticalEntryFeesINR+rule.hypotheticalExitFeesINR);
   const cell:Phase46GapCell={
     horizon:input.horizon,originalEntryAskPremium:input.entryQuote.ask,
     originalPreCloseBidPremium:bidPre,
@@ -273,6 +284,8 @@ function one(
     declaredStopTriggerPremium:input.declaredStopTriggerPremium,
     bidGapPercent:gap,nextOpenSpreadBps:spread,
     longQuantity:quantity,entryPremiumDebitINR:debit,
+    assumedEntryFeesINR:rule.hypotheticalEntryFeesINR,
+    assumedExitFeesINR:rule.hypotheticalExitFeesINR,
     fullDebitLossWithNoRecoveryINR:fullLoss,
     idealStopTriggerLossINR:idealStop,
     extraLossVersusIdealStopINR:round(fullLoss-idealStop),
