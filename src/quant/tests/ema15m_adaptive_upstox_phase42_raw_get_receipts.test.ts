@@ -2,7 +2,7 @@ import {before,after,describe,it} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync,sign,X509Certificate} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {chmodSync,mkdtempSync,readFileSync,rmSync,writeFileSync}
+import {chmodSync,mkdtempSync,readFileSync,rmSync}
   from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -42,7 +42,7 @@ function makeCertificate(san:string,file:string):Buffer{
     pem=join(dir,'cert-'+file+'.pem');
   execFileSync('/usr/bin/openssl',[
     'req','-new','-x509','-newkey','rsa:2048','-nodes',
-    '-keyout',key,'-out',pem,'-days','1','-sha256',
+    '-keyout',key,'-out',pem,'-days','365','-sha256',
     '-subj','/CN=Untrusted Synthetic Phase42 TLS Peer',
     '-addext','subjectAltName=DNS:'+san
   ],{stdio:['ignore','pipe','pipe'],timeout:12000});
@@ -75,8 +75,6 @@ function capture(when:string):Phase40GttCapture{
     }]}
   };
 }
-const der=(key:ReturnType<typeof generateKeyPairSync>['publicKey'])=>
-  key.export({type:'spki',format:'der'}) as Buffer;
 // Use generically typed key objects rather than fake "broker signed" keys.
 function fixture(){
   const captureKey=generateKeyPairSync('ed25519'),
