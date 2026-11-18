@@ -299,6 +299,9 @@ export function auditPhase47FrozenGreekGapResidual(
     archive.source!=='OFFLINE_OPERATOR_GREEK_ARCHIVE_UNVERIFIED'||
     pins.schemaVersion!=='INDEPENDENT_PHASE47_GREEK_AND_PHASE46_PINS_V1'||
     !validPolicy(policy)||
+    !archive.phase46Input||!archive.phase46Pins||
+    !archive.phase46Policy||
+    !Array.isArray(archive.phase46Input.paths)||
     !SHA.test(pins.expectedPhase46InputSha256)||
     !SHA.test(pins.expectedPhase46PinsSha256)||
     !SHA.test(pins.expectedPhase46PolicySha256)||
