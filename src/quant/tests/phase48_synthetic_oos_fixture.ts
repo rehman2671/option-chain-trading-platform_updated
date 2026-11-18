@@ -11,7 +11,8 @@ import type {ClosedIndexCandle}
 const DAY=86_400_000,MIN=60_000;
 const iso=(n:number)=>new Date(n).toISOString();
 const underlying='NSE_INDEX|Nifty 50';
-const offsets=[8,15,28,56];
+// 1W must be inside Phase46's <=8 calendar-day declared expiry window.
+const offsets=[7,15,28,56];
 const horizon=['1W','2W','4W','8W'] as const;
 const stopPolicy=():AdaptiveExitReplayPolicy=>({
   schemaVersion:'ADAPTIVE_OPTION_EXIT_REPLAY_V1',
