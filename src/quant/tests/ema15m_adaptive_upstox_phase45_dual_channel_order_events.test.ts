@@ -179,7 +179,7 @@ describe('Phase45 two Upstox-origin CLAIMED update channels vs Phase44',()=>{
     const second=f.input.channels[1].orderMessages[3];
     const data=JSON.parse(Buffer.from(second.rawUtf8Base64,'base64')
       .toString('utf8')) as {status:string};
-    data.status='cancelled';
+    data.status='rejected';
     second.rawUtf8Base64=Buffer.from(JSON.stringify(data))
       .toString('base64');
     f.resign();
