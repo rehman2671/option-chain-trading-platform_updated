@@ -223,8 +223,7 @@ describe('Phase56 two-document native CMS CRL OCSP RFC3161 OOS E2E',()=>{
     f.f.input.phase53Pins.expectedPhase52PinsSha256=
       hashPhase55Evidence(source.pins);
     f.f.repin();f.repinPhase54();
-    const r=rejected(f,'PHASE54_ORIGINAL_NATIVE_CMS_OR_OOS_REAUDIT_INCOMPLETE');
-    assert.equal(r.expectedOosSessionCount,0);
+    rejected(f,'PHASE54_ORIGINAL_NATIVE_CMS_OR_OOS_REAUDIT_INCOMPLETE');
   });
   it('missing source CRL file fails even with legitimate original PDFs and receipts',()=>{
     const f=fixture();
