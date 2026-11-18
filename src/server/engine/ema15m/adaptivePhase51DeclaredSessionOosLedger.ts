@@ -224,6 +224,9 @@ export function auditPhase51DeclaredOosSessionCoverage(
     !Array.isArray(input.phase50.historical.policy?.folds))
     return invalid('ORIGINAL_CALENDAR_OR_MARKET_DATA_SCHEMA_INVALID');
   const h=input.phase50.historical,ledger=input.calendar.sessions;
+  if(h.decisions.some(d=>!d||typeof d.sessionDate!=='string')||
+    h.executionQuotes.some(q=>!q||typeof q.instrumentKey!=='string'))
+    return invalid('ORIGINAL_MARKET_SOURCE_RECORDS_MALFORMED');
   if(ledger.length!==pins.expectedDeclaredSessionCount)
     return invalid('DECLARED_SESSION_COUNT_CHANGED_FROM_PRESPECIFICATION');
   let oos:ReturnType<typeof manifest>;
@@ -256,7 +259,9 @@ export function auditPhase51DeclaredOosSessionCoverage(
       if(flags.chainBad)chain++;
       if(flags.universeMissing)universe++;
       const contractKeys=new Set(
-        (d.listedContracts??[]).map(x=>x.instrument_key));
+        (Array.isArray(d.listedContracts)?d.listedContracts:[])
+          .filter(x=>x&&typeof x.instrument_key==='string')
+          .map(x=>x.instrument_key));
       const sourceAvailable=h.executionQuotes.some(q=>
         contractKeys.has(q.instrumentKey)&&
         between(MS(q.observedAt),MS(d.decisionAt),MS(s.closeAt))&&
