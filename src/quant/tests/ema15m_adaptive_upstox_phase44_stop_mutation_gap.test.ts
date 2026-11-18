@@ -281,6 +281,14 @@ describe('Phase44 broker-reported stop order modification/cancel-replace',()=>{
     assert.equal(r.openReportedQuantity,55);
     assert.equal(r.continuousIntradayStopCoverageVerified,false);
   });
+  it('a synthetic 11-unit partial fill cannot violate original 5-unit lot size',()=>{
+    const f=fixture('partial_replace');
+    const rows=f.archive.orderSnapshots[0].history.response.data;
+    rows[2].filled_quantity=11;
+    rows[3].filled_quantity=11;
+    f.resign();
+    denied(f,'ORDER_FIELD_TIMESTAMP_QUANTITY_OR_EXCHANGE_REFERENCE_MISMATCH');
+  });
   it('complete after modification means filled historical exit, not standing stop',()=>{
     const r=audit(fixture('complete'));safety(r);
     assert.equal(r.status,'BROKER_REPORTED_EXIT_COMPLETE_UNVERIFIED',
