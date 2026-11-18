@@ -1,0 +1,34 @@
+name: Adaptive Phase50-52 focused offline research checks
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase52-detached-source-calendar-receipts'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-research-invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static type gate
+        run: npm run lint
+      - name: Phase50-52 focused synthetic offline invariants
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
+            src/quant/tests/ema15m_adaptive_phase51_declared_session_oos_ledger.test.ts \
+            src/quant/tests/ema15m_adaptive_phase52_detached_source_receipts.test.ts
