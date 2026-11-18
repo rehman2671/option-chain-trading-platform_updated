@@ -259,7 +259,7 @@ const bad=(code:string):Validation=>({ok:false,code});
 function auditOneHistory(
   snapshot:Phase44OrderSnapshot,
   instrument:string,accountDate:string,
-  expectedSymbol:string,minCapture:number,
+  expectedSymbol:string,minCapture:number,lotSize:number,
   minimumNewEventTime:number|null=null,originalPrefixLength=0
 ):Validation{
   const h=snapshot.history,records=h?.response?.data;
@@ -297,6 +297,7 @@ function auditOneHistory(
       !Number.isSafeInteger(row.filled_quantity)||
       row.filled_quantity<previousFilled||
       row.filled_quantity>snapshot.expectedQuantity||
+      row.filled_quantity%lotSize!==0||
       !/^[1-9]\d{0,7}$/.test(row.order_request_id)||
       requestId<lastRequest||
       !Number.isFinite(at)||istDay(at)!==accountDate||
@@ -476,6 +477,9 @@ export function auditPhase44StopMutationLedger(
       'INVALID_EVIDENCE');
 
   const symbol=prev.childHistory.expected.tradingSymbol;
+  const lotSize=prev.childHistory.expected.lotSize;
+  if(!validQty(lotSize)||pins.expectedLongQuantity%lotSize!==0)
+    return deny('INVALID_INITIAL_POSITION_LOT_SCOPE','INVALID_EVIDENCE');
   let totalFilled=0,replacements=0,changes=0,changeAcks=0,
     cancelRequests=0,cancelAcks=0,gaps=0,lastCapture=instant(
       prev.externalReviewer.claimedAt),
@@ -484,12 +488,13 @@ export function auditPhase44StopMutationLedger(
   let lastOpenQuantity=0;
   for(let i=0;i<snap.length;i++){
     const order=snap[i];
-    if(order.expectedQuantity!==expectedQty)
+    if(order.expectedQuantity!==expectedQty||
+      order.expectedQuantity%lotSize!==0)
       return deny('REPLACEMENT_ORDER_QUANTITY_NOT_EQUAL_UNFILLED_POSITION',
         'BLOCKED_OR_UNKNOWN',{reviewedOrderCount:i,
           remainingPositionQuantity:expectedQty});
     const parsed=auditOneHistory(order,pins.expectedInstrumentKey,
-      pins.expectedSessionDate,symbol,lastCapture,
+      pins.expectedSessionDate,symbol,lastCapture,lotSize,
       i===0?instant(prev.externalReviewer.claimedAt):null,
       i===0?originalRecords.length:0);
     if(parsed.ok===false)
