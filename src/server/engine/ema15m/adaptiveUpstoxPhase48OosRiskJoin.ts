@@ -111,6 +111,8 @@ const WARN=[
   'NO_FAKE_FUTURE_QUOTE_OR_RESELECTION_OF_A_FAVORABLE_OPTION_IS_ALLOWED',
   'MISSING_OR_UNPRICED_ENTRIES_REMAIN_UNPRICED_NOT_ZERO_OR_WINS',
   'SOURCE_AVAILABLE_AT_ON_HISTORICAL_EXECUTION_QUOTES_NOT_AUTHENTICATED',
+  'PHASE49_REQUIRES_SOURCE_EXACT_AVAILABLE_AT_FOR_ALL_SELECTED_OPTION_QUOTES',
+  'PHASE49_REJECTS_PRE_CLOSE_AND_FIRST_NEXT_SESSION_QUOTE_CHERRY_PICKING',
   'SELF_SUPPLIED_SHA256_PINS_DO_NOT_AUTHENTICATE_DATA_VENDOR_LICENSE',
   'EXPIRY_CASH_SETTLEMENT_AND_MARKET_CALENDAR_NOT_EXCHANGE_AUTHENTICATED',
   'ORIGINAL_GREEKS_IV_AND_THEIR_MODEL_CONVENTIONS_ARE_OPERATOR_ASSERTIONS',
@@ -164,7 +166,8 @@ function entryLinkIsExact(
   a:CohortDecision,
   source:Phase47GreekRiskInput,
   horizon:HorizonBucket,
-  quotes:Map<string,HistoricalExecutableQuote>
+  quotes:Map<string,HistoricalExecutableQuote>,
+  history:Map<string,HistoricalExecutableQuote[]>
 ):boolean{
   const risk=source.phase46Input.paths.find(p=>p.horizon===horizon);
   if(!risk||!a.entryAt||!a.expiry||!a.instrumentKey||
@@ -192,7 +195,11 @@ function entryLinkIsExact(
   const original=quotes.get(a.instrumentKey+'|'+a.entryAt);
   if(!original||original.ask!==a.entryAsk||original.bid!==a.entryBid||
     original.askQty!==risk.entryQuote.displayedAskQuantity||
-    original.bidQty!==risk.entryQuote.displayedBidQuantity)
+    original.bidQty!==risk.entryQuote.displayedBidQuantity||
+    original.availableAt!==risk.entryQuote.availableAt||
+    !Number.isFinite(MS(original.availableAt))||
+    MS(original.availableAt)<MS(original.observedAt)||
+    MS(original.availableAt)>MS(risk.entryDecisionAt))
     return false;
   // The exact original preclose/nextopen optional best bid/ask snapshots
   // must also exist in the same source universe, not a separate synthetic
@@ -201,9 +208,42 @@ function entryLinkIsExact(
     const q=quotes.get(a.instrumentKey+'|'+tick.observedAt);
     if(!q||q.bid!==tick.bid||q.ask!==tick.ask||
       q.bidQty!==tick.displayedBidQuantity||
-      q.askQty!==tick.displayedAskQuantity)
+      q.askQty!==tick.displayedAskQuantity||
+      q.availableAt!==tick.availableAt||
+      !Number.isFinite(MS(q.availableAt))||
+      MS(q.availableAt)<MS(q.observedAt))
       return false;
   }
+  // No look-ahead via a separately asserted availability time or a
+  // hand-picked, favorable preclose/next-open observation. The original
+  // contract timeline (not a replacement Greek path) determines both.
+  const series=history.get(a.instrumentKey)??[];
+  const entryTime=MS(a.entryAt);
+  const preCloseCutoff=MS(risk.preCloseAt);
+  const nextOpenTime=MS(risk.nextOpenQuote.observedAt);
+  if(![entryTime,preCloseCutoff,nextOpenTime].every(Number.isFinite))
+    return false;
+  let lastPreClose:HistoricalExecutableQuote|undefined;
+  let firstNextSession:HistoricalExecutableQuote|undefined;
+  for(const q of series){
+    const at=MS(q.observedAt),available=MS(q.availableAt);
+    if(!Number.isFinite(at))return false;
+    // Any quote in the selected contract's relevant observation window
+    // with unknown/retroactive availability makes chronology unprovable.
+    if(at>=entryTime&&at<=nextOpenTime&&
+      (!Number.isFinite(available)||available<at))return false;
+    const day=istDate(at);
+    if(day===a.sessionDate&&at>=entryTime&&at<=preCloseCutoff&&
+      Number.isFinite(available)&&available<=preCloseCutoff&&
+      (!lastPreClose||at>MS(lastPreClose.observedAt)))
+      lastPreClose=q;
+    if(day!==null&&day>a.sessionDate&&
+      (!firstNextSession||at<MS(firstNextSession.observedAt)))
+      firstNextSession=q;
+  }
+  if(lastPreClose?.observedAt!==risk.preCloseQuote.observedAt||
+    firstNextSession?.observedAt!==risk.nextOpenQuote.observedAt)
+    return false;
   return true;
 }
 /** No actual OOS performance statistics are computed from unmatched paths. */
@@ -269,10 +309,14 @@ export function auditPhase48OosEntryRiskCoverage(
       ?.instrumentKey!==pins.expectedRiskInstrumentKeys[h]))
     return deny('RISK_CONTRACT_KEYS_NOT_PREDECLARED_IN_JOIN_PIN');
   const quotes=new Map<string,HistoricalExecutableQuote>();
+  const history=new Map<string,HistoricalExecutableQuote[]>();
   for(const q of input.historical.executionQuotes){
     const k=q.instrumentKey+'|'+q.observedAt;
     if(quotes.has(k))return deny('DUPLICATE_ORIGINAL_OPTION_L1_RECORD');
     quotes.set(k,q);
+    const seq=history.get(q.instrumentKey)??[];
+    seq.push(q);
+    history.set(q.instrumentKey,seq);
   }
   const linked=new Set<HorizonBucket>();
   const cells:Phase48ArmHorizonCoverage[]=[];
@@ -289,7 +333,7 @@ export function auditPhase48OosEntryRiskCoverage(
         nonEntries++;continue;
       }
       selected++;entries++;
-      if(!entryLinkIsExact(a,input.phase47,horizon,quotes)){
+      if(!entryLinkIsExact(a,input.phase47,horizon,quotes,history)){
         missed++;missingHere++;continue;
       }
       linked.add(horizon);matched++;linkedHere++;
