@@ -23,8 +23,9 @@ import type {HorizonBucket} from './adaptiveOptionRanker.js';
 
 const HORIZONS:HorizonBucket[]=['1W','2W','4W','8W'];
 const ARMS:HistoricalArm[]=['EMA_BASELINE','REGIME_FILTER','REGIME_AND_RANK'];
-const ACTIVE=['SIDEWAYS','VOLATILE','TREND_UP','TREND_DOWN','TRANSITION']
-  as const satisfies readonly AdaptiveRegime[];
+const ACTIVE:readonly AdaptiveRegime[]=[
+  'SIDEWAYS','VOLATILE','TREND_UP','TREND_DOWN','TRANSITION'
+];
 const SHA=/^[a-f0-9]{64}$/;
 const ISO=/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/;
 const hash=(v:unknown):string=>createHash('sha256')
