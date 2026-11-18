@@ -89,6 +89,9 @@ function setup():Fixture{
     cli(['ca','-gencrl','-config',config,'-out',goodCrl]);
     cli(['ca','-config',config,'-revoke',leaf]);
     cli(['ca','-gencrl','-config',config,'-out',revokedCrl]);
+    // OpenSSL defaults public certificate/CRL files to 0644; production
+    // audits require explicit owner-0600 inputs under owner-0700 parents.
+    for(const path of [root,goodCrl,revokedCrl])chmodSync(path,0o600);
     const leafDer=new X509Certificate(readFileSync(leaf)).raw,
       rootDer=new X509Certificate(readFileSync(root)).raw;
     return {dir,pdf,root,goodCrl,revokedCrl,leafDer,rootDer,
