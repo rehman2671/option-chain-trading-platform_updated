@@ -121,7 +121,7 @@ function unsafe(r:ReturnType<typeof audit>){
   assert.ok(!JSON.stringify(r).includes('NSE_FO|'));
 }
 function denied(f:F,reason:string,
-  status:'INVALID_EVIDENCE'|'INCOMPLETE_EVIDENCE'='INCOMPLETE_EVIDENCE'){
+  status:ReturnType<typeof audit>['status']='INCOMPLETE_EVIDENCE'){
   const r=audit(f);unsafe(r);
   assert.equal(r.status,status,JSON.stringify(r));
   assert.ok(r.reasonCodes.includes(reason),JSON.stringify(r));
