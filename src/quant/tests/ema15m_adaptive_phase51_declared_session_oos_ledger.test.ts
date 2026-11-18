@@ -221,6 +221,19 @@ describe('Phase51 independent session ledger/OOS missing-day audit',()=>{
     f.repin();
     rejected(f,'FULL_ORIGINAL_PHASE50_OOS_DENOMINATOR_OR_ASOF_GATE_FAILED');
   });
+  it('malformed source quote records fail closed before calendar reconciliation',()=>{
+    const f=fixture();
+    (f.historical.executionQuotes as unknown as unknown[])[0]=null;
+    f.repin();
+    rejected(f,'ORIGINAL_MARKET_SOURCE_RECORDS_MALFORMED','INVALID_EVIDENCE');
+  });
+  it('malformed declared option contract catalog stays incomplete evidence, not no-trade proof',()=>{
+    const f=fixture();
+    f.historical.decisions.at(-1)!.listedContracts=
+      null as unknown as typeof f.historical.decisions[number]['listedContracts'];
+    f.repin();
+    rejected(f,'OOS_ORIGINAL_CONTRACT_OR_CHAIN_UNIVERSE_MISSING');
+  });
   it('independent original date ledger must be preserved, never silently reduced',()=>{
     const f=fixture();
     f.pins.expectedOriginalOosSessionCount=1;
