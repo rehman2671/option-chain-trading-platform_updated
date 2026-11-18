@@ -27,6 +27,8 @@ export interface HistoricalDecision {
 }
 export interface HistoricalExecutableQuote {
   observedAt: string;
+  /** Optional original feed availability; mandatory for Phase49 risk-path joins. */
+  availableAt?: string;
   instrumentKey: string;
   bid: number; ask: number;
   bidQty: number; askQty: number;
