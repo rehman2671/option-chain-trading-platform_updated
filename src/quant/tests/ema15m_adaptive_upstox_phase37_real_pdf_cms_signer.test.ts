@@ -71,7 +71,7 @@ function syntheticPdfUnsigned():Buffer{
   const marker='/Contents <',start=text.indexOf(marker);
   assert.ok(start>0);
   const lt=start+marker.length-1;
-  const gt=lt+placeholder.length+1;
+  const gt=lt+placeholder.length+2;
   const exact='/ByteRange [0 '+String(lt).padStart(12,'0')+
     ' '+String(gt).padStart(12,'0')+' '+
     String(text.length-gt).padStart(12,'0')+']';
