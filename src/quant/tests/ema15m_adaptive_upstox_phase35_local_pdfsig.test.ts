@@ -215,6 +215,16 @@ describe('Phase35 bounded process preflight never promotes mocked text',()=>{
   it('nonzero tool exit or malicious stdout never yields positive status',()=>{
     const fx=privateFixture();
     try{
+      // A clean GitHub image may not ship Poppler; that is a valid
+      // fail-closed precondition, NOT a successful subprocess check.
+      if(!existsSync('/usr/bin/pdfsig')){
+        const missing=inspectPhase35LocalPdfSignature(request(fx),()=>({
+          exitCode:0,stdout:sample(),stderr:'',timedOut:false
+        }));
+        safety(missing);
+        assert.equal(missing.status,'INVALID_PRECONDITION');
+        return;
+      }
       for(const status of [1,2]){
         const out=inspectPhase35LocalPdfSignature(request(fx),()=>({
           exitCode:status,stdout:sample(),stderr:'SENSITIVE PRIVATE SIGNER',
