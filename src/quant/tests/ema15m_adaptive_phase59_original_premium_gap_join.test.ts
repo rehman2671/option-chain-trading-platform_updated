@@ -139,14 +139,14 @@ describe('Phase59 original Phase19 premium runup × Phase46 first-next-open gap 
     assert.ok(r.distinctOriginalOptionEntryPathsAcrossAlternativeArms<=
       r.originalEnteredOptionPaths);
     assert.equal(r.cells.reduce((n,c)=>n+c.originalOosAttempts,0),24);
-    assert.equal(r.cells.reduce((n,c)=>n+c.originalObservedEntries,0),
+    assert.equal(r.cells.reduce((n,c)=>n+c.observedOriginalEntries,0),
       r.originalEnteredOptionPaths);
     for(const c of r.cells){
       assert.equal(c.reusedPhase19PremiumClassifier,true);
       assert.equal(c.reusedPhase46GapStressPrimitive,true);
       assert.equal(c.noIntrabarOrBrokerFillInferred,true);
       assert.ok(c.originalOosAttempts>=
-        c.originalObservedEntries+c.originalNoEntryAttempts);
+        c.observedOriginalEntries+c.originalNoEntryAttempts);
     }
   });
   it('+30 option BID runup gives back before +100 target under frozen Phase19 thresholds',()=>{
