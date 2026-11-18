@@ -19,12 +19,9 @@ const UCC='SYNTHETIC_PRIVATE_UCC_41',
   OPT='NSE_FO|SYNTH-24000-CE',
   SOURCE_URL='https://www.nseindia.in/resources/exchange-communication-holidays';
 const micro=(s:string)=>Date.parse(s)*1000;
-const stamp=(ms:number)=>new Date(ms).toISOString()
-  .replace('Z','+00:00');
-const plus=(s:string,min:number)=>new Date(Date.parse(s)+min*60000)
-  .toISOString().replace('Z','+00:00');
-const dateInIst=(t:number)=>new Date(t+19800000).toISOString()
-  .slice(0,10);
+const plus=(s:string,min:number)=>
+  new Date(Date.parse(s)+min*60000+19800000)
+    .toISOString().replace('Z','+05:30');
 const sessionRows=[
   {date:'2026-11-20',sessionKind:'REGULAR' as const,
    openingAt:'2026-11-20T09:15:00+05:30',
