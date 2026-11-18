@@ -171,7 +171,7 @@ describe('Phase59 original Phase19 premium runup × Phase46 first-next-open gap 
     assert.equal(r.exactFirstNextOpenGapRiskPaths,
       r.overnightExposedOriginalEntries);
   });
-  it('next-open zero displayed BID depth is a hypothetical non-fill alert, not a profitable exit',()=>{
+  it('zero displayed next-open BID depth is rejected by earlier Phase58 original exit evidence',()=>{
     const f=fixture(),o=chosen(f);
     const original=f.f.historical;
     const entryDay=o.entryAt.slice(0,10);
@@ -183,10 +183,9 @@ describe('Phase59 original Phase19 premium runup × Phase46 first-next-open gap 
     assert.ok(q);
     q.bidQty=0;
     f.repinSourceAndAll();
-    const r=rejected(f,'FULL_DEBIT_OR_ADVERSE_NEXT_OPEN_RISK_ALERT_ONLY',
-      'DESCRIPTIVE_PREMIUM_OR_GAP_RISK_ALERT_ONLY');
-    assert.ok(r.cells.some(c=>
-      c.zeroBidOrInsufficientDisplayDepthAtNextOpenCount>0));
+    const r=rejected(f,'PHASE58_FULL_ORIGINAL_OOS_EXIT_AND_DEBIT_REAUDIT_INCOMPLETE');
+    assert.equal(r.phase58Status,'INCOMPLETE_EVIDENCE');
+    assert.equal(r.exactFirstNextOpenGapRiskPaths,0);
     assert.equal(r.brokerNativeNrmlStopOrGttAckVerified,false);
   });
   it('loss of first next-open quotes remains source-censored even if next later BID is favorable',()=>{
