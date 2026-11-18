@@ -306,7 +306,8 @@ describe('Phase44 broker-reported stop order modification/cancel-replace',()=>{
     denied(f,'PENDING_OR_UNRESOLVED_LAST_MUTATION');
   });
   it('not modified and not cancelled never silently restore protection',()=>{
-    for(const variant of ['modify','replace'] as const){
+    const variants:Variant[]=['modify','replace'];
+    for(const variant of variants){
       const f=fixture(variant);
       const row=f.archive.orderSnapshots[0].history.response.data;
       row[3].status=variant==='modify'?'not modified':'not cancelled';
