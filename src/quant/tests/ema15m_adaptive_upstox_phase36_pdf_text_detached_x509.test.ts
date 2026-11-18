@@ -19,6 +19,8 @@ import {
 } from '../../server/engine/ema15m/adaptiveUpstoxPhase36DetachedSignerPins.js';
 import type {Phase35PdfsigReport}
   from '../../server/engine/ema15m/adaptiveUpstoxPhase35LocalPdfsig.js';
+import type {Phase33NoteTradeRow}
+  from '../../server/engine/ema15m/adaptiveUpstoxPhase33ContractNoteReview.js';
 
 const hash=(v:Uint8Array)=>createHash('sha256').update(v).digest('hex');
 const trade={
@@ -32,7 +34,7 @@ const trade2={...trade,tradeId:'SYNTH_TRADE_37',
   orderId:'SYNTH_ORDER_37',side:'SELL' as const,
   priceRupees:'251.0000'};
 const first='ANNEXURE FNO TRADES',last='END OF ANNEXURE';
-const line=(t:typeof trade)=>[
+const line=(t:Phase33NoteTradeRow)=>[
   t.tradeId,t.orderId,t.tradeDate,t.tradeTimeIst,t.exchange,
   t.symbol,t.optionType,String(t.strikePrice),t.expiry,t.side,
   String(t.quantity),t.priceRupees
