@@ -19,8 +19,10 @@ const ms=(s:string)=>Date.parse(s);
 type Role=Phase52DetachedReceipt['role'];
 const ROLES:Role[]=['ORIGINAL_OPTION_L1_REVIEWER','SESSION_CALENDAR_REVIEWER'];
 
-export function makePhase53SyntheticSignedFixture(){
-  const generated=makePhase48SyntheticOosInput('FLAT');
+export function makePhase53SyntheticSignedFixture(
+  path:'FLAT'|'GIVEBACK'|'GAP'='FLAT'
+){
+  const generated=makePhase48SyntheticOosInput(path);
   const historical=generated.input;
   const dates=historical.decisions.map(x=>x.sessionDate);
   historical.executionQuotes.forEach(q=>{
