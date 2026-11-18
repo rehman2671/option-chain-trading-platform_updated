@@ -326,14 +326,25 @@ export function auditPhase47FrozenGreekGapResidual(
     return deny('PHASE46_ORIGINAL_OPTION_GAP_REAUDIT_FAILED',
       'INCOMPLETE_EVIDENCE');
   const cells:Phase47GreekResidualCell[]=[];
+  const originalGreekRecordIds=new Set<string>();
   for(let i=0;i<4;i++){
     const horizon=HORIZONS[i],factor=archive.greekPaths[i];
     const original=archive.phase46Input.paths[i];
     if(!factor||factor.horizon!==horizon||
+      (archive.phase46Input.datasetLabel==='SYNTHETIC_TEST'&&
+        factor.sourceKind!=='SYNTHETIC_ORIGINAL_STYLE_GREEKS')||
+      (archive.phase46Input.datasetLabel===
+        'OPERATOR_ORIGINAL_MARKET_DATA_UNVERIFIED'&&
+        factor.sourceKind!=='OPERATOR_CLAIMS_LICENSED_ORIGINAL_GREEKS')||
       typeof pins.expectedGreekPathSha256[horizon]!=='string'||
       !SHA.test(pins.expectedGreekPathSha256[horizon])||
       digest(factor)!==pins.expectedGreekPathSha256[horizon])
       return deny('DUPLICATE_REORDERED_OR_REPINNED_GREEK_SOURCE_PATH');
+    if(originalGreekRecordIds.has(factor.preClose?.recordId)||
+      originalGreekRecordIds.has(factor.postOpen?.recordId))
+      return deny('DUPLICATE_OR_REUSED_CROSS_CONTRACT_GREEK_RECORD');
+    originalGreekRecordIds.add(factor.preClose?.recordId);
+    originalGreekRecordIds.add(factor.postOpen?.recordId);
     const a=analyze(factor,original,policy);
     if(a.ok===false)return deny(a.reason,'INCOMPLETE_EVIDENCE');
     cells.push(a.cell);
