@@ -253,8 +253,7 @@ export function auditPhase36ExtractedEcnText(
     !(out.stdout instanceof Uint8Array)||
     !(out.stderr instanceof Uint8Array)||
     out.stdout.length>MAX_TEXT||out.stderr.length>8192)
-    return fail('TEXT_PROCESS_EXIT_TIMEOUT_OR_OUTPUT_BOUNDS_REJECTED',{
-    } as Phase36TextReport['status']);
+    return fail('TEXT_PROCESS_EXIT_TIMEOUT_OR_OUTPUT_BOUNDS_REJECTED');
   let extracted:string;
   try{
     extracted=new TextDecoder('utf-8',{fatal:true}).decode(out.stdout);
