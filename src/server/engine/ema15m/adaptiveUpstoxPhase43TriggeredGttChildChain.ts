@@ -95,6 +95,7 @@ export interface Phase43ExternalSourcePins{
   expectedGttSha256:string;
   expectedHistorySha256:string;
   expectedTradesSha256:string;
+  expectedTradeIds:string[];
   expectedReviewerSpkiSha256:string;
   expectedReviewChallengeSha256:string;
   expectedSessionDate:string;
@@ -238,6 +239,10 @@ export function auditPhase43TriggeredGttChildTrades(
       pins.expectedTradesSha256,pins.expectedReviewerSpkiSha256,
       pins.expectedReviewChallengeSha256]
       .every(x=>typeof x==='string'&&HASH.test(x))||
+    !Array.isArray(pins.expectedTradeIds)||
+    pins.expectedTradeIds.length>64||
+    pins.expectedTradeIds.some(x=>!isId(x))||
+    new Set(pins.expectedTradeIds).size!==pins.expectedTradeIds.length||
     !/^\d{4}-\d\d-\d\d$/.test(pins.expectedSessionDate)||
     !Number.isSafeInteger(pins.maxReviewDelayMinutes)||
     pins.maxReviewDelayMinutes<1||pins.maxReviewDelayMinutes>1440||
@@ -286,7 +291,10 @@ export function auditPhase43TriggeredGttChildTrades(
     !Array.isArray(stops)||stops.length!==1)
     return fail('BLOCKED_OR_UNKNOWN','TRIGGERED_GTT_CONTRACT_OR_STOP_RULE_MISMATCH');
   const stop=stops[0];
-  if(!['TRIGGERED','OPEN','COMPLETED'].includes(stop.status)||
+  if((stop.status==='COMPLETED'&&
+      history.reportedTerminalStatus!=='complete')||
+    (stop.status==='OPEN'&&history.reportedTerminalStatus!=='open')||
+    !['TRIGGERED','OPEN','COMPLETED'].includes(stop.status)||
     stop.order_id!==pins.expectedChildOrderId||
     stop.transaction_type!=='SELL'||stop.trigger_type!=='BELOW'||
     !Number.isFinite(stop.trigger_price)||stop.trigger_price<=0)
@@ -325,6 +333,7 @@ export function auditPhase43TriggeredGttChildTrades(
     t.query?.order_id!==pins.expectedChildOrderId||
     t.httpStatus!==200||t.response?.status!=='success'||
     !Array.isArray(t.response.data)||t.response.data.length>64||
+    t.response.data.length!==pins.expectedTradeIds.length||
     !Number.isFinite(moment(t.capturedAt))||
     moment(t.capturedAt)<moment(h.history.capturedAt)||
     istDate(moment(t.capturedAt))!==historyDate)
@@ -332,9 +341,11 @@ export function auditPhase43TriggeredGttChildTrades(
 
   let filled=0,lastTrade=-Infinity;
   const unique=new Set<string>();
-  for(const trade of t.response.data){
+  for(const [index,trade] of t.response.data.entries()){
     const momentTrade=day(trade?.exchange_timestamp);
-    if(!trade||!isId(trade.trade_id)||unique.has(trade.trade_id)||
+    if(!trade||!isId(trade.trade_id)||
+      trade.trade_id!==pins.expectedTradeIds[index]||
+      unique.has(trade.trade_id)||
       trade.order_id!==pins.expectedChildOrderId||
       trade.exchange_order_id!==pins.expectedExchangeOrderId||
       trade.instrument_token!==input.positionInstrumentKey||
