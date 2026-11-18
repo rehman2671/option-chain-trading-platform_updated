@@ -121,6 +121,7 @@ function fixture(kind:'open'|'complete'|'partial'='open'){
     expectedGttSha256:'00'.repeat(32),
     expectedHistorySha256:'00'.repeat(32),
     expectedTradesSha256:'00'.repeat(32),
+    expectedTradeIds:trades.map(x=>x.trade_id),
     expectedReviewerSpkiSha256:sha(spki),
     expectedReviewChallengeSha256:'ab'.repeat(32),
     expectedSessionDate:'2026-11-18',maxReviewDelayMinutes:15
