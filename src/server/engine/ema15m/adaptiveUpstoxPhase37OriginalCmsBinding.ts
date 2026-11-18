@@ -291,7 +291,7 @@ export function auditPhase37OriginalPdfCmsSigner(
     detachedPins.expectedSignerDerSha256!==pins.expectedSignerDerSha256||
     detachedPins.expectedIssuerDerSha256!==pins.expectedIssuerDerSha256||
     !Number.isSafeInteger(request.timeoutMs)||request.timeoutMs<500||
-    request.timeoutMs>10000||typeof runner!=='function)
+    request.timeoutMs>10000||typeof runner!=='function')
     return fail('INVALID_EVIDENCE','INVALID_INDEPENDENT_CMS_SOURCE_CERT_SCOPE');
   if(!dirAllowed(dirname(request.originalPdfPath))||
     !fileAllowed(request.originalPdfPath,MAX_PDF,true)||
