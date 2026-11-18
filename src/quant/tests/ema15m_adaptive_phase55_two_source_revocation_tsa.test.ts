@@ -89,9 +89,9 @@ function fixture(){
     phase53:p53,phase53Pins:p53pins,
     pdfDocuments:cms
   };
-  const byRole=(pick:(i:number)=>string)=>
-    Object.fromEntries(ROLES.map((role,i)=>[role,pick(i)]))
-      as Record<Phase53DocumentRole,string>;
+  const byRole=(pick:(i:number)=>string):Record<Phase53DocumentRole,string>=>
+    Object.fromEntries(ROLES.map((role,i)=>[role,pick(i)])) as
+      Record<Phase53DocumentRole,string>;
   const p54pins:Phase54IndependentPins={
     schemaVersion:'INDEPENDENT_PHASE54_TWO_ORIGINAL_PDF_CMS_PINS_V1',
     expectedPhase53InputSha256:hashPhase53Evidence(p53),
