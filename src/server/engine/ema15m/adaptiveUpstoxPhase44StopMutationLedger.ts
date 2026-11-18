@@ -492,7 +492,7 @@ export function auditPhase44StopMutationLedger(
       pins.expectedSessionDate,symbol,lastCapture,
       i===0?instant(prev.externalReviewer.claimedAt):null,
       i===0?originalRecords.length:0);
-    if(!parsed.ok)
+    if(parsed.ok===false)
       return deny(parsed.code,'BLOCKED_OR_UNKNOWN',
         {reviewedOrderCount:i,remainingPositionQuantity:expectedQty});
     const result=parsed.value;
