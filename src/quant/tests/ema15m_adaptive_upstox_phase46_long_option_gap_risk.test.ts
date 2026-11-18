@@ -160,6 +160,7 @@ describe('Phase46 original-option-L1 1W/2W/4W/8W gap downside sensitivity',()=>{
   it('partial displayed 1 lot against 2 lots leaves residual 65 premium-at-risk',()=>{
     const f=fixture(),p=f.input.paths[0];
     p.quantity=130;
+    p.entryQuote.displayedAskQuantity=130;
     p.nextOpenQuote.displayedBidQuantity=65;
     f.resign();
     const r=audit(f);safety(r);
@@ -256,6 +257,12 @@ describe('Phase46 original-option-L1 1W/2W/4W/8W gap downside sensitivity',()=>{
     c.input.paths[2].preCloseQuote.bid=-10;
     c.resign();
     denied(c,'ORIGINAL_OPTION_BID_ASK_DEPTH_OR_EVENT_CLOCK_INVALID');
+  });
+  it('missing original ask depth blocks a pretend entry, not just a later exit',()=>{
+    const f=fixture();
+    f.input.paths[0].entryQuote.displayedAskQuantity=0;
+    f.resign();
+    denied(f,'ORIGINAL_ENTRY_ASK_SIZE_BELOW_DECLARED_LONG_QUANTITY');
   });
   it('invalid depth or fractional lot quantity rejects',()=>{
     const f=fixture();f.input.paths[0].quantity=66;f.resign();
