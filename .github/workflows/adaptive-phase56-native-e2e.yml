@@ -1,0 +1,32 @@
+name: Adaptive Phase56 native two-source CMS CRL OCSP TSA E2E
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase56-two-source-native-crypto-e2e'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase55-two-source-native-revocation-tsa'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-native-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Two role original PDF native CMS CRL OCSP RFC3161 synthetic E2E
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase56_native_crl_ocsp_tsa_e2e.test.ts
