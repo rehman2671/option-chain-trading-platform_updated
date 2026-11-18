@@ -46,6 +46,7 @@ export interface Phase36CertificateAudit{
   executionAuthorized:false;productionSafe:false;
   brokerAuthenticated:false;brokerStopInstalled:false;
   protectedOvernight:false;nativeOrderInstruction:null;
+  originalPdfSha256:string|null;
   derSignerFingerprintPinned:boolean;
   derIssuerFingerprintPinned:boolean;
   detachedSignerIssuedByPinnedCa:boolean;
@@ -131,6 +132,7 @@ export function reviewPhase36DetachedX509(
       'DETACHED_CERTIFICATE_REJECTED',hashes);
   return {...blank(),...hashes,
     status:'DETACHED_SIGNER_ISSUER_CHAIN_CONSISTENT_UNLINKED',
+    originalPdfSha256:input.originalPdfSha256,
     detachedSignerIssuedByPinnedCa:true,
     validAtDeclaredReviewTime:true};
 }
@@ -170,6 +172,7 @@ export function reviewPhase36EcnTextAndDetachedSigner(
     signer.status!=='DETACHED_SIGNER_ISSUER_CHAIN_CONSISTENT_UNLINKED'||
     !phase35.originalPdfSha256||
     phase35.originalPdfSha256!==extracted.originalPdfSha256||
+    phase35.originalPdfSha256!==signer.originalPdfSha256||
     !extracted.actualPdfTextCompared||
     !extracted.realNativeExtraction||
     phase35.executionAuthorized!==false||
