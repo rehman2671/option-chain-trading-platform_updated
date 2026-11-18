@@ -144,7 +144,8 @@ function snapshot(
 type Variant='modify'|'replace'|'partial_replace'|'complete'|'cancel_only';
 function fixture(variant:Variant='modify'){
   const p=predecessor();
-  const initial=[...p.rows];
+  // Archive snapshots must not alias independently captured Phase43 rows.
+  const initial=structuredClone(p.rows);
   let snapshots:Phase44OrderSnapshot[];
   if(variant==='replace'||variant==='partial_replace'||
     variant==='cancel_only'){
@@ -372,7 +373,7 @@ describe('Phase44 broker-reported stop order modification/cancel-replace',()=>{
     const f=fixture('modify');
     f.archive.orderSnapshots[0].history.response.data[4].order_request_id='1';
     f.resign();
-    denied(f,'MODIFICATION_NOT_CONFIRMED');
+    denied(f,'ORDER_FIELD_TIMESTAMP_QUANTITY_OR_EXCHANGE_REFERENCE_MISMATCH');
   });
   it('pending modifications cannot reuse same old request number',()=>{
     const f=fixture('modify');
