@@ -29,7 +29,7 @@ const hash=(x:unknown):string=>createHash('sha256')
   .update(JSON.stringify(x)).digest('hex');
 const hashBytes=(x:Uint8Array):string=>createHash('sha256')
   .update(x).digest('hex');
-const equalSha=(a:string,b:string):boolean=>
+const equalSha=(a:unknown,b:unknown):boolean=>
   typeof a==='string'&&typeof b==='string'&&
   SHA.test(a)&&SHA.test(b)&&
   timingSafeEqual(Buffer.from(a,'hex'),Buffer.from(b,'hex'));
