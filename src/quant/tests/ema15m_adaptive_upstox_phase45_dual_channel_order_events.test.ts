@@ -220,7 +220,7 @@ describe('Phase45 two Upstox-origin CLAIMED update channels vs Phase44',()=>{
     const b=make();
     b.input.channels[0].orderMessages.reverse();
     b.resign();
-    blocked(b,'CHANNEL_ORDER_ID_STATUS_REQUEST_FILL_OR_EXCHANGE_REF_DISAGREES');
+    blocked(b,'CHANNEL_CAPTURE_OR_ORDER_EVENT_TIME_DISAGREES');
     const c=make();
     c.input.channels[1].orderMessages.push(
       {...c.input.channels[1].orderMessages[0]});
