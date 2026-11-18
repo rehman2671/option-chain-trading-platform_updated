@@ -16,6 +16,7 @@ import {
 
 const SHA=/^[a-f0-9]{64}$/;
 const ISO=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?\+05:30$/;
+const TIMESTAMP=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 const MAX_SESSIONS=56;
 const hash=(x:Uint8Array|string):string=>
@@ -25,6 +26,8 @@ const dateValue=(s:string):boolean=>
   new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const milli=(s:unknown):number=>
   typeof s==='string'&&ISO.test(s)?Date.parse(s):NaN;
+const captureMilli=(s:unknown):number=>
+  typeof s==='string'&&TIMESTAMP.test(s)?Date.parse(s):NaN;
 const istDay=(t:number)=>new Date(t+19800000).toISOString().slice(0,10);
 function strictBase64(s:unknown,max:number):Buffer|null{
   if(typeof s!=='string'||s.length<4||s.length>max||
@@ -275,7 +278,7 @@ export function auditPhase41WitnessedSessionCoverage(
           verifiedEd25519Signatures:sigs,
           declaredSessionsReviewed:cal.sessions.length});
     const witnessed=milli(link.witnessedAt),
-      opened=milli(pair.afterOpen.capturedAt);
+      opened=captureMilli(pair.afterOpen.capturedAt);
     if(!Number.isFinite(witnessed)||
       !Number.isFinite(opened)||witnessed<opened||
       witnessed-opened>pins.maxWitnessDelayMinutes*60000)
