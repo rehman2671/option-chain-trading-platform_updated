@@ -259,7 +259,8 @@ const bad=(code:string):Validation=>({ok:false,code});
 function auditOneHistory(
   snapshot:Phase44OrderSnapshot,
   instrument:string,accountDate:string,
-  expectedSymbol:string,minCapture:number
+  expectedSymbol:string,minCapture:number,
+  minimumNewEventTime:number|null=null,originalPrefixLength=0
 ):Validation{
   const h=snapshot.history,records=h?.response?.data;
   if(!validId(snapshot.expectedOrderId)||
@@ -286,7 +287,7 @@ function auditOneHistory(
     const status=row?.status?.trim()?.toLowerCase();
     const at=istInstant(row?.order_timestamp);
     const requestId=Number(row?.order_request_id);
-    if(!row||!KNOWN.has(status)||
+    if(!row||!KNOWN.has(status??'')||
       row.order_id!==snapshot.expectedOrderId||
       row.instrument_token!==instrument||
       row.trading_symbol!==expectedSymbol||
@@ -300,6 +301,10 @@ function auditOneHistory(
       requestId<lastRequest||
       !Number.isFinite(at)||istDay(at)!==accountDate||
       at<previousTime||at>instant(h.capturedAt)||
+      (minimumNewEventTime!==null&&index>=originalPrefixLength&&
+        at<minimumNewEventTime)||
+      (hasOpened&&row.exchange_order_id!==
+        snapshot.expectedExchangeOrderId)||
       (row.exchange_order_id!==null&&
         row.exchange_order_id!==snapshot.expectedExchangeOrderId)||
       (row.exchange_timestamp!==null&&
@@ -484,7 +489,9 @@ export function auditPhase44StopMutationLedger(
         'BLOCKED_OR_UNKNOWN',{reviewedOrderCount:i,
           remainingPositionQuantity:expectedQty});
     const parsed=auditOneHistory(order,pins.expectedInstrumentKey,
-      pins.expectedSessionDate,symbol,lastCapture);
+      pins.expectedSessionDate,symbol,lastCapture,
+      i===0?instant(prev.externalReviewer.claimedAt):null,
+      i===0?originalRecords.length:0);
     if(!parsed.ok)
       return deny(parsed.code,'BLOCKED_OR_UNKNOWN',
         {reviewedOrderCount:i,remainingPositionQuantity:expectedQty});
