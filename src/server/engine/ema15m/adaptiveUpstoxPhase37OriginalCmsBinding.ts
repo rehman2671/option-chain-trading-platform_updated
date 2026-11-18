@@ -326,6 +326,7 @@ export function auditPhase37OriginalPdfCmsSigner(
     signedRangesSha256:parsed.signedRangeSha256
   };
   let output:Phase37OpenSslResult;
+  let verifiedSignerPem:Buffer|null=null;
   let work:string|null=null;
   try{
     // A private 0700 ephemeral directory; no plaintext trade file on disk.
@@ -333,18 +334,30 @@ export function auditPhase37OriginalPdfCmsSigner(
     work=mkdtempSync(join(dirname(request.originalPdfPath),'.phase37-cms-'));
     chmodSync(work,0o700);
     const cmsFile=join(work,'signature.cms.der'),
-      dataFile=join(work,'pdf.signed.ranges.bin');
+      dataFile=join(work,'pdf.signed.ranges.bin'),
+      signerFile=join(work,'verified-signer.pem');
     privateTempWrite(cmsFile,parsed.cmsDer);
     privateTempWrite(dataFile,parsed.signedContent);
+    // OpenSSL -signer writes to a real file. Precreate exclusively as 0600;
+    // /dev/stdout cannot be opened for writing under Node spawnSync pipes.
+    privateTempWrite(signerFile,new Uint8Array());
     // Openssl -verify by default checks the content signature, digest
     // and signed attributes. -noverify ONLY disables CA-chain validation.
-    // /dev/stdout emits signer certificates, not the signed PDF payload.
+    // The signer certificate is read from the private 0600 file and
+    // checked against exact independently pinned X509 DER bytes.
     output=runner(request.opensslBinary,[
       'cms','-verify','-binary','-inform','DER',
       '-in',cmsFile,'-content',dataFile,
-      '-noverify','-verify_retcode','-signer','/dev/stdout',
+      '-noverify','-verify_retcode','-signer',signerFile,
       '-out','/dev/null'
     ],request.timeoutMs);
+    if(output?.exitCode===0&&!output?.timedOut){
+      const s=lstatSync(signerFile);
+      if(s.isFile()&&!s.isSymbolicLink()&&(s.mode&0o077)===0&&
+        s.size>=300&&s.size<=MAX_OUT&&
+        (typeof process.getuid!=='function'||s.uid===process.getuid()))
+        verifiedSignerPem=readFileSync(signerFile);
+    }
   }catch{
     return fail('CMS_CRYPTO_OR_SIGNER_REJECTED',
       'NATIVE_OPENSSL_CMS_VERIFICATION_PROCESS_FAILED',basic);
@@ -365,7 +378,10 @@ export function auditPhase37OriginalPdfCmsSigner(
       'CMS_SIGNATURE_INVALID_TIMEOUT_OR_UNBOUNDED_NATIVE_OUTPUT',{
         ...basic,actuallyRanNativeOpenSsl:wasNative
       });
-  const pem=signerPem(output.stdout);
+  if(!wasNative)
+    return fail('CMS_CRYPTO_OR_SIGNER_REJECTED',
+      'INJECTED_OPENSSL_OUTPUT_NOT_NATIVE_CRYPTOGRAPHIC_EVIDENCE',basic);
+  const pem=verifiedSignerPem?signerPem(verifiedSignerPem):null;
   if(!pem)return fail('CMS_CRYPTO_OR_SIGNER_REJECTED',
     'OPENSSL_VERIFIED_CMS_SIGNER_CERTIFICATE_NOT_UNIQUE_OR_DER_INVALID',
     {...basic,actuallyRanNativeOpenSsl:wasNative});
@@ -376,9 +392,6 @@ export function auditPhase37OriginalPdfCmsSigner(
       'ACTUAL_CMS_VERIFIED_SIGNER_DER_DISAGREES_WITH_PINNED_CERTIFICATE',
       {...basic,derivedSignerDerSha256:derHash,
         actuallyRanNativeOpenSsl:wasNative});
-  if(!wasNative)
-    return fail('CMS_CRYPTO_OR_SIGNER_REJECTED',
-      'INJECTED_OPENSSL_OUTPUT_NOT_NATIVE_CRYPTOGRAPHIC_EVIDENCE',basic);
   return {...empty(),...basic,
     status:'ORIGINAL_PDF_CMS_SIGNER_LINKED_UNVERIFIED',
     actuallyRanNativeOpenSsl:true,
