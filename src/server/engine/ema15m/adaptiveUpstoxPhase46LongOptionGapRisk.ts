@@ -255,6 +255,8 @@ function one(
     postAvailable>expiry||
     postQuoteAt<=preQuoteAt)
     return {ok:false,code:'ORIGINAL_QUOTES_OUTSIDE_PREDECLARED_AVAILABLE_WINDOWS'};
+  if(input.entryQuote.displayedAskQuantity<input.quantity)
+    return {ok:false,code:'ORIGINAL_ENTRY_ASK_SIZE_BELOW_DECLARED_LONG_QUANTITY'};
   if(input.declaredStopTriggerPremium>=input.entryQuote.ask)
     return {ok:false,code:'DECLARED_LONG_OPTION_STOP_NOT_BELOW_ENTRY_ASK'};
   const bidPre=input.preCloseQuote.bid,bidPost=input.nextOpenQuote.bid,
