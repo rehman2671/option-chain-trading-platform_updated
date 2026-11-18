@@ -178,7 +178,7 @@ const failed=(status:Phase46GapStressReport['status'],code:string,
  * A matching pin is local integrity evidence, NOT NSE/vendor authenticity.
  */
 export function hashPhase46GapEvidence(value:unknown):string{return h(value);}
-function validPolicy(p:Phase46GapStressPolicy):boolean{
+export function validatePhase46GapStressPolicy(p:Phase46GapStressPolicy):boolean{
   if(!p||p.schemaVersion!==
       'ADAPTIVE_V2_PHASE46_LONG_INDEX_OPTION_GAP_STRESS_V1'||
     !int(p.maxOriginalEventToAvailabilitySeconds,0,300)||
@@ -210,7 +210,7 @@ function validQuote(q:Phase46OriginalL1Snapshot,
     q.displayedAskQuantity%lotSize===0&&
     (q.bid!==0||q.displayedBidQuantity===0);
 }
-function one(
+export function auditPhase46SingleOriginalGapPath(
   input:Phase46IndexOptionGapPath,
   p:Phase46GapStressPolicy
 ):{ok:true;cell:Phase46GapCell}|{ok:false;code:string}{
@@ -324,7 +324,7 @@ export function auditPhase46LongOptionGapStress(
       .includes(input.datasetLabel)||
     pins.schemaVersion!=='INDEPENDENT_PHASE46_GAP_PATH_AND_POLICY_PINS_V1'||
     pins.expectedDatasetLabel!==input.datasetLabel||
-    !validPolicy(policy)||
+    !validatePhase46GapStressPolicy(policy)||
     !SHA.test(pins.expectedPolicySha256)||
     h(policy)!==pins.expectedPolicySha256||
     !Array.isArray(input.paths)||input.paths.length!==4||
@@ -342,7 +342,7 @@ export function auditPhase46LongOptionGapStress(
       h(path)!==pins.expectedPathSha256[key])
       return failed('INVALID_EVIDENCE',
         'HORIZON_ORDER_OR_INDEPENDENT_ORIGINAL_L1_HASH_MISMATCH',cells);
-    const result=one(path,policy);
+    const result=auditPhase46SingleOriginalGapPath(path,policy);
     if(result.ok===false)return failed('INCOMPLETE_EVIDENCE',
       result.code,cells);
     cells.push(result.cell);

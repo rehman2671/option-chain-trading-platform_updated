@@ -182,8 +182,8 @@ function index(study:EntryFirstExitStudy):AttemptIndex|null{
     exits.size)return null;
   return {attempts,exits};
 }
-type ObservedPath=ReturnType<typeof auditSinglePath>;
-function auditSinglePath(
+type ObservedPath=ReturnType<typeof auditOriginalPremiumRunupPath>;
+export function auditOriginalPremiumRunupPath(
   a:CohortDecision,
   o:EntryFirstExitOutcome|undefined,
   quoteMap:Map<string,HistoricalExecutableQuote[]>,
@@ -390,7 +390,7 @@ export function auditAdaptiveObservedPremiumRunupReversals(
           c.enrolled++;
           const outcome=(label==='ORIGINAL'?oi:hi).exits.get(
             decisionKey(record));
-          const path=auditSinglePath(record,outcome,quotes,rule);
+          const path=auditOriginalPremiumRunupPath(record,outcome,quotes,rule);
           if(!path.valid){c.censored++;return;}
           c.priced++;c.rawGains+=path.rawGain!;
           c.qualifiedGains+=path.qualifiedGain!;
