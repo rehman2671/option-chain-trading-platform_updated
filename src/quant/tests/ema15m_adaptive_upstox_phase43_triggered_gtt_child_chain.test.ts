@@ -242,8 +242,8 @@ describe('Phase43 OFFLINE synthetic GTT trigger → child order/trades',()=>{
     fail(y.input,y.pins,'NO_EXACT_TRIGGERED_GTT_CHILD_LINK');
   });
   it('wrong trade ID, instrument or exchange reference reject',()=>{
-    for(const field of ['trade_id','instrument_token','exchange_order_id']
-      as const){
+    for(const field of (['trade_id','instrument_token','exchange_order_id']
+      as const)){
       const f=fixture('complete');
       f.input.childTrades.response.data[0][field]='BAD_REFERENCE';
       f.resign();
