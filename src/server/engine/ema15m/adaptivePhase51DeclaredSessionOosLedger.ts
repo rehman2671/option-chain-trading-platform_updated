@@ -27,7 +27,8 @@ const safeInt=(x:unknown,min:number,max:number):x is number=>
   typeof x==='number'&&Number.isSafeInteger(x)&&x>=min&&x<=max;
 const validDay=(x:unknown):x is string=>
   typeof x==='string'&&DAY.test(x)&&
-  new Date(x+'T00:00:00Z').toISOString().slice(0,10)===x;
+  Number.isFinite(MS(x+'T00:00:00Z'))&&
+  new Date(MS(x+'T00:00:00Z')).toISOString().slice(0,10)===x;
 const validTime=(x:unknown)=>typeof x==='string'&&ISO.test(x)&&
   Number.isFinite(MS(x));
 export const hashPhase51Evidence=hash;
@@ -189,9 +190,9 @@ function manifest(h:HistoricalComparisonInput,calendar:Phase51DeclaredSession[])
       if(s.sessionDate>=fold.testStart&&s.sessionDate<=fold.testEnd){
         if(seen.has(s.sessionDate))return null;
         seen.add(s.sessionDate);
-        const d=h.decisions.find(x=>x.sessionDate===s.sessionDate);
-        // Empty sentinel is pinned and therefore cannot be silently removed.
-        data.push(f+'|'+s.sessionDate+'|'+(d?.decisionAt??'MISSING'));
+        // Date-only manifest is independent of historical decisions.
+        // A missing original day remains visible as an unfilled ledger row.
+        data.push(f+'|'+s.sessionDate);
       }
     }
   }
@@ -225,7 +226,9 @@ export function auditPhase51DeclaredOosSessionCoverage(
   const h=input.phase50.historical,ledger=input.calendar.sessions;
   if(ledger.length!==pins.expectedDeclaredSessionCount)
     return invalid('DECLARED_SESSION_COUNT_CHANGED_FROM_PRESPECIFICATION');
-  const oos=manifest(h,ledger);
+  let oos:ReturnType<typeof manifest>;
+  try{oos=manifest(h,ledger);}
+  catch{return invalid('ORIGINAL_OOS_FOLD_SESSION_MANIFEST_MALFORMED');}
   if(!oos||oos.length!==pins.expectedOriginalOosSessionCount||
     hash(oos)!==pins.expectedOriginalOosManifestSha256)
     return invalid('ORIGINAL_OOS_FOLD_SESSION_MANIFEST_MISMATCH');
