@@ -45,6 +45,9 @@ function fixture(){
   // Keep original lot-aligned depth instead of unrounded synthetic 1000.
   historical.executionQuotes.forEach(q=>{
     q.bidQty=975;q.askQty=975;
+    // Phase49: source availability belongs to the original historical L1
+    // quote as well as the separately claimed Phase46 risk path.
+    q.availableAt=iso(ms(q.observedAt)+2000);
   });
   const cohort=buildAdaptiveEntryFirstCohort(historical);
   assert.equal(cohort.status,'ENTRY_COHORT_RECORDED');
@@ -398,4 +401,80 @@ describe('Phase48 real entry-first OOS replay and original L1 Greek-risk join',(
     const r=audit(f);unsafe(r);
     assert.equal(r.status,'INVALID_EVIDENCE');
   });
+
+  it('Phase49 rejects forged early risk-path availability when original entry availableAt differs',()=>{
+    const f=fixture();
+    const q=f.input.historical.executionQuotes.find(x=>
+      x.instrumentKey===f.entries[0].instrumentKey&&
+      x.observedAt===f.entries[0].entryAt)!;
+    q.availableAt=iso(ms(q.observedAt)+3000);
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 rejects missing original feed availability even if bid/ask and event time match',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const q=f.input.historical.executionQuotes.find(x=>
+      x.instrumentKey===p.instrumentKey&&
+      x.observedAt===p.preCloseQuote.observedAt)!;
+    delete q.availableAt;
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 rejects fabricated preclose availability when original event and prices match',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const q=f.input.historical.executionQuotes.find(x=>
+      x.instrumentKey===p.instrumentKey&&
+      x.observedAt===p.preCloseQuote.observedAt)!;
+    q.availableAt=iso(ms(q.observedAt)+3000);
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 rejects fabricated next-open availability even with identical bid/ask',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const q=f.input.historical.executionQuotes.find(x=>
+      x.instrumentKey===p.instrumentKey&&
+      x.observedAt===p.nextOpenQuote.observedAt)!;
+    q.availableAt=iso(ms(q.observedAt)+3000);
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 rejects cherry-picked next-open L1 when an earlier original quote existed',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const earlier=ms(p.nextOpenQuote.observedAt)-4000;
+    f.input.historical.executionQuotes.push({
+      instrumentKey:p.instrumentKey,observedAt:iso(earlier),
+      availableAt:iso(earlier+2000),
+      bid:p.nextOpenQuote.bid-1,ask:p.nextOpenQuote.ask-1,
+      bidQty:975,askQty:975
+    });
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 rejects selected preclose L1 when a later available source quote existed',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const later=ms(p.preCloseQuote.observedAt)+2000;
+    f.input.historical.executionQuotes.push({
+      instrumentKey:p.instrumentKey,observedAt:iso(later),
+      availableAt:iso(later+1000),
+      bid:p.preCloseQuote.bid+2,ask:p.preCloseQuote.ask+2,
+      bidQty:975,askQty:975
+    });
+    f.resign();
+    denied(f,'OOS_SELECTED_ENTRY_MISSING_EXACT_ORIGINAL_RISK_PATH');
+  });
+  it('Phase49 does not look ahead to a later preclose quote unavailable by checkpoint',()=>{
+    const f=fixture(),p=f.input.phase47.phase46Input.paths[0];
+    const later=ms(p.preCloseQuote.observedAt)+2000;
+    f.input.historical.executionQuotes.push({
+      instrumentKey:p.instrumentKey,observedAt:iso(later),
+      availableAt:iso(later+10000),
+      bid:p.preCloseQuote.bid+2,ask:p.preCloseQuote.ask+2,
+      bidQty:975,askQty:975
+    });
+    f.resign();
+    const r=audit(f);unsafe(r);
+    assert.equal(r.status,'DESCRIPTIVE_COMPLETE_SELECTED_ENTRY_COVERAGE_ONLY',
+      JSON.stringify(r));
+  });
+
 });
