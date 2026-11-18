@@ -297,7 +297,7 @@ function one(
     hypotheticalHaircutExitBid:hypotheticalBid,
     hypotheticalDisplayedDepthProceedsINR:proceeds,
     hypotheticalRemainingToZeroLossINR:proceeds===null?null:
-      round(debit-proceeds),
+      round(fullLoss-proceeds),
     fullDebitLossBudgetExceeded:fullLoss>
       rule.maximumPermittedFullDebitLossINR,
     adverseGapBudgetExceeded:gap===null||gap<
