@@ -236,6 +236,14 @@ describe('Phase47 frozen preclose Greeks vs original post-open option BID',()=>{
     denied(h,'PHASE46_SOURCE_OR_INDEPENDENT_PREDECLARED_GREEK_PINS_INVALID',
       'INVALID_EVIDENCE');
   });
+  it('missing nested original Phase46 input fails closed without throwing',()=>{
+    const f=fixture();
+    f.archive.phase46Input=undefined as unknown as
+      Phase47GreekRiskInput['phase46Input'];
+    assert.doesNotThrow(()=>audit(f));
+    denied(f,'PHASE46_SOURCE_OR_INDEPENDENT_PREDECLARED_GREEK_PINS_INVALID',
+      'INVALID_EVIDENCE');
+  });
   it('changed observed option BID without Phase46 source re-pin rejects at lineage gate',()=>{
     const f=fixture();
     f.archive.phase46Input.paths[0].nextOpenQuote.bid=1;
