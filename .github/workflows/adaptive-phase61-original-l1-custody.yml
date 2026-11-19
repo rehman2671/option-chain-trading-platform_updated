@@ -1,0 +1,36 @@
+name: Adaptive Phase61 original option L1 archive custody
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase61-original-data-provenance-readiness'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase60-horizon-regime-evidence-sufficiency'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-source-archive-intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase61 TypeScript static gate
+        run: npm run lint
+      - name: Phase38 stable offline CRL mock regression
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_upstox_phase38_signed_crl_chain.test.ts
+      - name: Original Phase61 L1 quote custody contract calendar and licence-claims synthetic invariants
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase61_raw_l1_custody_readiness.test.ts

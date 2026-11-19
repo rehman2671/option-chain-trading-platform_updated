@@ -269,6 +269,19 @@ describe('Phase38 actual pinned local CA and signed CRL review',()=>{
   });
   it('OpenSSL fixed arguments use no CRL download/OCSP or host trust roots',()=>{
     const x=inputs();
+    // The mock CRL dates must follow the FIXED test assessment timestamp,
+    // not a calendar date that naturally ages past the 24-hour freshness gate.
+    const assessment=Date.parse(x.request.assessmentAsOf);
+    const crlDate=(t:number):string=>{
+      const d=new Date(t);
+      const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug',
+        'Sep','Oct','Nov','Dec'];
+      return months[d.getUTCMonth()]+' '+
+        String(d.getUTCDate()).padStart(2,' ')+' '+
+        [d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds()]
+          .map(x=>String(x).padStart(2,'0')).join(':')+' '+
+        d.getUTCFullYear()+' GMT';
+    };
     const seen:string[][]=[];
     const mock:Phase38OpenSslRunner=(bin,args,ms)=>{
       assert.equal(bin,OPENSSL);
@@ -276,8 +289,8 @@ describe('Phase38 actual pinned local CA and signed CRL review',()=>{
       seen.push([...args]);
       if(args[0]==='crl')
         return {exitCode:0,stdout:Buffer.from(
-          'lastUpdate=Nov 18 10:00:00 2026 GMT\n'+
-          'nextUpdate=Nov 20 10:00:00 2026 GMT\n'),
+          'lastUpdate='+crlDate(assessment-60*60000)+'\n'+
+          'nextUpdate='+crlDate(assessment+60*60000)+'\n'),
         stderr:new Uint8Array(),timedOut:false};
       assert.equal(args[0],'verify');
       assert.ok(args.includes('-crl_check_all'));
