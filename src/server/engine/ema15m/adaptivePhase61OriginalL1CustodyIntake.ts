@@ -245,7 +245,7 @@ export function auditPhase61OriginalL1CustodyReadiness(
   };
   if(!prior.status.startsWith('DESCRIPTIVE_')||
     prior.originalOosDecisionDays<2||
-    prior.originalOosArmHorizonAttempts!==
+    prior.fullOriginalDecisionArmHorizonAttempts!==
       prior.originalOosDecisionDays*12||
     prior.originalUnpricedOrCensoredSelectedPaths!==0)
     return fail('PHASE60_ORIGINAL_OOS_COHORT_OR_COVERAGE_REAUDIT_INCOMPLETE',
