@@ -1,4 +1,4 @@
-name: Adaptive Phase50-60 focused offline research checks
+name: Adaptive Phase50-61 focused offline research checks
 on:
   push:
     branches:
@@ -11,6 +11,7 @@ on:
       - 'research/adaptive-v2-phase58-matched-exit-debit-coverage'
       - 'research/adaptive-v2-phase59-cohort-premium-gap-reconciliation'
       - 'research/adaptive-v2-phase60-horizon-regime-evidence-sufficiency'
+      - 'research/adaptive-v2-phase61-original-data-provenance-readiness'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -22,6 +23,7 @@ on:
       - 'research/adaptive-v2-phase57-regime-horizon-debit-risk'
       - 'research/adaptive-v2-phase58-matched-exit-debit-coverage'
       - 'research/adaptive-v2-phase59-cohort-premium-gap-reconciliation'
+      - 'research/adaptive-v2-phase60-horizon-regime-evidence-sufficiency'
   workflow_dispatch:
 
 permissions:
@@ -30,7 +32,7 @@ permissions:
 jobs:
   offline-research-invariants:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       NODE_ENV: test
     steps:
@@ -42,7 +44,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-60 focused synthetic offline invariants
+      - name: Phase50-61 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -55,4 +57,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase57_regime_horizon_debit_risk.test.ts \
             src/quant/tests/ema15m_adaptive_phase58_exit_asof_risk_join.test.ts \
             src/quant/tests/ema15m_adaptive_phase59_original_premium_gap_join.test.ts \
-            src/quant/tests/ema15m_adaptive_phase60_horizon_regime_sufficiency.test.ts
+            src/quant/tests/ema15m_adaptive_phase60_horizon_regime_sufficiency.test.ts \
+            src/quant/tests/ema15m_adaptive_phase61_raw_l1_custody_readiness.test.ts
