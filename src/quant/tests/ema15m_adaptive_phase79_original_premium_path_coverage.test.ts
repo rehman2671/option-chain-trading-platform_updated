@@ -662,4 +662,73 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     const r=audit(fixture());neverTrades(r);
     assert.equal(r.parsedNativeQuoteRows>16,true);
   });
+
+  // Phase85: indexed all-listed session-close coverage must preserve exactly
+  // the old causally correct observed counts, including NO_ENTRY and censored.
+  it('Phase85 baseline index preserves original 1W-8W CE/PE close denominators and risk counts',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,0);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,0);
+    assert.equal(r.quotedUnderTargetPremiumGivebackPairs,8);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+  });
+  it('Phase85 session manifest order does not change indexed closing coverage or risk aggregates',()=>{
+    const f=fixture(),baseline=audit(f);
+    f.input.declaredSessions.reverse();f.repin();
+    const shuffled=audit(f);neverTrades(shuffled);
+    assert.deepEqual(shuffled,baseline);
+  });
+  it('Phase85 1200 additional in-session option ticks cannot change already observed closing outcomes',()=>{
+    const f=fixture(),baseline=audit(f),
+      key='OPT_20261120_1W_CE',date='2026-11-23';
+    const closing=f.rows.find(r=>r[2]===key&&
+      r[3].includes(date+'T15:29'))!;
+    assert.ok(closing);
+    closing[1]='1202'; // 09:16 opening sequence 1; 1200 ticks 2..1201.
+    const start=Date.parse(ist(date,10,0));
+    for(let i=0;i<1200;i++){
+      const when=new Date(start+i*1000).toISOString();
+      f.rows.push(['REC85-TICK-'+i,String(i+2),key,when,when,
+        '160','161','100','100']);
+    }
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.status,baseline.status);
+    assert.equal(r.originallyListedPairs,baseline.originallyListedPairs);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,
+      baseline.missingDeclaredSessionCloseBidObservations);
+    assert.equal(r.quotedUnderTargetPremiumGivebackPairs,
+      baseline.quotedUnderTargetPremiumGivebackPairs);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,
+      baseline.quotedNextOpenGapThroughTrailPairs);
+    assert.equal(r.parsedNativeQuoteRows,baseline.parsedNativeQuoteRows+1200);
+    assert.deepEqual(r.cells,baseline.cells);
+  });
+  it('Phase85 closing index does not borrow earlier liquid book state after later zero-BID update',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      when=ist('2026-11-20',15,30);
+    f.rows.push(['REC85-CLOSE-ZERO','4',key,when,when,'0','0','0','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,1);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase85 missing closing BID in NO_ENTRY alternative remains censored without any purchased option',()=>{
+    const f=fixture();
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][2]==='OPT_20261119_8W_PE'&&
+         f.rows[i][3].includes('2026-12-01T15:29'))
+        f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.originallyNoEntryPairs,8);
+    assert.equal(r.originalNoEntryDecisions,1);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,1);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.equal(r.cells.reduce((sum,c)=>sum+c.originalNoEntryPairs,0),8);
+  });
 });
