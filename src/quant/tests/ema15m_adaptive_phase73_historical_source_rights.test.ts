@@ -139,6 +139,12 @@ describe('Phase73 original 1W–8W option data grant/source acquisition rights r
       'base64');
     original[55]^=1;
     f.vendor.input.newVendorNativeL1CsvBase64=original.toString('base64');
+    rejects(f,'PHASE73_PARENT_OR_SOURCE_RIGHTS_PINS_INVALID',
+      'INVALID_EVIDENCE');
+  });
+  it('replacing the expected native L1 CSV digest in independent Phase73 pins fails even when all parent source bytes agree',()=>{
+    const f=fixture();
+    f.pins.expectedOriginalNativeL1CsvSha256='0'.repeat(64);
     rejects(f,'PHASE73_ORIGINAL_LICENCE_INTAKE_OR_L1_BYTES_NOT_PINNED',
       'INVALID_EVIDENCE');
   });
