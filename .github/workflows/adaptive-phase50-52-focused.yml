@@ -1,4 +1,4 @@
-name: Adaptive Phase50-77 focused offline research checks
+name: Adaptive Phase50-78 focused offline research checks
 on:
   push:
     branches:
@@ -28,6 +28,7 @@ on:
       - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -56,6 +57,8 @@ on:
       - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
       - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
+      - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
   workflow_dispatch:
 
 permissions:
@@ -106,4 +109,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase74_retrospective_causality.test.ts \
             src/quant/tests/ema15m_adaptive_phase75_counterfactual_premium_stop_stress.test.ts \
             src/quant/tests/ema15m_adaptive_phase76_nrml_paper_risk_monitor.test.ts \
-            src/quant/tests/ema15m_adaptive_phase77_offline_nrml_stop_lifecycle.test.ts
+            src/quant/tests/ema15m_adaptive_phase77_offline_nrml_stop_lifecycle.test.ts \
+            src/quant/tests/ema15m_adaptive_phase78_raw_broker_readonly_join.test.ts
