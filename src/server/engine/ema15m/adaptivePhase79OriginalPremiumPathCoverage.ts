@@ -60,6 +60,8 @@ export interface Phase79Cell{
   originalEntryClaimedPairs:number;
   entryClaimedPairsMissingCausalQuotedAsk:number;
   entryClaimedPairsWithClaimedDecisionAsk:number;
+  entryClaimedPairsWithObservedIlliquidBidUpdate:number;
+  entryCandidateStaleLateQuoteObservationsIgnored:number;
   entryClaimedPairsWithUnderTargetQuotedGiveback:number;
   entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:number;
   entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
@@ -84,6 +86,8 @@ export interface Phase79Report{
   parsedNativeQuoteRows:number;
   claimedAsOfEntryAskPairs:number;
   entryPairsMissingClaimedAsOfAsk:number;
+  entryPairsWithObservedIlliquidBidUpdate:number;
+  entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
@@ -142,7 +146,7 @@ const horizon=(expiry:string,decisionAt:string):Phase79Horizon|null=>{
     days>=18&&days<36?'4W':days>=36&&days<=80?'8W':null;
 };
 interface Quote{
-  instrument:string;event:number;available:number;bid:number;ask:number;
+  instrument:string;sequence:number;event:number;available:number;bid:number;ask:number;
   bidQty:number;askQty:number;
 }
 function blank():Phase79Report{
@@ -152,6 +156,8 @@ function blank():Phase79Report{
     originallyListedPairs:0,originallyNoEntryPairs:0,
     originalEntryClaimedPairs:0,parsedNativeQuoteRows:0,
     claimedAsOfEntryAskPairs:0,entryPairsMissingClaimedAsOfAsk:0,
+    entryPairsWithObservedIlliquidBidUpdate:0,
+    entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
@@ -257,14 +263,14 @@ export function auditPhase79OriginalPremiumPathCoverage(
       seenSeq.has(JSON.stringify([d,row[2],sequence])))
       return fail('PHASE79_OUTSIDE_DECLARED_SESSION_OR_REPLAYED_SEQUENCE');
     seenSeq.add(JSON.stringify([d,row[2],sequence]));
-    const q={instrument:row[2],event,available,bid,ask,bidQty,askQty};
+    const q={instrument:row[2],sequence,event,available,bid,ask,bidQty,askQty};
     const xs=quotes.get(row[2])??[];xs.push(q);quotes.set(row[2],xs);
   }
   // Path observations must respect operator-claimed arrival order, NOT
   // re-sort a delayed quote into a hindsight event-time winning path.
   // This claimed clock is still NOT authenticated historical client access.
   for(const qs of quotes.values())qs.sort((a,b)=>
-    a.available-b.available||a.event-b.event);
+    a.available-b.available||a.event-b.event||a.sequence-b.sequence);
   const groups=new Map<string,Phase79Cell>();
   const originalPairs=new Set<string>(),decisionDates=new Set<string>();
   // A source instrument token is one immutable option contract across ALL
@@ -275,7 +281,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
   }>();
   let noEntryDecisions=0,total=0,noEntries=0,entries=0;
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
-    censored=0,missingCloses=0;
+    illiquidBidPairs=0,staleQuoteObservations=0,censored=0,missingCloses=0;
   const sessionDates=[...sessions.keys()].sort();
   const nextDeclaredSession=(date:string):string|null=>{
     const ix=sessionDates.indexOf(date);
@@ -325,6 +331,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
           originalListedPairs:0,originalNoEntryPairs:0,
           originalEntryClaimedPairs:0,entryClaimedPairsMissingCausalQuotedAsk:0,
           entryClaimedPairsWithClaimedDecisionAsk:0,
+          entryClaimedPairsWithObservedIlliquidBidUpdate:0,
+          entryCandidateStaleLateQuoteObservationsIgnored:0,
           entryClaimedPairsWithUnderTargetQuotedGiveback:0,
           entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:0,
           entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
@@ -341,10 +349,17 @@ export function auditPhase79OriginalPremiumPathCoverage(
       else {entries++;cell.originalEntryClaimedPairs++;}
       const q=(quotes.get(c.instrumentKey)??[]);
       const dec=Date.parse(d.decisionAt);
-      const entry=q.filter(x=>x.event<=dec&&x.available<=dec&&
-        dec-x.event<=p.maxDecisionQuoteAgeSeconds*SEC&&
-        x.ask>0&&x.askQty>=p.minBestBidAndAskDepthLots*c.lotSize)
-        .sort((a,b)=>b.event-a.event||b.available-a.available)[0];
+      // Reconstruct the most recent operator-claimed exchange BOOK STATE
+      // available by decision, including illiquid/zero-depth updates.
+      // Do NOT cherry-pick an older ask that was superseded by no liquidity.
+      const latestDecisionQuote=q.filter(x=>x.event<=dec&&x.available<=dec)
+        .sort((a,b)=>b.event-a.event||b.sequence-a.sequence||
+          b.available-a.available)[0];
+      const entry=latestDecisionQuote&&
+        dec-latestDecisionQuote.event<=p.maxDecisionQuoteAgeSeconds*SEC&&
+        latestDecisionQuote.ask>0&&
+        latestDecisionQuote.askQty>=p.minBestBidAndAskDepthLots*c.lotSize?
+        latestDecisionQuote:undefined;
       // An original NO_ENTRY is never a purchased option, even with good quotes.
       if(!noEntry){
         if(!entry){missingAsk++;cell.entryClaimedPairsMissingCausalQuotedAsk++;}
@@ -353,10 +368,39 @@ export function auditPhase79OriginalPremiumPathCoverage(
           // A quote that arrived after the claimed session CLOSE was
           // NOT available to the algorithm during that tradable session,
           // regardless of its exchange-side event timestamp.
-          const after=q.filter(x=>x.event>dec&&x.available>dec&&
+          const afterAll=q.filter(x=>x.event>dec&&x.available>dec&&
             istDay(x.event)<=c.expiry&&
-            x.available<=sessions.get(istDay(x.event))!.close&&
-            x.bid>0&&x.bidQty>=p.minBestBidAndAskDepthLots*c.lotSize);
+            x.available<=sessions.get(istDay(x.event))!.close);
+          // Apply every source update in claimed RECEIPT order first.
+          // An older event that arrives after a newer event is a stale
+          // snapshot: it cannot roll the book BACKWARD to fabricate a
+          // +70-to-+20 reversal. A zero-depth/newer quote supersedes
+          // the previous usable quote instead of being filtered away.
+          const after:Quote[]=[];
+          let latestAppliedEvent=-Infinity,latestAppliedSeq=-Infinity;
+          let sawIlliquidBid=false,ignoredStale=0;
+          for(const x of afterAll){
+            if(x.event<latestAppliedEvent||
+               (x.event===latestAppliedEvent&&
+                x.sequence<=latestAppliedSeq)){
+              ignoredStale++;
+              continue;
+            }
+            latestAppliedEvent=x.event;latestAppliedSeq=x.sequence;
+            if(x.bid<=0||x.bidQty<p.minBestBidAndAskDepthLots*c.lotSize){
+              sawIlliquidBid=true;
+              continue;
+            }
+            after.push(x);
+          }
+          if(sawIlliquidBid){
+            illiquidBidPairs++;
+            cell.entryClaimedPairsWithObservedIlliquidBidUpdate++;
+          }
+          if(ignoredStale){
+            staleQuoteObservations+=ignoredStale;
+            cell.entryCandidateStaleLateQuoteObservationsIgnored+=ignoredStale;
+          }
           let peak=entry.ask, peakSession=d.sessionDate,seenGiveback=false,seenGap=false;
           const firstBidSession=new Set<string>();
           const newArmedPeakNextOpens=new Set<string>();
@@ -415,11 +459,17 @@ export function auditPhase79OriginalPremiumPathCoverage(
       let missed=0;
       for(const [date,session] of sessions){
         if(date<d.sessionDate||date>c.expiry)continue;
-        if(!q.some(x=>istDay(x.event)===date&&x.event>=
-            session.close-p.closingBidWindowMinutes*MIN&&
-            x.event<=session.close&&x.available<=session.close&&
-            x.bid>0&&x.bidQty>=
-            p.minBestBidAndAskDepthLots*c.lotSize))missed++;
+        // A newer illiquid book update near close REPLACES an older
+        // still-present historical CSV row; use the latest as-of state,
+        // not `some()` cherry-picking a favorable past displayed BID.
+        const closingQuote=q.filter(x=>istDay(x.event)===date&&
+            x.event>=session.close-p.closingBidWindowMinutes*MIN&&
+            x.event<=session.close&&x.available<=session.close)
+          .sort((a,b)=>b.event-a.event||b.sequence-a.sequence||
+            b.available-a.available)[0];
+        if(!closingQuote||closingQuote.bid<=0||
+           closingQuote.bidQty<p.minBestBidAndAskDepthLots*c.lotSize)
+          missed++;
       }
       // Missing the claimed expiry region cannot masquerade as complete
       // positional history simply because an operator omitted late sessions.
@@ -462,10 +512,13 @@ export function auditPhase79OriginalPremiumPathCoverage(
     'RAW_VENDOR_AVAILABLE_AT_NOT_AUTHENTICATED_CLIENT_RECEIPT',
     'DISPLAYED_QUOTED_BID_IS_NOT_AN_EXECUTABLE_EXIT_OR_STOP_FILL'];
   if(missingAsk>0)reasons.push('ORIGINAL_ENTRY_CLAIMED_PAIRS_LACK_CAUSAL_QUOTED_ASK');
+  if(illiquidBidPairs>0)reasons.push('POST_DECISION_NO_BID_OR_SUBLOT_DEPTH_CENSORS_EXIT_LIQUIDITY');
+  if(staleQuoteObservations>0)reasons.push('OUT_OF_ORDER_LATE_STALE_QUOTE_EVENTS_EXCLUDED_FROM_PREMIUM_PATH');
   if(censored>0)reasons.push('MISSING_DECLARED_SESSION_CLOSE_BID_CENSORS_HOLDING_PATH');
   if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
-  return {...blank(),status:missingAsk||censored||missingNextOpen?
+  return {...blank(),status:missingAsk||censored||missingNextOpen||
+      illiquidBidPairs||staleQuoteObservations?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
       'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED',
     reasonCodes:reasons,syntheticDataset:input.datasetKind==='SYNTHETIC_FIXTURE',
@@ -473,6 +526,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
     originallyListedPairs:total,originallyNoEntryPairs:noEntries,
     originalEntryClaimedPairs:entries,parsedNativeQuoteRows:raw.length-1,
     claimedAsOfEntryAskPairs:asOf,entryPairsMissingClaimedAsOfAsk:missingAsk,
+    entryPairsWithObservedIlliquidBidUpdate:illiquidBidPairs,
+    entryCandidateStaleLateQuoteObservationsIgnored:staleQuoteObservations,
     quotedUnderTargetPremiumGivebackPairs:giveback,
     quotedNextOpenGapThroughTrailPairs:gap,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:missingNextOpen,

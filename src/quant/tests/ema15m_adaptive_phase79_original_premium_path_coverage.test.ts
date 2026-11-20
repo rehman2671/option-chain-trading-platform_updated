@@ -501,4 +501,100 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.originalNoEntryDecisions,1);
     assert.equal(r.entryPairsMissingClaimedAsOfAsk,1);
   });
+
+  // Phase83: an as-of BID/ASK is a BOOK STATE, not the last historical row
+  // that happens to have enough depth. Illiquid updates supersede it.
+  it('Phase83 baseline remains complete with zero stale/illiquid quote updates',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.entryPairsWithObservedIlliquidBidUpdate,0);
+    assert.equal(r.entryCandidateStaleLateQuoteObservationsIgnored,0);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase83 decision cannot use an older valid ASK after a newer zero-ASK/zero-depth book update',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',9,29);
+    for(const row of f.rows)if(row[2]===key&&row[3]>event&&
+      row[3].startsWith('2026-11-20'))row[1]=String(Number(row[1])+1);
+    f.rows.push(['REC-83-ASKZERO','2',key,event,event,'0','0','0','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingClaimedAsOfAsk,1);
+    assert.equal(r.claimedAsOfEntryAskPairs,7);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase83 decision latest ASK with sublot size supersedes an older valid ASK',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',9,29);
+    for(const row of f.rows)if(row[2]===key&&row[3]>event&&
+      row[3].startsWith('2026-11-20'))row[1]=String(Number(row[1])+1);
+    f.rows.push(['REC-83-ASKDEPTH','2',key,event,event,'99','100','100','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingClaimedAsOfAsk,1);
+  });
+  it('Phase83 same-millisecond newer source sequence can supersede decision ASK liquidity',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',9,28);
+    for(const row of f.rows)if(row[2]===key&&row[3]>event&&
+      row[3].startsWith('2026-11-20'))row[1]=String(Number(row[1])+1);
+    f.rows.push(['REC-83-ASKSEQ','2',key,event,event,'0','0','0','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingClaimedAsOfAsk,1);
+  });
+  it('Phase83 closing BID is censored when latest book update is no-bid despite earlier valid closing quote',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',15,30);
+    f.rows.push(['REC-83-NOBID','4',key,event,event,'0','0','0','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase83 newest closing BID with sublot depth cannot borrow earlier displayed lot depth',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',15,30);
+    f.rows.push(['REC-83-SUBLOT','4',key,event,event,'160','161','1','1']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+  });
+  it('Phase83 out-of-order late OLD low bid is not a new +70 to +20 premium reversal',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE';
+    for(const row of f.rows)if(row[2]===key){
+      if(row[3]>ist('2026-11-20',10,0)){
+        row[5]='170';row[6]='171';
+      }
+      if(row[3].includes('2026-11-20T15:29'))row[1]='5';
+    }
+    const eventOld=ist('2026-11-20',10,1),
+      eventNew=ist('2026-11-20',10,2);
+    f.rows.push(['REC-83-STALELOW','3',key,eventOld,
+      ist('2026-11-20',10,3),'120','121','100','100']);
+    f.rows.push(['REC-83-NEWHIGH','4',key,eventNew,
+      eventNew,'170','171','100','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryCandidateStaleLateQuoteObservationsIgnored,1);
+    assert.equal(r.quotedUnderTargetPremiumGivebackPairs,7);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('OUT_OF_ORDER_LATE_STALE_QUOTE_EVENTS_EXCLUDED_FROM_PREMIUM_PATH'));
+    assert.equal(r.cells.reduce((acc,c)=>
+      acc+c.entryCandidateStaleLateQuoteObservationsIgnored,0),1);
+  });
+  it('Phase83 post-peak displayed BID disappears: an illiquid update must censor risk not manufacture a guaranteed stop fill',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',
+      event=ist('2026-11-20',10,1);
+    const close=f.rows.find(row=>row[2]===key&&
+      row[3].includes('2026-11-20T15:29'))!;
+    close[1]='4';
+    f.rows.push(['REC-83-BIDBLACKOUT','3',key,event,event,'0','0','0','0']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithObservedIlliquidBidUpdate,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('POST_DECISION_NO_BID_OR_SUBLOT_DEPTH_CENSORS_EXIT_LIQUIDITY'));
+    assert.equal(r.cells.reduce((acc,c)=>
+      acc+c.entryClaimedPairsWithObservedIlliquidBidUpdate,0),1);
+  });
 });
