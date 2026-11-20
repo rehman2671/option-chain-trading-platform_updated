@@ -114,7 +114,7 @@ const id=(value:unknown):value is string=>
  * identifiers retain the original strict no-pipe character grammar. */
 const instrumentId=(value:unknown):value is string=>id(value)||
   (typeof value==='string'&&value.length<=180&&
-    /^(?:NSE_FO|BSE_FO)\\|[a-zA-Z0-9_:./-]{1,150}$/.test(value));
+    /^(?:NSE_FO|BSE_FO)\|[a-zA-Z0-9_:./-]{1,150}$/.test(value));
 interface OrderState {
   kind:Phase77OrderKind;
   state:Phase77Transition;
