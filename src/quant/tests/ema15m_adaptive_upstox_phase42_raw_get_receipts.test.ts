@@ -2,7 +2,7 @@ import {before,after,describe,it} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync,sign,X509Certificate} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {chmodSync,mkdtempSync,readFileSync,rmSync}
+import {chmodSync,mkdtempSync,readFileSync,rmSync,writeFileSync,mkdirSync}
   from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -39,12 +39,43 @@ const mkPDF=()=>Buffer.from('%PDF-1.7\n'+
 let dir:string,cert:Buffer,otherCert:Buffer;
 function makeCertificate(san:string,file:string):Buffer{
   const key=join(dir,'key-'+file+'.pem'),
-    pem=join(dir,'cert-'+file+'.pem');
+    pem=join(dir,'cert-'+file+'.pem'),
+    csr=join(dir,'request-'+file+'.pem'),
+    issueDir=join(dir,'issue-'+file),
+    conf=join(issueDir,'config.cnf');
+  mkdirSync(issueDir,{mode:0o700});
+  mkdirSync(join(issueDir,'newcerts'),{mode:0o700});
+  writeFileSync(join(issueDir,'index.txt'),'');
+  writeFileSync(join(issueDir,'serial'),'01\n');
   execFileSync('/usr/bin/openssl',[
-    'req','-new','-x509','-newkey','rsa:2048','-nodes',
-    '-keyout',key,'-out',pem,'-days','365','-sha256',
-    '-subj','/CN=Untrusted Synthetic Phase42 TLS Peer',
-    '-addext','subjectAltName=DNS:'+san
+    'req','-new','-newkey','rsa:2048','-nodes',
+    '-keyout',key,'-out',csr,'-sha256',
+    '-subj','/CN=Untrusted Synthetic Phase42 TLS Peer'
+  ],{stdio:['ignore','pipe','pipe'],timeout:12000});
+  // The fixture replays 2026-11-20 / 2026-11-23 source claims. A new
+  // openssl req -x509 defaults notBefore to CI's wall clock, which could
+  // be AFTER the immutable historic capturedAt being audited. This
+  // generated self-signed test cert explicitly spans the synthetic dates.
+  // Production TLS/X509 validity checks are NOT changed or bypassed.
+  writeFileSync(conf,[
+    '[ca]','default_ca=issue','[issue]',
+    'dir='+issueDir,
+    'database=$dir/index.txt','new_certs_dir=$dir/newcerts',
+    'serial=$dir/serial','private_key='+key,
+    'certificate='+pem,'default_md=sha256',
+    'policy=policy_any','x509_extensions=issue_ext',
+    'unique_subject=no',
+    '[policy_any]','commonName=supplied',
+    '[issue_ext]','basicConstraints=critical,CA:FALSE',
+    'keyUsage=digitalSignature,keyEncipherment',
+    'subjectAltName=DNS:'+san,''
+  ].join('\n'));
+  // openssl ca -selfsign supports fixed -startdate/-enddate whereas
+  // openssl req -x509's -days option uses the job's current date.
+  execFileSync('/usr/bin/openssl',[
+    'ca','-selfsign','-batch','-config',conf,
+    '-startdate','20200101000000Z','-enddate','20300101000000Z',
+    '-in',csr,'-out',pem,'-notext'
   ],{stdio:['ignore','pipe','pipe'],timeout:12000});
   return new X509Certificate(readFileSync(pem)).raw;
 }
