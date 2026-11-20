@@ -20,6 +20,12 @@ const iso=(d:string,m:number)=>new Date(
   Date.parse(d+'T00:00:00Z')+m*60000).toISOString();
 export function makePhase67SyntheticIssuerCrosscheckFixture(){
   const vendor=makePhase66IndependentSyntheticVendorFixture();
+  // Phase66's general owner policy contemplates 40 days; Phase67's stricter
+  // full-expiry cross-source audit conservatively tests the entire 8W
+  // listed option life (56 calendar days) unless a locked earlier exit exists.
+  vendor.input.policy.maximumHoldCalendarDays=56;
+  vendor.input.policy.minimumTrainToFirstTestEmbargoCalendarDays=56;
+  vendor.repinOuter();
   const snapshots=vendor.catalog.decisions.map(d=>({
     originalOosSessionDate:d.sessionDate,
     originalDecisionAt:d.decisionAt,
