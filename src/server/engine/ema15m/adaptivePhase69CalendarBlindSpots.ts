@@ -103,12 +103,14 @@ export interface Phase69Cell{
   missingOrStaleDeclaredCloseBidSlots:number;
   originalsWithPotentialCalendarBlindSpots:number;
   originalsWithAnyMissingOriginalCloseBid:number;
-  originalsWithUnverifiedFullDurationEvidence:number;
+  originalsWithDetectedCalendarOrBidGaps:number;
   premiumRunupGivebackObservedAsQuoteOnlyPairs:number;
   overnightBidGapObservedAsQuoteOnlyPairs:number;
   noEntryNeverBrokerPosition:true;
   potentialWeekdayNotProvenRealExchangeSession:true;
   closeBidNotActualTradeFill:true;
+  entirePaidLongOptionPremiumDebitCanBeLost:true;
+  underlyingIndex100PointTargetNotDerivableFromOptionOnlyBids:true;
 }
 export interface Phase69Report{
   mode:'OFFLINE_HORIZON_WEEKDAY_CALENDAR_AND_ORIGINAL_BID_ACQUISITION_GAPS';
@@ -320,12 +322,14 @@ export function auditPhase69CalendarBlindSpots(
           missingOrStaleDeclaredCloseBidSlots:0,
           originalsWithPotentialCalendarBlindSpots:0,
           originalsWithAnyMissingOriginalCloseBid:0,
-          originalsWithUnverifiedFullDurationEvidence:0,
+          originalsWithDetectedCalendarOrBidGaps:0,
           premiumRunupGivebackObservedAsQuoteOnlyPairs:0,
           overnightBidGapObservedAsQuoteOnlyPairs:0,
           noEntryNeverBrokerPosition:true,
           potentialWeekdayNotProvenRealExchangeSession:true,
-          closeBidNotActualTradeFill:true
+          closeBidNotActualTradeFill:true,
+          entirePaidLongOptionPremiumDebitCanBeLost:true,
+          underlyingIndex100PointTargetNotDerivableFromOptionOnlyBids:true
         };
         out.set(k,cell);
       }
@@ -379,7 +383,7 @@ export function auditPhase69CalendarBlindSpots(
         pairsWithMissingBid++;cell.originalsWithAnyMissingOriginalCloseBid++;
       }
       if(missingWeekdaysForPair||missingBidForPair)
-        cell.originalsWithUnverifiedFullDurationEvidence++;
+        cell.originalsWithDetectedCalendarOrBidGaps++;
     }
   }
   const output=[...out.entries()].map(([k,c])=>({
