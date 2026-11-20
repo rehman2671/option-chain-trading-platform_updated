@@ -332,4 +332,21 @@ describe('Phase80 owner-private file-backed original option L1 intake (offline o
     assert.equal(r.executionAuthorized,false);
     assert.equal(r.actualOptionEntryOrExitFillVerified,false);
   });
+
+  it('Phase87 owner-private truncated calendar reports candidate weekday holes in redacted aggregates, never official exchange holidays',()=>{
+    const f=fixture(),r=audit(f);neverTrading(r);
+    assert.equal(r.status,'DESCRIPTIVE_RETROSPECTIVE_ONLY_NO_ORIGINAL_CLIENT_CAUSAL_PROOF');
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,16);
+    assert.ok(r.potentialUndeclaredWeekdayObservations>=16);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.originalPairsWithPotentialUndeclaredWeekdays,0),
+      r.originalPairsWithPotentialUndeclaredWeekdays);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.potentialUndeclaredWeekdayObservations,0),
+      r.potentialUndeclaredWeekdayObservations);
+    assert.ok(!JSON.stringify(r).includes('OPT0H'));
+    assert.ok(!JSON.stringify(r).includes('2026-11-19'));
+    assert.equal(r.officialExchangeFOMasterVerified,false);
+    assert.equal(r.productionSafe,false);
+  });
 });

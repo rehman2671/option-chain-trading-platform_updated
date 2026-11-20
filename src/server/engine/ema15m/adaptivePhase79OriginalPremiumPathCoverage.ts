@@ -69,6 +69,8 @@ export interface Phase79Cell{
   entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   originalPairsCensoredByMissingSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
+  originalPairsWithPotentialUndeclaredWeekdays:number;
+  potentialUndeclaredWeekdayObservations:number;
   entryClaimedPositionsActuallyExecuted:0;
   historicalMarketOriginAuthenticated:false;
   selectedBestContractOrHorizon:false;
@@ -97,6 +99,8 @@ export interface Phase79Report{
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
+  originalPairsWithPotentialUndeclaredWeekdays:number;
+  potentialUndeclaredWeekdayObservations:number;
   noEntryAlternativesNeverHypotheticalPurchases:true;
   sourceAndResearchLicenceIndependentlyAuthenticated:false;
   originalStrategyClientReceiveClockAuthenticated:false;
@@ -184,6 +188,8 @@ function blank():Phase79Report{
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     missingDeclaredSessionCloseBidObservations:0,
+    originalPairsWithPotentialUndeclaredWeekdays:0,
+    potentialUndeclaredWeekdayObservations:0,
     noEntryAlternativesNeverHypotheticalPurchases:true,
     sourceAndResearchLicenceIndependentlyAuthenticated:false,
     originalStrategyClientReceiveClockAuthenticated:false,
@@ -218,6 +224,22 @@ const upperDay=(a:string[],key:string):number=>{
     if(a[mid]<=key)lo=mid+1;else hi=mid;
   }
   return lo;
+};
+/** Candidate Monday–Friday dates only; NOT an authenticated exchange
+ * schedule. This is calendar completeness suspicion, not verified trading. */
+const candidateWeekdaysInclusive=(first:string,last:string):number=>{
+  const from=Date.parse(first+'T00:00:00Z'),
+    to=Date.parse(last+'T00:00:00Z');
+  const days=Math.floor((to-from)/86400000)+1;
+  if(days<=0)return 0;
+  const full=Math.floor(days/7),tail=days%7;
+  let total=full*5;
+  const dow=new Date(from).getUTCDay();
+  for(let i=0;i<tail;i++){
+    const today=(dow+i)%7;
+    if(today!==0&&today!==6)total++;
+  }
+  return total;
 };
 /** All returned marks are observed operator-claimed quotes, never fills. */
 export function auditPhase79OriginalPremiumPathCoverage(
@@ -368,8 +390,13 @@ export function auditPhase79OriginalPremiumPathCoverage(
   let noEntryDecisions=0,total=0,noEntries=0,entries=0;
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
     illiquidBidPairs=0,unmarketableEntryBids=0,wideDecisionSpreads=0,
-    staleQuoteObservations=0,censored=0,missingCloses=0;
+    staleQuoteObservations=0,censored=0,missingCloses=0,
+    weekdayGapPairs=0,weekdayGapObservations=0;
   const sessionDates=[...sessions.keys()].sort();
+  const weekdaySessionDates=sessionDates.filter(date=>{
+    const dow=new Date(date+'T00:00:00Z').getUTCDay();
+    return dow!==0&&dow!==6;
+  });
   const adjacent=new Map<string,string>();
   for(let i=0;i<sessionDates.length-1;i++)
     adjacent.set(sessionDates[i],sessionDates[i+1]);
@@ -428,6 +455,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
           entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
           originalPairsCensoredByMissingSessionCloseBid:0,
           missingDeclaredSessionCloseBidObservations:0,
+          originalPairsWithPotentialUndeclaredWeekdays:0,
+          potentialUndeclaredWeekdayObservations:0,
           entryClaimedPositionsActuallyExecuted:0,
           historicalMarketOriginAuthenticated:false,
           selectedBestContractOrHorizon:false};
@@ -577,6 +606,22 @@ export function auditPhase79OriginalPremiumPathCoverage(
         (upperDay(good,c.expiry)-lowerDay(good,d.sessionDate));
       // No later session can silently extend the original expiry region.
       const latestDeclared=end>start?sessionDates[end-1]:undefined;
+      // The original session list can omit intermediate WEEKDAYS and even
+      // the final weekday before option expiry. Simply checking the closes
+      // of DECLARED sessions cannot detect either omission. Calendar
+      // holidays remain possible; mark these as candidate gaps, not proven
+      // exchange-open days, pending independent official holiday evidence.
+      const expectedWeekdays=candidateWeekdaysInclusive(
+        d.sessionDate,c.expiry);
+      const includedWeekdays=upperDay(weekdaySessionDates,c.expiry)-
+        lowerDay(weekdaySessionDates,d.sessionDate);
+      const undeclared=Math.max(0,expectedWeekdays-includedWeekdays);
+      if(undeclared>0){
+        weekdayGapPairs++;
+        weekdayGapObservations+=undeclared;
+        cell.originalPairsWithPotentialUndeclaredWeekdays++;
+        cell.potentialUndeclaredWeekdayObservations+=undeclared;
+      }
       if(!latestDeclared||
          (Date.parse(c.expiry+'T00:00:00Z')-
           Date.parse(latestDeclared+'T00:00:00Z'))/86400000>4)missed++;
@@ -621,10 +666,12 @@ export function auditPhase79OriginalPremiumPathCoverage(
   if(illiquidBidPairs>0)reasons.push('POST_DECISION_NO_BID_OR_SUBLOT_DEPTH_CENSORS_EXIT_LIQUIDITY');
   if(staleQuoteObservations>0)reasons.push('OUT_OF_ORDER_LATE_STALE_QUOTE_EVENTS_EXCLUDED_FROM_PREMIUM_PATH');
   if(censored>0)reasons.push('MISSING_DECLARED_SESSION_CLOSE_BID_CENSORS_HOLDING_PATH');
+  if(weekdayGapPairs>0)
+    reasons.push('POTENTIAL_UNDECLARED_WEEKDAY_REQUIRES_OFFICIAL_HOLIDAY_CALENDAR');
   if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
   return {...blank(),status:missingAsk||censored||missingNextOpen||
-      unmarketableEntryBids||wideDecisionSpreads||
+      weekdayGapPairs||unmarketableEntryBids||wideDecisionSpreads||
       illiquidBidPairs||staleQuoteObservations?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
       'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED',
@@ -642,6 +689,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:missingNextOpen,
     listedPairsWithMissingDeclaredSessionCloseBid:censored,
     missingDeclaredSessionCloseBidObservations:missingCloses,
+    originalPairsWithPotentialUndeclaredWeekdays:weekdayGapPairs,
+    potentialUndeclaredWeekdayObservations:weekdayGapObservations,
     cells:[...groups.values()].sort((a,b)=>
       JSON.stringify([a.claimedRegime,a.horizon,a.side])
         .localeCompare(JSON.stringify([b.claimedRegime,b.horizon,b.side])))

@@ -1,0 +1,31 @@
+name: Adaptive Phase87 undeclared original option weekdays (offline)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase87-undeclared-weekday-coverage'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase86-entry-bid-spread-risk-census'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-weekday-session-censorship:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase79-87 candidate missing weekday and original private L1 tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts

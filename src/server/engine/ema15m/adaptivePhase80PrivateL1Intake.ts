@@ -76,6 +76,8 @@ export interface Phase80Report{
   quotedNextOpenGapThroughTrailPairs:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
+  originalPairsWithPotentialUndeclaredWeekdays:number;
+  potentialUndeclaredWeekdayObservations:number;
   claimedAcquisitionIsRetrospective:boolean|null;
   sourceCategoryIsOriginalNativeL1:boolean|null;
   /** Never include original CSV, tokens, date-level record IDs or vendor name. */
@@ -90,6 +92,8 @@ export interface Phase80Report{
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
     originalPairsCensoredByMissingSessionCloseBid:number;
+    originalPairsWithPotentialUndeclaredWeekdays:number;
+    potentialUndeclaredWeekdayObservations:number;
   }>;
   sourceLicenceOrVendorIndependentlyVerified:false;
   originalStrategyClientReceiptProofVerified:false;
@@ -122,6 +126,8 @@ function base():Phase80Report{
     quotedNextOpenGapThroughTrailPairs:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
+    originalPairsWithPotentialUndeclaredWeekdays:0,
+    potentialUndeclaredWeekdayObservations:0,
     claimedAcquisitionIsRetrospective:null,
     sourceCategoryIsOriginalNativeL1:null,claimedRegimeCells:[],
     sourceLicenceOrVendorIndependentlyVerified:false,
@@ -209,7 +215,11 @@ export function auditPhase80PrivateOriginalL1(
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:
       c.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak,
     originalPairsCensoredByMissingSessionCloseBid:
-      c.originalPairsCensoredByMissingSessionCloseBid
+      c.originalPairsCensoredByMissingSessionCloseBid,
+    originalPairsWithPotentialUndeclaredWeekdays:
+      c.originalPairsWithPotentialUndeclaredWeekdays,
+    potentialUndeclaredWeekdayObservations:
+      c.potentialUndeclaredWeekdayObservations
   }));
   return {...base(),
     status:retrospective?
@@ -242,6 +252,10 @@ export function auditPhase80PrivateOriginalL1(
       p79.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,
     listedPairsWithMissingDeclaredSessionCloseBid:
       p79.listedPairsWithMissingDeclaredSessionCloseBid,
+    originalPairsWithPotentialUndeclaredWeekdays:
+      p79.originalPairsWithPotentialUndeclaredWeekdays,
+    potentialUndeclaredWeekdayObservations:
+      p79.potentialUndeclaredWeekdayObservations,
     claimedAcquisitionIsRetrospective:retrospective,
     sourceCategoryIsOriginalNativeL1:true,
     claimedRegimeCells:cells

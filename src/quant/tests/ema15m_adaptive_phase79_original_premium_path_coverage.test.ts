@@ -807,4 +807,65 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
     assert.equal(r.originalEntryClaimedPairs,8);
   });
+
+  // Phase87: the owner-declared session calendar can omit a weekday WITH
+  // no original quote rows for that day. This is a POSSIBLE missing trading
+  // session, not proof an exchange was open rather than on official holiday.
+  it('Phase87 contiguous synthetic weekday sessions have no candidate omitted weekdays',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,0);
+    assert.equal(r.potentialUndeclaredWeekdayObservations,0);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase87 missing an interior Tuesday is censored despite all DECLARED daily closes remaining',()=>{
+    const f=fixture(),missing='2026-12-01';
+    f.input.declaredSessions=f.input.declaredSessions
+      .filter(s=>s.sessionDate!==missing);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].startsWith(missing))f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,0);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,12);
+    assert.equal(r.potentialUndeclaredWeekdayObservations,12);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('POTENTIAL_UNDECLARED_WEEKDAY_REQUIRES_OFFICIAL_HOLIDAY_CALENDAR'));
+    assert.equal(r.cells.reduce((n,c)=>
+      n+c.originalPairsWithPotentialUndeclaredWeekdays,0),12);
+    assert.equal(r.cells.reduce((n,c)=>
+      n+c.potentialUndeclaredWeekdayObservations,0),12);
+    assert.equal(r.originallyNoEntryPairs,8);
+    assert.equal(r.actualEntryAndExitFillsVerified,false);
+  });
+  it('Phase87 omission of last Friday expiry session is detected even if previous Thursday is within 4-day expiry tolerance',()=>{
+    const f=fixture(),missing='2027-01-15';
+    f.input.declaredSessions=f.input.declaredSessions
+      .filter(s=>s.sessionDate!==missing);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].startsWith(missing))f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,0);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,2);
+    assert.equal(r.potentialUndeclaredWeekdayObservations,2);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase87 two missing adjacent weekdays censor each affected pair once but count both missing observations',()=>{
+    const f=fixture(),gone=new Set(['2026-12-01','2026-12-02']);
+    f.input.declaredSessions=f.input.declaredSessions
+      .filter(s=>!gone.has(s.sessionDate));
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(gone.has(f.rows[i][3].slice(0,10)))f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,12);
+    assert.equal(r.potentialUndeclaredWeekdayObservations,24);
+    assert.equal(r.missingDeclaredSessionCloseBidObservations,0);
+  });
+  it('Phase87 does not invent missing weekend sessions and still does not authenticate official holidays',()=>{
+    const f=fixture(),r=audit(f);neverTrades(r);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,0);
+    assert.equal(r.officialExchangeExpiryAndSessionCalendarAuthenticated,false);
+    assert.equal(r.externalEvidenceRequired.some(x=>x.includes('EXCHANGE')),true);
+  });
 });
