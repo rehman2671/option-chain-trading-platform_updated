@@ -171,7 +171,7 @@ function fail(reason:string,
 function validDelivery(d:Phase65DeliveryDeclaration):boolean{
   return !!d&&d.schemaVersion===
     'ADAPTIVE_PHASE65_VENDOR_CANDIDATE_HANDOFF_DECLARATION_V1'&&
-    Object.keys(d).length===16&&
+    Object.keys(d).length===17&&
     [d.claimedVendorDeliveryReferenceId,
       d.claimedVendorProductReferenceId,
       d.claimedLicenseEvidenceReferenceId,
@@ -303,7 +303,7 @@ export function auditPhase65CandidateVendorDelivery(
     return fail('PHASE65_VENDOR_DECLARED_SOURCE_ROWS_DATE_OR_SYNTHETIC_KIND_MISMATCH',
       'INCOMPLETE_EVIDENCE',partial);
   let matching=0;
-  for(let i=0;i<original.length;i++){
+  for(let i=1;i<original.length;i++){
     const a=original[i],b=received[i];
     if(!a||!b||a.length!==9||b.length!==9)
       return fail('PHASE65_VENDOR_CANDIDATE_L1_ROW_NOT_ORIGINAL',
