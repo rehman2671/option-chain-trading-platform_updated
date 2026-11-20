@@ -128,7 +128,7 @@ function json<T>(raw:Uint8Array|null|undefined,
   }catch{return null;}
 }
 /** RFC4180-like quoted CSV, preserving embedded commas/newlines; no silent repairs. */
-function parseCsv(raw:Uint8Array):string[][]|null{
+export function parseOriginalNativeL1Csv(raw:Uint8Array):string[][]|null{
   if(raw.length<2||raw.length>MAX_CSV_BYTES)return null;
   let src:string;
   try{src=new TextDecoder('utf-8',{fatal:true}).decode(raw);}
@@ -239,7 +239,7 @@ export function bridgeAdaptiveNativeL1Csv(
   if(mapped.some(v=>typeof v!=='string'||!v.trim()||v.length>128)||
      new Set(mapped).size!==mapped.length)
     return reject('INVALID_DUPLICATE_OR_AMBIGUOUS_CSV_COLUMN_MAPPING');
-  const csv=parseCsv(originalVendorCsvBytes);
+  const csv=parseOriginalNativeL1Csv(originalVendorCsvBytes);
   if(!csv)return reject('MALFORMED_OR_OVERSIZED_ORIGINAL_CSV');
   const header=csv[0];
   if(header.some(h=>!h||h.length>128)||
