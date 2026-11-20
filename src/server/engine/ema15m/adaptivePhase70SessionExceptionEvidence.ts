@@ -113,6 +113,7 @@ export interface Phase70Cell{
   undisclosedRegularOpenSessionSlots:number;
   closureNoticeNotClaimedKnownAtOriginalDecisionSlots:number;
   explicitlyDeclaredSpecialWeekendOpenSlots:number;
+  missingSpecialWeekendOpenSourceSlots:number;
   remainingUnclassifiedWeekdaySlots:number;
   allClosureClassificationIsUnverified:true;
   declaredOpeningQuoteIsNotExecutionFill:true;
@@ -137,6 +138,7 @@ export interface Phase70Report{
   missingRegularOpenExchangeLikeCalendarContractSlots:number;
   claimedClosureNotKnownAtOriginalDecisionSlots:number;
   explicitlyDeclaredWeekendSpecialSessionContractSlots:number;
+  missingSpecialWeekendOpenSourceContractSlots:number;
   remainingUnclassifiedWeekdayContractSlots:number;
   independentlyAuthenticatedOfficialExchangeHolidayEvidence:false;
   independentlyAuthenticatedSpecialSessionPublisher:false;
@@ -177,6 +179,7 @@ function empty():Phase70Report{
     missingRegularOpenExchangeLikeCalendarContractSlots:0,
     claimedClosureNotKnownAtOriginalDecisionSlots:0,
     explicitlyDeclaredWeekendSpecialSessionContractSlots:0,
+    missingSpecialWeekendOpenSourceContractSlots:0,
     remainingUnclassifiedWeekdayContractSlots:0,
     independentlyAuthenticatedOfficialExchangeHolidayEvidence:false,
     independentlyAuthenticatedSpecialSessionPublisher:false,
@@ -354,7 +357,8 @@ export function auditPhase70ExchangeDayExceptions(
     matching++;
   }
   let countedMissing=0,holiday=0,emergency=0,missingOpen=0,
-    notKnownAtDecision=0,weekendSpecial=0,pairs=0;
+    notKnownAtDecision=0,weekendSpecial=0,
+    missingSpecialWeekend=0,pairs=0;
   const cells=new Map<string,Phase70Cell>();
   for(const dec of cat.decisions){
     for(const contract of dec.originallyListedContracts){
@@ -379,6 +383,7 @@ export function auditPhase70ExchangeDayExceptions(
           undisclosedRegularOpenSessionSlots:0,
           closureNoticeNotClaimedKnownAtOriginalDecisionSlots:0,
           explicitlyDeclaredSpecialWeekendOpenSlots:0,
+          missingSpecialWeekendOpenSourceSlots:0,
           remainingUnclassifiedWeekdaySlots:0,
           allClosureClassificationIsUnverified:true,
           declaredOpeningQuoteIsNotExecutionFill:true
@@ -394,6 +399,10 @@ export function auditPhase70ExchangeDayExceptions(
         const declared=calendarMap.has(ds);
         if(row.status==='SPECIAL_WEEKEND_OPEN'){
           weekendSpecial++;cell.explicitlyDeclaredSpecialWeekendOpenSlots++;
+          if(!declared){
+            missingSpecialWeekend++;
+            cell.missingSpecialWeekendOpenSourceSlots++;
+          }
         }
         if(!weekday(when)||declared)continue;
         countedMissing++;cell.missingWeekdaySlotsFromPhase69++;
@@ -429,6 +438,7 @@ export function auditPhase70ExchangeDayExceptions(
     missingRegularOpenExchangeLikeCalendarContractSlots:missingOpen,
     claimedClosureNotKnownAtOriginalDecisionSlots:notKnownAtDecision,
     explicitlyDeclaredWeekendSpecialSessionContractSlots:weekendSpecial,
+    missingSpecialWeekendOpenSourceContractSlots:missingSpecialWeekend,
     remainingUnclassifiedWeekdayContractSlots:missingOpen,
     cells:[...cells.values()]
   };
@@ -440,14 +450,14 @@ export function auditPhase70ExchangeDayExceptions(
     [...cells.values()].reduce((n,x)=>n+x.originalListedPairs,0)!==pairs)
     return fail('PHASE70_ORIGINAL_OOS_WEEKDAY_SOURCE_DENOMINATORS_DISAGREE',
       'INCOMPLETE_EVIDENCE',fields);
-  const status:Phase70Report['status']=missingOpen?
+  const status:Phase70Report['status']=missingOpen||missingSpecialWeekend?
     'DESCRIPTIVE_UNDECLARED_OPEN_SOURCE_SESSION_GAPS_ONLY':
     holiday+emergency?
       'DESCRIPTIVE_CLAIMED_CLOSED_DAY_EXCEPTIONS_UNVERIFIED_ONLY':
       'DESCRIPTIVE_INTERNAL_CALENDAR_RECONCILIATION_UNVERIFIED_ONLY';
   return {...empty(),...fields,status,
     reasonCodes:[
-      missingOpen?
+      missingOpen||missingSpecialWeekend?
         'THIRD_CALENDAR_CLAIMS_OPEN_ON_UNDECLARED_OPTION_SOURCE_DATES':
         'NO_THIRD_CALENDAR_UNDECLARED_OPEN_DATES_BUT_NOT_OFFICIAL',
       holiday+emergency?
