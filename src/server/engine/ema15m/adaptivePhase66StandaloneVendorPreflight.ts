@@ -469,6 +469,8 @@ export function auditPhase66StandaloneVendorPreflight(
       'INCOMPLETE_EVIDENCE');
   const decisionsByRegime=new Map<Phase66ClaimedRegime,Set<string>>();
   const seenDecisions=new Set<string>();
+  const seenOriginalSessionDays=new Set<string>();
+  const testDaysByFold=new Map<string,Set<string>>();
   const knownContracts=new Map<string,Phase66ListedContract>();
   const coverageCells=new Map<string,Phase66CoverageCell>();
   const cellDays=new Map<string,Set<string>>();
@@ -481,7 +483,7 @@ export function auditPhase66StandaloneVendorPreflight(
     const decisionKey=d.sessionDate+'|'+d.decisionAt;
     if(!Number.isFinite(decisionAt)||!Number.isFinite(decisionDay)||
       dayIst(decisionAt)!==d.sessionDate||foldMatches.length!==1||
-      seenDecisions.has(decisionKey)||
+      seenDecisions.has(decisionKey)||seenOriginalSessionDays.has(d.sessionDate)||
       !['TREND','RANGE','VOLATILE','MIXED','UNCLASSIFIED'].includes(d.claimedRegime)||
       !['NO_ENTRY','ENTRY_CLAIMED'].includes(d.originalEntryDisposition)||
       !Array.isArray(d.originallyListedContracts)||
@@ -489,6 +491,11 @@ export function auditPhase66StandaloneVendorPreflight(
       return fail('PHASE66_ORIGINAL_TEST_DECISION_OR_REGIME_CATALOG_INVALID',
         'INCOMPLETE_EVIDENCE');
     seenDecisions.add(decisionKey);
+    seenOriginalSessionDays.add(d.sessionDate);
+    const foldId=foldMatches[0].foldId;
+    const foldDays=testDaysByFold.get(foldId)??new Set<string>();
+    foldDays.add(d.sessionDate);
+    testDaysByFold.set(foldId,foldDays);
     const regime=d.claimedRegime;
     const rd=decisionsByRegime.get(regime)??new Set<string>();
     rd.add(d.sessionDate);decisionsByRegime.set(regime,rd);
@@ -578,6 +585,9 @@ export function auditPhase66StandaloneVendorPreflight(
     }
     if(allSides.size!==8)goodUniverse=false;
   }
+  if(catalog.folds.some(f=>!testDaysByFold.get(f.foldId)?.size))
+    return fail('PHASE66_DECLARED_OOS_TEST_FOLD_HAS_NO_ORIGINAL_DECISION_DAYS',
+      'INCOMPLETE_EVIDENCE');
   const absent=Array.from(allQuotes.keys()).filter(
     key=>!knownContracts.has(key)).length;
   const output=[...coverageCells.values()].map(cell=>({
