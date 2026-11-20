@@ -1,4 +1,4 @@
-name: Adaptive Phase50-79 focused offline research checks
+name: Adaptive Phase50-80 focused offline research checks
 on:
   push:
     branches:
@@ -30,6 +30,7 @@ on:
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
+      - 'research/adaptive-v2-phase80-private-original-l1-intake'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -61,6 +62,7 @@ on:
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
+      - 'research/adaptive-v2-phase80-private-original-l1-intake'
   workflow_dispatch:
 
 permissions:
@@ -113,4 +115,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase76_nrml_paper_risk_monitor.test.ts \
             src/quant/tests/ema15m_adaptive_phase77_offline_nrml_stop_lifecycle.test.ts \
             src/quant/tests/ema15m_adaptive_phase78_raw_broker_readonly_join.test.ts \
-            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
