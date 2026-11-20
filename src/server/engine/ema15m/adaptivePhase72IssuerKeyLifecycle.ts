@@ -303,6 +303,7 @@ export function auditPhase72CandidateIssuerKeyLifecycle(
   if(![claimedSigned,published,expired,observed,firstDecision]
     .every(Number.isFinite)||
     published>claimedSigned||published>observed||
+    observed<claimedSigned||
     observed>firstDecision||claimedSigned>firstDecision||
     observed>expired||expired<published)
     return reject('PHASE72_CLAIMED_REGISTRY_WITNESS_ORIGINAL_OOS_ASOF_INVALID',
