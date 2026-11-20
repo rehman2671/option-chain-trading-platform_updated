@@ -731,4 +731,80 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
     assert.equal(r.cells.reduce((sum,c)=>sum+c.originalNoEntryPairs,0),8);
   });
+
+  // Phase86: a BUYABLE ASK is not evidence of an immediately SELLABLE BID.
+  // Large same-snapshot spreads must not be hidden by the quoted +50 arming
+  // threshold or turn into a hypothetical executed exit.
+  it('Phase86 baseline quoted entry ASK/BID depth and small spread remain non-censored',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,0);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase86 positive ASK but zero BID and no BID depth is not sellable at the decision',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[5]='0';row[7]='0';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.claimedAsOfEntryAskPairs,8);
+    assert.equal(r.entryPairsMissingClaimedAsOfAsk,0);
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,1);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('ENTRY_ASK_WITH_NO_SAME_SNAPSHOT_MARKETABLE_BID_EXIT_LIQUIDITY'));
+    assert.equal(r.cells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithUnmarketableDecisionBid,0),1);
+    assert.equal(r.nativeBrokerNrmlGttStopChildAckVerified,false);
+  });
+  it('Phase86 ASK buy depth cannot substitute for BID sell-side lot depth',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_2W_PE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[7]='1';row[8]='100';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,1);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
+  });
+  it('Phase86 full-depth but >= +50 quoted round-trip spread is a severe entry risk, not a fill',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_4W_CE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[5]='40';row[6]='100';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,0);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('ENTRY_QUOTED_BID_ASK_SPREAD_AT_LEAST_FROZEN_ARMING_GAIN'));
+  });
+  it('Phase86 spread exactly equal to predeclared premium arming gain triggers censor',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_8W_PE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[5]='50';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,1);
+  });
+  it('Phase86 smaller spread than the pinned arming threshold does not use an invented risk cutoff',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_8W_PE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[5]='51';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase86 policy re-pinning changes the frozen arming comparator rather than hardcoding 50',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261120_8W_PE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[5]='40';f.input.policy.armingGainPremiumPoints=80;
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
+  });
+  it('Phase86 wide spread in an original NO_ENTRY alternative does not manufacture a hypothetical purchase',()=>{
+    const f=fixture(),row=f.rows.find(x=>x[2]==='OPT_20261119_1W_CE'&&
+      x[3].includes('2026-11-19T09:28'))!;
+    row[5]='0';row[7]='0';f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.originallyNoEntryPairs,8);
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,0);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,0);
+    assert.equal(r.originalEntryClaimedPairs,8);
+  });
 });
