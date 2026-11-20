@@ -79,6 +79,7 @@ on:
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
+      - 'research/adaptive-v2-phase79-premium-path-coverage'
   pull_request:
     branches:
       - main
@@ -159,6 +160,7 @@ on:
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
+      - 'research/adaptive-v2-phase79-premium-path-coverage'
   workflow_dispatch:
 
 permissions:
