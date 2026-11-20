@@ -1,0 +1,31 @@
+name: Adaptive Phase82 immutable contract token and original L1 scope (offline)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase81-causal-close-open-censor'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-contract-identity-invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase79-82 original all-listed contract identity, L1 scope and private intake tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
