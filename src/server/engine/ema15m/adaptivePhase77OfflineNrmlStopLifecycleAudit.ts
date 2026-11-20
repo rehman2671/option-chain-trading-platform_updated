@@ -110,6 +110,11 @@ const uint=(value:unknown,max=100000):value is number=>
 const id=(value:unknown):value is string=>
   typeof value==='string'&&value.length>=1&&value.length<=180&&
   /^[a-zA-Z0-9_:./-]+$/.test(value);
+/** Only canonical FO instrument tokens may contain '|'. Order/account
+ * identifiers retain the original strict no-pipe character grammar. */
+const instrumentId=(value:unknown):value is string=>id(value)||
+  (typeof value==='string'&&value.length<=180&&
+    /^(?:NSE_FO|BSE_FO)\\|[a-zA-Z0-9_:./-]{1,150}$/.test(value));
 interface OrderState {
   kind:Phase77OrderKind;
   state:Phase77Transition;
@@ -148,7 +153,7 @@ export function auditPhase77OfflineNrmlStopLifecycle(input:Phase77Input):Phase77
   if(now===null||asOf===null||received===null||asOf>received||
      received>now||claim.source!==
       'OPERATOR_TRANSCRIBED_BROKER_READONLY_SNAPSHOT_NOT_ATTESTED'||
-     claim.product!=='NRML'||!id(claim.instrumentKey)||
+     claim.product!=='NRML'||!instrumentId(claim.instrumentKey)||
      !id(claim.accountScopeKey)||!uint(claim.netLongLots,10000)||
      !Array.isArray(claim.claimedOutstandingSellOrders)||
      claim.claimedOutstandingSellOrders.length>2000)
