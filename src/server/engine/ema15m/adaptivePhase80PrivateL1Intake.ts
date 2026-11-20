@@ -70,6 +70,7 @@ export interface Phase80Report{
   entryPairsMissingClaimedAsOfAsk:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
+  entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   claimedAcquisitionIsRetrospective:boolean|null;
   sourceCategoryIsOriginalNativeL1:boolean|null;
@@ -79,6 +80,7 @@ export interface Phase80Report{
     side:'CE'|'PE';originalListedPairs:number;originalNoEntryPairs:number;
     entryClaimedPairsMissingCausalQuotedAsk:number;
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
+    entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
     originalPairsCensoredByMissingSessionCloseBid:number;
   }>;
   sourceLicenceOrVendorIndependentlyVerified:false;
@@ -106,6 +108,7 @@ function base():Phase80Report{
     entryPairsMissingClaimedAsOfAsk:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
+    entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     claimedAcquisitionIsRetrospective:null,
     sourceCategoryIsOriginalNativeL1:null,claimedRegimeCells:[],
@@ -183,6 +186,8 @@ export function auditPhase80PrivateOriginalL1(
       c.entryClaimedPairsMissingCausalQuotedAsk,
     entryClaimedPairsWithUnderTargetQuotedGiveback:
       c.entryClaimedPairsWithUnderTargetQuotedGiveback,
+    entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:
+      c.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak,
     originalPairsCensoredByMissingSessionCloseBid:
       c.originalPairsCensoredByMissingSessionCloseBid
   }));
@@ -205,6 +210,8 @@ export function auditPhase80PrivateOriginalL1(
     entryPairsMissingClaimedAsOfAsk:p79.entryPairsMissingClaimedAsOfAsk,
     quotedUnderTargetPremiumGivebackPairs:p79.quotedUnderTargetPremiumGivebackPairs,
     quotedNextOpenGapThroughTrailPairs:p79.quotedNextOpenGapThroughTrailPairs,
+    entryPairsMissingBoundedNextOpenAfterNewArmedPeak:
+      p79.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,
     listedPairsWithMissingDeclaredSessionCloseBid:
       p79.listedPairsWithMissingDeclaredSessionCloseBid,
     claimedAcquisitionIsRetrospective:retrospective,
