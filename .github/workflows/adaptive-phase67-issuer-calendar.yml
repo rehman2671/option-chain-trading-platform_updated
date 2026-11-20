@@ -1,0 +1,32 @@
+name: Adaptive Phase67 separate issuer contract expiry calendar crosscheck
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  separate-issuer-master-calendar-original-oos-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase67 TypeScript static gate
+        run: npm run lint
+      - name: Phase67 separate master, expiry, original OOS source and next-open session regression
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase67_issuer_calendar_crosscheck.test.ts
