@@ -308,4 +308,28 @@ describe('Phase80 owner-private file-backed original option L1 intake (offline o
       assert.equal(r.status,'BLOCKED_SOURCE_SCOPE');
     }finally{cleanup();}
   });
+
+  it('Phase86 private archive keeps entry BID/spread risk in redacted counts without raw option IDs',()=>{
+    const f=fixture();
+    const rows=Buffer.from(f.input.phase79.originalNativeL1Csv).toString('utf8')
+      .trimEnd().split('\n');
+    const index=rows.findIndex(r=>r.includes(',OPT1H0CE,'));
+    assert.ok(index>=1);
+    const columns=rows[index].split(',');
+    columns[5]='0';columns[7]='0';columns[6]='100';columns[8]='100';
+    rows[index]=columns.join(',');
+    f.input.phase79.originalNativeL1Csv=Buffer.from(rows.join('\n')+'\n');
+    f.repin();
+    const r=audit(f);neverTrading(r);
+    assert.equal(r.status,'DESCRIPTIVE_RETROSPECTIVE_ONLY_NO_ORIGINAL_CLIENT_CAUSAL_PROOF');
+    assert.equal(r.entryPairsWithUnmarketableDecisionBid,1);
+    assert.equal(r.entryPairsWithDecisionSpreadAtLeastArmingGain,1);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithUnmarketableDecisionBid,0),1);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithDecisionSpreadAtLeastArmingGain,0),1);
+    assert.ok(!JSON.stringify(r).includes('OPT1H0CE'));
+    assert.equal(r.executionAuthorized,false);
+    assert.equal(r.actualOptionEntryOrExitFillVerified,false);
+  });
 });
