@@ -17,6 +17,8 @@ import {
   type Phase71Input,type Phase71IndependentPins,
   type Phase71Report,type Phase71CandidateSignedManifest
 } from './adaptivePhase71DetachedCalendarManifest.js';
+import type {Phase66OriginalCatalog}
+  from './adaptivePhase66StandaloneVendorPreflight.js';
 
 const HEX=/^[0-9a-f]{64}$/;
 const ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{3,119}$/;
@@ -351,16 +353,20 @@ export function auditPhase72CandidateIssuerKeyLifecycle(
   const windows={
     ...keyActive,candidateRosterHasNonOverlappingActiveKeyWindows:true
   };
-  if(receipt.rosterRawSha256!==sha(bytes)||
-    receipt.phase71SignedManifestRawSha256!==sha(originalManifest)||
-    receipt.originalCalendarArchiveRawSha256!==sha(originalCalendar)||
-    receipt.targetIssuerSpkiDerSha256!==sha(originalIssuerKey)||
-    receipt.claimedFirstOriginalDecisionAt!==
-      input.phase71.phase70.phase69.phase68.phase67.originalVendor
-        .newVendorFullListedCatalogBase64 /* never a valid timestamp */)
-    { /* compare original decision below using signed manifest source
-       timestamps: receipt includes own asserted first-decision time;
-       parent re-audit controls complete decision calendar. */ }
+  const catalogBytes=fromB64(
+    input.phase71.phase70.phase69.phase68.phase67.originalVendor
+      .newVendorFullListedCatalogBase64,25_000_000);
+  const originalCatalog=catalogBytes?
+    parse<Phase66OriginalCatalog>(catalogBytes):null;
+  const originalDecisionTimes=originalCatalog?.decisions?.map(d=>
+    Date.parse(d.decisionAt))??[];
+  const earliestActualDecision=Math.min(...originalDecisionTimes);
+  if(!originalDecisionTimes.length||
+    originalDecisionTimes.some(x=>!Number.isFinite(x))||
+    !Number.isFinite(earliestActualDecision)||
+    firstDecision!==earliestActualDecision)
+    return reject('PHASE72_WITNESS_CLAIMED_FIRST_OOS_RECEIPT_TIMESTAMP_NOT_ORIGINAL',
+      'INCOMPLETE_EVIDENCE',windows);
   // Source-pinned receipt MUST bind original full issued content, not only
   // its claimed witness date or an attacker-chosen second cohort.
   if(receipt.rosterRawSha256!==sha(bytes)||
