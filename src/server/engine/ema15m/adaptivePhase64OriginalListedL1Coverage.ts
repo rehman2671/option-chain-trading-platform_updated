@@ -367,11 +367,11 @@ export function auditPhase64OriginalListedL1AcquisitionCoverage(
       }
     }
   });
-  const outputs:Phase64CoverageRow[]=[...rows.values()].map(r=>({
-    ...r,originalOosDecisionDaysWithContracts:r.days.size,
-    days:undefined,
-    sourceCoverageIsNotAnExecutableFill:true
-  })).map(({days,...r})=>r);
+  const outputs:Phase64CoverageRow[]=[...rows.values()].map(
+    ({days,...r})=>({
+      ...r,originalOosDecisionDaysWithContracts:days.size,
+      sourceCoverageIsNotAnExecutableFill:true as const
+    }));
   const result:Phase64Report={
     ...blank(),...partial,
     originalOosDecisions:decisions,
