@@ -1,0 +1,32 @@
+name: Adaptive Phase72 registrar witness issuer-key lifecycle quarantine
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offnetwork-three-role-key-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase72 TypeScript static gate
+        run: npm run lint
+      - name: Phase72 signer registrar witness detached Ed25519 and revoked ambiguous issuer keys
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase72_issuer_key_lifecycle.test.ts
