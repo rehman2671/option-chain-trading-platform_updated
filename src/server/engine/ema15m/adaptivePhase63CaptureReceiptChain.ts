@@ -253,7 +253,7 @@ export function auditPhase63OriginalCaptureReceiptChain(
     return fail('PHASE63_ORIGINAL_PARENT_SOURCE_OR_RECEIPT_PINS_INVALID');
   const seal=input.captureSeal;
   if(!seal||typeof seal!=='object'||
-    Object.keys(seal).length!==8||
+    Object.keys(seal).length!==9||
     seal.schemaVersion!=='ADAPTIVE_PHASE63_ORIGINAL_CAPTURE_CHAIN_SEAL_V1'||
     ![
       seal.signedPhase62ManifestSha256,
@@ -350,7 +350,7 @@ export function auditPhase63OriginalCaptureReceiptChain(
   const instruments=new Set<string>(),
     lastReceiptByInstrument=new Map<string,number>();
   let previous=ledger.initialReceiptSeedSha256;
-  let matched=0;
+  let matched=0,maxCaptured=-Infinity;
   for(let i=0;i<ledger.receipts.length;i++){
     const receipt=ledger.receipts[i],r=original[i];
     if(!receipt||typeof receipt!=='object'||
@@ -392,14 +392,13 @@ export function auditPhase63OriginalCaptureReceiptChain(
     previous=receiptLinkSha256;
     lastReceiptByInstrument.set(receipt.instrumentKey,available);
     instruments.add(receipt.instrumentKey);matched++;
+    maxCaptured=Math.max(maxCaptured,available);
   }
   if(previous!==seal.finalReceiptLinkSha256||
     previous!==pins.expectedFinalReceiptLinkSha256||
     // Even a later legally generated signed historical export is NOT
     // proof that the operator could access those ticks on OOS day.
-    timestamp(seal.collectorClaimedSignedAt)<
-      Math.max(...ledger.receipts.map(r=>
-        timestamp(r.claimedStrategyReceivedAt))))
+    timestamp(seal.collectorClaimedSignedAt)<maxCaptured)
     return fail('PHASE63_INDEPENDENT_FINAL_CHAIN_ROOT_OR_SEAL_TIME_MISMATCH',
       'INCOMPLETE_EVIDENCE',{...parent,
         chainedOriginalSourceQuoteReceipts:ledger.receipts.length,
