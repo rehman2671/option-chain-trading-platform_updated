@@ -267,8 +267,22 @@ export function auditPhase67IssuerCalendarCrosscheck(
     !Array.isArray(originalCal.sessions))
     return fail('PHASE67_ORIGINAL_L1_CATALOG_CALENDAR_REPARSE_FAILED',
       'INCOMPLETE_EVIDENCE',partial);
-  const firstDecision=Math.min(...originalCat.decisions.map(d=>
-    time(d.decisionAt)));
+  const firstDecision=originalCat.decisions.reduce((earliest,d)=>
+    Math.min(earliest,time(d.decisionAt)),Infinity);
+  // Without a separately pinned early-exit mandate, planning a study of
+  // 8W-listed options while embargoing only 40 days leaks possible
+  // still-open option outcomes into the next training/evaluation period.
+  const maximumDeclaredExpiryDays=originalCat.decisions.reduce((max,d)=>
+    Math.max(max,...d.originallyListedContracts.map(c=>Math.ceil(
+      (date(c.expiry)-date(d.sessionDate))/86400000))),0);
+  if(!Number.isFinite(maximumDeclaredExpiryDays)||
+    maximumDeclaredExpiryDays<=0||
+    input.originalVendor.policy.maximumHoldCalendarDays<
+      maximumDeclaredExpiryDays||
+    input.originalVendor.policy.minimumTrainToFirstTestEmbargoCalendarDays<
+      maximumDeclaredExpiryDays)
+    return fail('PHASE67_EIGHT_WEEK_EXPIRY_EXCEEDS_ORIGINAL_HOLD_EMBARGO',
+      'INCOMPLETE_EVIDENCE',partial);
   const published=time(calendar.claimedCalendarPublishedAt),
     received=time(calendar.claimedCalendarReceivedAt);
   if(!Number.isFinite(published)||!Number.isFinite(received)||
@@ -374,7 +388,8 @@ export function auditPhase67IssuerCalendarCrosscheck(
   let matchedQuotes=0,afterExpiry=0;
   for(const row of quotes.slice(1)){
     const c=sourceKeys.get(row[2]);
-    const event=time(row[3]),marketDay=istDate(event);
+    const event=time(row[3]),arrival=time(row[4]),
+      marketDay=Number.isFinite(event)?istDate(event):'INVALID';
     const session=sessions.get(marketDay),
       expirySession=c&&sessions.get(c.claimedLastTradingSessionDate);
     if(!c||!Number.isFinite(event)||!session||!expirySession||
@@ -391,6 +406,15 @@ export function auditPhase67IssuerCalendarCrosscheck(
           matchedOriginalCePeContractPairs:matchedPairs,
           originalQuotesBeyondClaimedLastTradableSession:afterExpiry});
     }
+    if(!Number.isFinite(arrival)||arrival<event||
+      arrival>time(session.closeAt)||
+      arrival>time(expirySession.closeAt)||
+      arrival-event>input.originalVendor.policy
+        .maximumClaimedEventToClientArrivalLagSeconds*1000)
+      return fail('PHASE67_ORIGINAL_UNSELECTED_L1_ARRIVED_TOO_LATE',
+        'INCOMPLETE_EVIDENCE',{...partial,
+          matchedOriginalCePeContractPairs:matchedPairs,
+          originalSourceQuotesConfinedToClaimedIssuerSessions:matchedQuotes});
     matchedQuotes++;
   }
   const fields:Partial<Phase67Report>={
