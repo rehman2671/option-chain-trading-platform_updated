@@ -68,6 +68,8 @@ export interface Phase80Report{
   originallyNoEntryPairs:number;
   parsedNativeQuoteRows:number;
   entryPairsMissingClaimedAsOfAsk:number;
+  entryPairsWithObservedIlliquidBidUpdate:number;
+  entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
@@ -79,6 +81,8 @@ export interface Phase80Report{
     claimedRegime:typeof REGIMES[number];horizon:'1W'|'2W'|'4W'|'8W';
     side:'CE'|'PE';originalListedPairs:number;originalNoEntryPairs:number;
     entryClaimedPairsMissingCausalQuotedAsk:number;
+    entryClaimedPairsWithObservedIlliquidBidUpdate:number;
+    entryCandidateStaleLateQuoteObservationsIgnored:number;
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
     originalPairsCensoredByMissingSessionCloseBid:number;
@@ -106,6 +110,8 @@ function base():Phase80Report{
     syntheticDataset:null,originalDecisionDates:0,originalNoEntryDecisions:0,
     originallyListedPairs:0,originallyNoEntryPairs:0,parsedNativeQuoteRows:0,
     entryPairsMissingClaimedAsOfAsk:0,
+    entryPairsWithObservedIlliquidBidUpdate:0,
+    entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
@@ -184,6 +190,10 @@ export function auditPhase80PrivateOriginalL1(
     originalNoEntryPairs:c.originalNoEntryPairs,
     entryClaimedPairsMissingCausalQuotedAsk:
       c.entryClaimedPairsMissingCausalQuotedAsk,
+    entryClaimedPairsWithObservedIlliquidBidUpdate:
+      c.entryClaimedPairsWithObservedIlliquidBidUpdate,
+    entryCandidateStaleLateQuoteObservationsIgnored:
+      c.entryCandidateStaleLateQuoteObservationsIgnored,
     entryClaimedPairsWithUnderTargetQuotedGiveback:
       c.entryClaimedPairsWithUnderTargetQuotedGiveback,
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:
@@ -208,6 +218,10 @@ export function auditPhase80PrivateOriginalL1(
     originallyNoEntryPairs:p79.originallyNoEntryPairs,
     parsedNativeQuoteRows:p79.parsedNativeQuoteRows,
     entryPairsMissingClaimedAsOfAsk:p79.entryPairsMissingClaimedAsOfAsk,
+    entryPairsWithObservedIlliquidBidUpdate:
+      p79.entryPairsWithObservedIlliquidBidUpdate,
+    entryCandidateStaleLateQuoteObservationsIgnored:
+      p79.entryCandidateStaleLateQuoteObservationsIgnored,
     quotedUnderTargetPremiumGivebackPairs:p79.quotedUnderTargetPremiumGivebackPairs,
     quotedNextOpenGapThroughTrailPairs:p79.quotedNextOpenGapThroughTrailPairs,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:
