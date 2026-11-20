@@ -59,10 +59,11 @@ export function makePhase66IndependentSyntheticVendorFixture(){
           expiry:afterDays(d.sessionDate,h.days),
           strikePrice:22000,lotSize:50
         });
-        // 04:30 UTC = 10:00 IST; 10:00 UTC = 15:30 IST.
-        // 12 quotes, 30-minute cadence from decision up to session close.
+        // 04:30 UTC = 10:00 IST; session closes 10:00 UTC.
+        // Last ORIGINAL event must arrive BEFORE session close. A 15:30
+        // event received at 15:30:05 cannot backfill an eligible exit.
         for(let n=0;n<=11;n++){
-          const event=iso(d.sessionDate,270+n*30);
+          const event=iso(d.sessionDate,n===11?595:270+n*30);
           raw.push(['MOCK_L1_RECORD_'+raw.length,String(raw.length),
             instrumentKey,event,
             new Date(Date.parse(event)+5000).toISOString(),
