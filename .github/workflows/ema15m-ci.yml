@@ -68,6 +68,7 @@ on:
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
       - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
       - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
+      - 'research/adaptive-v2-phase68-long-horizon-censoring'
   pull_request:
     branches:
       - main
@@ -137,6 +138,7 @@ on:
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
       - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
       - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
+      - 'research/adaptive-v2-phase68-long-horizon-censoring'
   workflow_dispatch:
 
 permissions:
