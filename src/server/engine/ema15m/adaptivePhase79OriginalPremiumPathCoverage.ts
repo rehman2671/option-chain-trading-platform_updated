@@ -62,6 +62,7 @@ export interface Phase79Cell{
   entryClaimedPairsWithClaimedDecisionAsk:number;
   entryClaimedPairsWithUnderTargetQuotedGiveback:number;
   entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:number;
+  entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   originalPairsCensoredByMissingSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
   entryClaimedPositionsActuallyExecuted:0;
@@ -85,6 +86,7 @@ export interface Phase79Report{
   entryPairsMissingClaimedAsOfAsk:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
+  entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
   noEntryAlternativesNeverHypotheticalPurchases:true;
@@ -152,6 +154,7 @@ function blank():Phase79Report{
     claimedAsOfEntryAskPairs:0,entryPairsMissingClaimedAsOfAsk:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
+    entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     missingDeclaredSessionCloseBidObservations:0,
     noEntryAlternativesNeverHypotheticalPurchases:true,
@@ -265,7 +268,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
   const groups=new Map<string,Phase79Cell>();
   const originalPairs=new Set<string>(),decisionDates=new Set<string>();
   let noEntryDecisions=0,total=0,noEntries=0,entries=0;
-  let asOf=0,missingAsk=0,giveback=0,gap=0,censored=0,missingCloses=0;
+  let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
+    censored=0,missingCloses=0;
   const sessionDates=[...sessions.keys()].sort();
   const nextDeclaredSession=(date:string):string|null=>{
     const ix=sessionDates.indexOf(date);
@@ -304,6 +308,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
           entryClaimedPairsWithClaimedDecisionAsk:0,
           entryClaimedPairsWithUnderTargetQuotedGiveback:0,
           entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:0,
+          entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
           originalPairsCensoredByMissingSessionCloseBid:0,
           missingDeclaredSessionCloseBidObservations:0,
           entryClaimedPositionsActuallyExecuted:0,
@@ -326,11 +331,16 @@ export function auditPhase79OriginalPremiumPathCoverage(
         if(!entry){missingAsk++;cell.entryClaimedPairsMissingCausalQuotedAsk++;}
         else {
           asOf++;cell.entryClaimedPairsWithClaimedDecisionAsk++;
+          // A quote that arrived after the claimed session CLOSE was
+          // NOT available to the algorithm during that tradable session,
+          // regardless of its exchange-side event timestamp.
           const after=q.filter(x=>x.event>dec&&x.available>dec&&
             istDay(x.event)<=c.expiry&&
-            x.bidQty>=p.minBestBidAndAskDepthLots*c.lotSize);
+            x.available<=sessions.get(istDay(x.event))!.close&&
+            x.bid>0&&x.bidQty>=p.minBestBidAndAskDepthLots*c.lotSize);
           let peak=entry.ask, peakSession=d.sessionDate,seenGiveback=false,seenGap=false;
           const firstBidSession=new Set<string>();
+          const newArmedPeakNextOpens=new Set<string>();
           for(const x of after){
             const gain=peak-entry.ask;
             const next=istDay(x.event);
@@ -352,10 +362,33 @@ export function auditPhase79OriginalPremiumPathCoverage(
                gain<p.targetAlertPremiumPoints&&
                x.bid<=peak-p.givebackAlertPremiumPoints)
               seenGiveback=true;
-            if(x.bid>peak){peak=x.bid;peakSession=next;}
+            if(x.bid>peak){
+              peak=x.bid;peakSession=next;
+              if(peak-entry.ask>=p.armingGainPremiumPoints){
+                const following=nextDeclaredSession(next);
+                if(following&&following<=c.expiry)
+                  newArmedPeakNextOpens.add(following);
+              }
+            }
           }
           if(seenGiveback){giveback++;cell.entryClaimedPairsWithUnderTargetQuotedGiveback++;}
           if(seenGap){gap++;cell.entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail++;}
+          // Observed NEW peaks that armed a theoretical trail require a
+          // depth-positive, receipt-time-valid FIRST BID at next declared
+          // session OPEN. Without one, absence of an observed gap is NOT
+          // evidence that overnight exposure was safe. This is a lower
+          // bound on missing opens, not a complete continuous tick tape.
+          const missingBoundedOpen=[...newArmedPeakNextOpens].some(day=>{
+            const session=sessions.get(day)!;
+            return !after.some(x=>istDay(x.event)===day&&
+              x.event>=session.open&&
+              x.event<=session.open+p.nextOpenBidWindowMinutes*MIN&&
+              x.available<=session.open+p.nextOpenBidWindowMinutes*MIN);
+          });
+          if(missingBoundedOpen){
+            missingNextOpen++;
+            cell.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak++;
+          }
         }
       }
       // Calendar contains only operator-declared sessions. Missing entire
@@ -365,7 +398,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
         if(date<d.sessionDate||date>c.expiry)continue;
         if(!q.some(x=>istDay(x.event)===date&&x.event>=
             session.close-p.closingBidWindowMinutes*MIN&&
-            x.event<=session.close&&x.bidQty>=
+            x.event<=session.close&&x.available<=session.close&&
+            x.bid>0&&x.bidQty>=
             p.minBestBidAndAskDepthLots*c.lotSize))missed++;
       }
       // Missing the claimed expiry region cannot masquerade as complete
@@ -398,8 +432,9 @@ export function auditPhase79OriginalPremiumPathCoverage(
     'DISPLAYED_QUOTED_BID_IS_NOT_AN_EXECUTABLE_EXIT_OR_STOP_FILL'];
   if(missingAsk>0)reasons.push('ORIGINAL_ENTRY_CLAIMED_PAIRS_LACK_CAUSAL_QUOTED_ASK');
   if(censored>0)reasons.push('MISSING_DECLARED_SESSION_CLOSE_BID_CENSORS_HOLDING_PATH');
+  if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
-  return {...blank(),status:missingAsk||censored?
+  return {...blank(),status:missingAsk||censored||missingNextOpen?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
       'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED',
     reasonCodes:reasons,syntheticDataset:input.datasetKind==='SYNTHETIC_FIXTURE',
@@ -409,6 +444,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
     claimedAsOfEntryAskPairs:asOf,entryPairsMissingClaimedAsOfAsk:missingAsk,
     quotedUnderTargetPremiumGivebackPairs:giveback,
     quotedNextOpenGapThroughTrailPairs:gap,
+    entryPairsMissingBoundedNextOpenAfterNewArmedPeak:missingNextOpen,
     listedPairsWithMissingDeclaredSessionCloseBid:censored,
     missingDeclaredSessionCloseBidObservations:missingCloses,
     cells:[...groups.values()].sort((a,b)=>
