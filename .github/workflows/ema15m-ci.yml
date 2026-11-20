@@ -71,6 +71,7 @@ on:
       - 'research/adaptive-v2-phase68-long-horizon-censoring'
       - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
       - 'research/adaptive-v2-phase70-session-exception-evidence'
+      - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
   pull_request:
     branches:
       - main
@@ -143,6 +144,7 @@ on:
       - 'research/adaptive-v2-phase68-long-horizon-censoring'
       - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
       - 'research/adaptive-v2-phase70-session-exception-evidence'
+      - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
   workflow_dispatch:
 
 permissions:
