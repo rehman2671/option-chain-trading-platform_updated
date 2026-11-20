@@ -78,6 +78,7 @@ on:
       - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
   pull_request:
     branches:
       - main
@@ -157,6 +158,7 @@ on:
       - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
       - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
       - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
   workflow_dispatch:
 
 permissions:
