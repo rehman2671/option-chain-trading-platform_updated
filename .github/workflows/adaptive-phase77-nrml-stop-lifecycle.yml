@@ -1,0 +1,31 @@
+name: Adaptive Phase77 offline NRML claimed stop and GTT lifecycle safeguards
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase76-nrml-paper-risk-monitor'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-broker-claim-reconciliation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Full repository TypeScript static gate
+        run: npm run lint
+      - name: Phase76 paper risk and Phase77 broker claim lifecycle offline regressions
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase76_nrml_paper_risk_monitor.test.ts \
+            src/quant/tests/ema15m_adaptive_phase77_offline_nrml_stop_lifecycle.test.ts
