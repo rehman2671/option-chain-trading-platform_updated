@@ -65,6 +65,7 @@ on:
       - 'research/adaptive-v2-phase62-native-csv-dual-receipt'
       - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
+      - 'research/adaptive-v2-phase65-vendor-delivery-intake'
   pull_request:
     branches:
       - main
@@ -131,6 +132,7 @@ on:
       - 'research/adaptive-v2-phase62-native-csv-dual-receipt'
       - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
+      - 'research/adaptive-v2-phase65-vendor-delivery-intake'
   workflow_dispatch:
 
 permissions:
