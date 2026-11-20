@@ -84,6 +84,7 @@ on:
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
       - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
+      - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
   pull_request:
     branches:
       - main
@@ -169,6 +170,7 @@ on:
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
       - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
+      - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
   workflow_dispatch:
 
 permissions:

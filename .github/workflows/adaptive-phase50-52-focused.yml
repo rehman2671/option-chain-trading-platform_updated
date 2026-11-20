@@ -1,4 +1,4 @@
-name: Adaptive Phase50-83 focused offline research checks
+name: Adaptive Phase50-84 focused offline research checks
 on:
   push:
     branches:
@@ -34,6 +34,7 @@ on:
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
       - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
+      - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -69,6 +70,7 @@ on:
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
       - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
+      - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
   workflow_dispatch:
 
 permissions:
