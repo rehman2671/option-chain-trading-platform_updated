@@ -1,0 +1,31 @@
+name: Adaptive Phase80 offline private native L1 intake gate
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase80-private-original-l1-intake'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase79-premium-path-coverage'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  private-original-option-l1-intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static type gate
+        run: npm run lint
+      - name: Phase79 and Phase80 offline original L1 private-file invariants
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
