@@ -133,8 +133,23 @@ const integer=(n:unknown,min:number,max:number):n is number=>
   typeof n==='number'&&Number.isSafeInteger(n)&&n>=min&&n<=max;
 const finite=(n:unknown,min:number,max:number):n is number=>
   typeof n==='number'&&Number.isFinite(n)&&n>=min&&n<=max;
-const stamp=(v:unknown):number=>
-  typeof v==='string'&&ISO.test(v)?Date.parse(v):NaN;
+/** Strict offset-local wall clock: Date.parse alone normalizes Feb 31 to Mar 3. */
+const stamp=(v:unknown):number=>{
+  if(typeof v!=='string'||!ISO.test(v))return NaN;
+  const millis=Date.parse(v);
+  if(!Number.isFinite(millis))return NaN;
+  const zone=v.endsWith('Z')?'Z':v.slice(-6);
+  let offset=0;
+  if(zone!=='Z'){
+    const hour=Number(zone.slice(1,3)),minute=Number(zone.slice(4,6));
+    if(hour>23||minute>59)return NaN;
+    offset=(zone[0]==='-'?-1:1)*(hour*60+minute)*MIN;
+  }
+  // Reconstruct the explicit local date/time, not the normalized UTC date.
+  // Millisecond precision is deliberately left unchanged.
+  const reconstructed=new Date(millis+offset).toISOString().slice(0,19);
+  return reconstructed===v.slice(0,19)?millis:NaN;
+};
 const day=(v:unknown):v is string=>
   typeof v==='string'&&DAY.test(v)&&Number.isFinite(Date.parse(v+'T00:00:00Z'))&&
   new Date(v+'T00:00:00Z').toISOString().slice(0,10)===v;
@@ -240,6 +255,10 @@ export function auditPhase79OriginalPremiumPathCoverage(
     raw[0].length!==HEAD.length)
     return fail('PHASE79_NATIVE_L1_CSV_NOT_ORIGINAL_STRICT_FORMAT');
   const seenIds=new Set<string>(),seenSeq=new Set<string>();
+  // Per-contract/per-session source sequence is distinct from delivery order.
+  // Its event-time chronology must not be inverted by arbitrary CSV ordering
+  // or by a self-pinned archive with contradictory vendor sequence numbers.
+  const sourceSequences=new Map<string,Array<{sequence:number;event:number}>>();
   const quotes=new Map<string,Quote[]>();
   for(const row of raw.slice(1)){
     if(row.length!==HEAD.length||!row[0]||seenIds.has(row[0])||
@@ -263,8 +282,19 @@ export function auditPhase79OriginalPremiumPathCoverage(
       seenSeq.has(JSON.stringify([d,row[2],sequence])))
       return fail('PHASE79_OUTSIDE_DECLARED_SESSION_OR_REPLAYED_SEQUENCE');
     seenSeq.add(JSON.stringify([d,row[2],sequence]));
+    const scope=JSON.stringify([d,row[2]]);
+    const sequenceRows=sourceSequences.get(scope)??[];
+    sequenceRows.push({sequence,event});
+    sourceSequences.set(scope,sequenceRows);
     const q={instrument:row[2],sequence,event,available,bid,ask,bidQty,askQty};
     const xs=quotes.get(row[2])??[];xs.push(q);quotes.set(row[2],xs);
+  }
+  for(const sequenceRows of sourceSequences.values()){
+    sequenceRows.sort((a,b)=>a.sequence-b.sequence);
+    if(sequenceRows.some((q,i)=>i>0&&
+       q.event<sequenceRows[i-1].event))
+      return fail('PHASE84_ORIGINAL_SOURCE_SEQUENCE_EVENT_CLOCK_INVERSION',
+        'INCOMPLETE_EVIDENCE');
   }
   // Path observations must respect operator-claimed arrival order, NOT
   // re-sort a delayed quote into a hindsight event-time winning path.
