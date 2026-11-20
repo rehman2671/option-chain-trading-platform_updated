@@ -1,4 +1,4 @@
-name: Adaptive Phase50-80 focused offline research checks
+name: Adaptive Phase50-81 focused offline research checks
 on:
   push:
     branches:
@@ -31,6 +31,7 @@ on:
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
+      - 'research/adaptive-v2-phase81-causal-close-open-censor'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -63,6 +64,7 @@ on:
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
+      - 'research/adaptive-v2-phase81-causal-close-open-censor'
   workflow_dispatch:
 
 permissions:

@@ -324,4 +324,93 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     f.repin();
     rejected(f,'PHASE79_ORIGINAL_DECISION_OR_LISTED_UNIVERSE_INVALID');
   });
+
+  // Phase81: quoted receive-time availability must not time-travel into
+  // the closing auction or cover an overnight opening data blackout.
+  it('Phase81 baseline has first next-open BID after newly armed peak; no invented missing-open censor',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase81 closing quote received AFTER session close cannot cover the close despite valid event time and depth',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-20T15:29'))!;
+    row[4]=ist('2026-11-20',15,31);
+    f.input.policy.maxClaimedEventToArrivalSeconds=600;
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase81 zero displayed BID price with positive quoted depth cannot masquerade as a sellable closing BID',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_2W_CE'&&
+      x[3].includes('2026-11-20T15:29'))!;
+    row[5]='0';row[6]='1'; // nominal depth remains positive
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase81 stale post-close low BID cannot invent intraday +70 to +20 premium giveback',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE';
+    const late=f.rows.find(x=>x[2]===key&&
+      x[3].includes('2026-11-20T15:29'))!;
+    for(const row of f.rows){
+      if(row[2]===key&&row[3]>ist('2026-11-20',10,0)&&row!==late){
+        row[5]='170';row[6]='171';
+      }
+    }
+    late[5]='50';late[6]='51';
+    late[4]=ist('2026-11-20',15,31);
+    f.input.policy.maxClaimedEventToArrivalSeconds=600;
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.quotedUnderTargetPremiumGivebackPairs,7);
+    assert.equal(r.listedPairsWithMissingDeclaredSessionCloseBid,1);
+  });
+  it('Phase81 missing first depth-qualified bounded next-open BID after a new armed peak is censor, not no overnight gap',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE';
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][2]===key&&f.rows[i][3].includes('2026-11-23T09:16'))
+        f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE'));
+  });
+  it('Phase81 opening quote received after bounded window does not prove opening-gap absence',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-23T09:16'))!;
+    row[4]=ist('2026-11-23',9,22);
+    f.input.policy.maxClaimedEventToArrivalSeconds=600;
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+  });
+  it('Phase81 a newly higher armed peak in a later session requires that following session first open too',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-23T09:16'))!;
+    row[5]='190';row[6]='191';
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase81 zero-depth first open is censored even though a later closing BID is available',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-23T09:16'))!;
+    row[7]='0';row[8]='0';
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+  });
 });

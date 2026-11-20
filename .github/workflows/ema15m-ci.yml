@@ -81,6 +81,7 @@ on:
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
+      - 'research/adaptive-v2-phase81-causal-close-open-censor'
   pull_request:
     branches:
       - main
@@ -163,6 +164,7 @@ on:
       - 'research/adaptive-v2-phase78-raw-broker-get-join'
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
+      - 'research/adaptive-v2-phase81-causal-close-open-censor'
   workflow_dispatch:
 
 permissions:
