@@ -1,0 +1,30 @@
+name: Adaptive Phase79 original all-listed option premium path L1 coverage (offline)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase79-premium-path-coverage'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-original-option-l1-path-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase79 original all-listed quoted premium path and availability negative controls
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts
