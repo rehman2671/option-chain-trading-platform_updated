@@ -1,4 +1,4 @@
-name: Adaptive Phase50-66 focused offline research checks
+name: Adaptive Phase50-67 focused offline research checks
 on:
   push:
     branches:
@@ -17,6 +17,7 @@ on:
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
       - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
+      - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -34,6 +35,7 @@ on:
       - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
+      - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
   workflow_dispatch:
 
 permissions:
@@ -54,7 +56,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-66 focused synthetic offline invariants
+      - name: Phase50-67 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -73,4 +75,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase63_strategy_capture_receipts.test.ts \
             src/quant/tests/ema15m_adaptive_phase64_all_listed_l1_acquisition.test.ts \
             src/quant/tests/ema15m_adaptive_phase65_vendor_delivery_intake.test.ts \
-            src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts
+            src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts \
+            src/quant/tests/ema15m_adaptive_phase67_issuer_calendar_crosscheck.test.ts
