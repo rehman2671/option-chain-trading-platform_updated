@@ -30,6 +30,9 @@ function unverified(r:Phase69Report){
     assert.equal(c.noEntryNeverBrokerPosition,true);
     assert.equal(c.potentialWeekdayNotProvenRealExchangeSession,true);
     assert.equal(c.closeBidNotActualTradeFill,true);
+    assert.equal(c.entirePaidLongOptionPremiumDebitCanBeLost,true);
+    assert.equal(
+      c.underlyingIndex100PointTargetNotDerivableFromOptionOnlyBids,true);
   }
 }
 function reject(f:F,reason:string,
@@ -82,6 +85,7 @@ describe('Phase69 original OOS 1W-8W weekday candidate acquisition gaps',()=>{
     assert.equal(r.totalUnexplainedPotentialWeekdayContractSlots,0);
     assert.equal(r.totalMissingOrStaleDeclaredSessionBidMarkSlots,0);
     assert.equal(r.originalPairsWithoutVerifiedCompleteFullDurationEvidence,32);
+    assert.ok(r.cells.every(c=>c.originalsWithDetectedCalendarOrBidGaps===0));
     assert.equal(r.optimalOneToEightWeekContractRecommended,false);
     assert.equal(r.genuinePositionPnLOrStatisticalMultiregimeEdgeProven,false);
   });
