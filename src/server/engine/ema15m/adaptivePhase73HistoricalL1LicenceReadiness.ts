@@ -277,7 +277,7 @@ export function auditPhase73HistoricalSourceReadiness(
     acquired.originalHistoricalClientReceiptClockIndependentlyAvailable!==
       false||
     acquired.retrospectivelyDownloadedHistoryIsNotOriginalAvailableAt!==true)
-    return fail('PHASE73_VENDER_RIGHTS_OR_ORIGINAL_RECEIPT_CLAIM_NOT_ADMISSIBLE');
+    return fail('PHASE73_VENDOR_RIGHTS_OR_ORIGINAL_RECEIPT_CLAIM_NOT_ADMISSIBLE');
   const start=time(licence.claimedGrantEffectiveAt),
     expiry=time(licence.claimedGrantExpiresAt),
     published=time(acquired.claimedArchivePublishedAt),
@@ -365,8 +365,9 @@ export function auditPhase73HistoricalSourceReadiness(
     horizons.reduce((a,x)=>a+x.originalAllListedCePePairs,0)!==
       phase72.originalListedCePePairs||
     horizons.reduce((a,x)=>a+x.originalNoEntryPairs,0)!==
-      phase72.originalListedCePePairs*
-      phase72.originalNoEntryDays/phase72.originalOosDecisions)
+      catalog.decisions.filter(d=>
+        d.originalEntryDisposition==='NO_ENTRY').reduce((n,d)=>
+        n+d.originallyListedContracts.length,0)
     return fail('PHASE73_ALL_FOUR_ORIGINAL_HORIZON_NO_ENTRY_ROWS_MISSING',
       'INCOMPLETE_EVIDENCE',{...p,horizons});
   const gaps=horizons.reduce((n,h)=>
