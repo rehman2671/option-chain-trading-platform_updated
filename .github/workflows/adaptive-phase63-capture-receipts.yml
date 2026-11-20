@@ -1,0 +1,32 @@
+name: Adaptive Phase63 original strategy L1 capture receipt chain
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase62-native-csv-dual-receipt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-claimed-capture-receipts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase63 TypeScript static check
+        run: npm run lint
+      - name: Phase63 exact original CSV option quote capture ledger hash-chain and collector signature
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase63_strategy_capture_receipts.test.ts
