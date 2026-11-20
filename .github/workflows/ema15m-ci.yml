@@ -86,6 +86,7 @@ on:
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
       - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
       - 'research/adaptive-v2-phase85-indexed-l1-close-coverage'
+      - 'research/adaptive-v2-phase86-entry-bid-spread-risk-census'
   pull_request:
     branches:
       - main
@@ -173,6 +174,7 @@ on:
       - 'research/adaptive-v2-phase83-causal-quote-supersession'
       - 'research/adaptive-v2-phase84-native-l1-clock-sequence-integrity'
       - 'research/adaptive-v2-phase85-indexed-l1-close-coverage'
+      - 'research/adaptive-v2-phase86-entry-bid-spread-risk-census'
   workflow_dispatch:
 
 permissions:
