@@ -205,7 +205,7 @@ function validPolicy(p:Phase69Policy):boolean{
 type OriginalQuote={
   event:number;arrival:number;bid:number;bidQty:number
 };
-const key=(regime:Regime,h:H,side:Side)=>[regime,h,side].join('|');
+const key=(regime:Regime,h:Horizon,side:Side)=>[regime,h,side].join('|');
 export function auditPhase69CalendarBlindSpots(
   input:Phase69Input,pins:Phase69Pins
 ):Phase69Report{
