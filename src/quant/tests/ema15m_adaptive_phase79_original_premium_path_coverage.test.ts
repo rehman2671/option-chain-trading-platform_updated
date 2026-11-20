@@ -597,4 +597,69 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.cells.reduce((acc,c)=>
       acc+c.entryClaimedPairsWithObservedIlliquidBidUpdate,0),1);
   });
+
+  // Phase84: normalized impossible dates are never an exchange observation.
+  // Source event sequences cannot contradict event-time ordering, even when
+  // the original CSV arrives out of order or the operator freshly re-pins it.
+  it('Phase84 normal valid IST source dates and sequence chronology remain descriptive only',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+  });
+  it('Phase84 impossible November 31 source event and receipt may not normalize into December 1 market data',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[3].includes('2026-12-01T15:29'))!;
+    assert.ok(row);
+    row[3]=row[3].replace('2026-12-01','2026-11-31');
+    row[4]=row[4].replace('2026-12-01','2026-11-31');
+    f.rebuild();f.repin();
+    rejected(f,'PHASE79_INVALID_NATIVE_BID_ASK_DEPTH_OR_SOURCE_CLOCK');
+  });
+  it('Phase84 impossible November 31 trading-session open/close cannot masquerade as December 1',()=>{
+    const f=fixture();
+    const session=f.input.declaredSessions.find(x=>x.sessionDate==='2026-12-01')!;
+    assert.ok(session);
+    session.openAt=session.openAt.replace('2026-12-01','2026-11-31');
+    session.closeAt=session.closeAt.replace('2026-12-01','2026-11-31');
+    f.repin();
+    rejected(f,'PHASE79_DUPLICATE_INVALID_OR_CROSS_DAY_SESSION');
+  });
+  it('Phase84 per-session sequence inversion rejects newer sequence stamped before older event',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE';
+    const older=f.rows.find(x=>x[2]===key&&x[3].includes('2026-11-20T10:00'))!;
+    assert.ok(older);
+    older[1]='4'; // closing 15:29 retains sequence 3
+    f.rebuild();f.repin();
+    rejected(f,'PHASE84_ORIGINAL_SOURCE_SEQUENCE_EVENT_CLOCK_INVERSION');
+  });
+  it('Phase84 shuffling CSV row placement alone must not create a false exchange-sequence inversion',()=>{
+    const f=fixture();f.rows.reverse();f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+    assert.equal(r.quotedUnderTargetPremiumGivebackPairs,8);
+  });
+  it('Phase84 valid UTC-normalized timestamps can represent same original option observations',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_CE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[3]='2026-11-20T03:58:00Z';
+    row[4]='2026-11-20T03:58:00Z';
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.status,'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED');
+    assert.equal(r.claimedAsOfEntryAskPairs,8);
+  });
+  it('Phase84 valid offset-minus timestamps should not be mistaken for a normalized impossible date',()=>{
+    const f=fixture();
+    const row=f.rows.find(x=>x[2]==='OPT_20261120_1W_PE'&&
+      x[3].includes('2026-11-20T09:28'))!;
+    row[3]='2026-11-19T22:28:00-05:30';
+    row[4]='2026-11-19T22:28:00-05:30';
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.claimedAsOfEntryAskPairs,8);
+  });
+  it('Phase84 source sequence is scoped to instrument AND trading session; next day may reset to 1',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.parsedNativeQuoteRows>16,true);
+  });
 });
