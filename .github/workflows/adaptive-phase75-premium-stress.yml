@@ -1,0 +1,32 @@
+name: Adaptive Phase75 counterfactual premium giveback and NRML stop nonfill stress
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-all-listed-premium-gap-and-full-debit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase75 TypeScript static gate
+        run: npm run lint
+      - name: Phase75 every original entry listed 1W-8W CE PE four-way full debit stress
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase75_counterfactual_premium_stop_stress.test.ts
