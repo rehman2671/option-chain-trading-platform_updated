@@ -1,4 +1,4 @@
-name: Adaptive Phase50-61 focused offline research checks
+name: Adaptive Phase50-62 focused offline research checks
 on:
   push:
     branches:
@@ -12,6 +12,7 @@ on:
       - 'research/adaptive-v2-phase59-cohort-premium-gap-reconciliation'
       - 'research/adaptive-v2-phase60-horizon-regime-evidence-sufficiency'
       - 'research/adaptive-v2-phase61-original-data-provenance-readiness'
+      - 'research/adaptive-v2-phase62-native-csv-dual-receipt'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -24,6 +25,7 @@ on:
       - 'research/adaptive-v2-phase58-matched-exit-debit-coverage'
       - 'research/adaptive-v2-phase59-cohort-premium-gap-reconciliation'
       - 'research/adaptive-v2-phase60-horizon-regime-evidence-sufficiency'
+      - 'research/adaptive-v2-phase61-original-data-provenance-readiness'
   workflow_dispatch:
 
 permissions:
@@ -44,7 +46,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-61 focused synthetic offline invariants
+      - name: Phase50-62 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -58,4 +60,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase58_exit_asof_risk_join.test.ts \
             src/quant/tests/ema15m_adaptive_phase59_original_premium_gap_join.test.ts \
             src/quant/tests/ema15m_adaptive_phase60_horizon_regime_sufficiency.test.ts \
-            src/quant/tests/ema15m_adaptive_phase61_raw_l1_custody_readiness.test.ts
+            src/quant/tests/ema15m_adaptive_phase61_raw_l1_custody_readiness.test.ts \
+            src/quant/tests/ema15m_adaptive_phase62_native_csv_dual_receipt.test.ts

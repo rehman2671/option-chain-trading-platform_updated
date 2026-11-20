@@ -1,0 +1,32 @@
+name: Adaptive Phase62 native CSV two detached source receipts
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase62-native-csv-dual-receipt'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase61-original-data-provenance-readiness'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-native-source-receipts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase62 TypeScript static gate
+        run: npm run lint
+      - name: Genuine cryptographic synthetic publisher witness signatures and complete native L1 CSV binding
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase62_native_csv_dual_receipt.test.ts
