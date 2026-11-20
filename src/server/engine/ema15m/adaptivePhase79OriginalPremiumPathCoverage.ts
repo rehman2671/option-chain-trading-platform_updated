@@ -267,6 +267,12 @@ export function auditPhase79OriginalPremiumPathCoverage(
     a.available-b.available||a.event-b.event);
   const groups=new Map<string,Phase79Cell>();
   const originalPairs=new Set<string>(),decisionDates=new Set<string>();
+  // A source instrument token is one immutable option contract across ALL
+  // original decisions. Otherwise two tenors/sides/strikes could silently
+  // share one BID path and distort giveback, overnight gaps and OOS coverage.
+  const contractIdentities=new Map<string,{
+    optionType:Phase79Side;expiry:string;strikePrice:number;lotSize:number
+  }>();
   let noEntryDecisions=0,total=0,noEntries=0,entries=0;
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
     censored=0,missingCloses=0;
@@ -280,6 +286,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
       stamp(d.decisionAt)<0||!Number.isFinite(stamp(d.decisionAt))||
       istDay(stamp(d.decisionAt))!==d.sessionDate||
       !sessions.has(d.sessionDate)||
+      stamp(d.decisionAt)<sessions.get(d.sessionDate)!.open||
+      stamp(d.decisionAt)>sessions.get(d.sessionDate)!.close||
       !['NO_ENTRY','ENTRY_CLAIMED'].includes(d.originalEntryDisposition)||
       !Array.isArray(d.originallyListedContracts)||
       d.originallyListedContracts.length<8||
@@ -293,8 +301,19 @@ export function auditPhase79OriginalPremiumPathCoverage(
       if(!c||!day(c.expiry)||!h||!['CE','PE'].includes(c.optionType)||
         typeof c.instrumentKey!=='string'||c.instrumentKey.length>180||
         !/^[A-Za-z0-9][A-Za-z0-9._:/|+-]{3,179}$/.test(c.instrumentKey)||
-        !integer(c.lotSize,1,10000))
+        !integer(c.lotSize,1,10000)||
+        !finite(c.strikePrice,0.01,100000000))
         return fail('PHASE79_OPTION_CONTRACT_LOT_EXPIRY_OR_SIDE_INVALID');
+      const prior=contractIdentities.get(c.instrumentKey);
+      if(prior&&(prior.expiry!==c.expiry||
+         prior.optionType!==c.optionType||
+         prior.strikePrice!==c.strikePrice||
+         prior.lotSize!==c.lotSize))
+        return fail('PHASE82_REUSED_CONTRACT_TOKEN_CONTRADICTS_EXPIRY_SIDE_STRIKE_OR_LOT',
+          'INCOMPLETE_EVIDENCE');
+      if(!prior)contractIdentities.set(c.instrumentKey,{
+        optionType:c.optionType,expiry:c.expiry,strikePrice:c.strikePrice,
+        lotSize:c.lotSize});
       originalHorizonSides.add(h+'-'+c.optionType);
       const k=JSON.stringify([d.sessionDate,c.instrumentKey]);
       if(originalPairs.has(k))return fail('PHASE79_DUPLICATED_ORIGINAL_LISTED_PAIR');
@@ -416,6 +435,18 @@ export function auditPhase79OriginalPremiumPathCoverage(
     if(HORIZONS.some(h=>!originalHorizonSides.has(h+'-CE')||
        !originalHorizonSides.has(h+'-PE')))
       return fail('PHASE79_ORIGINAL_DECISION_MISSING_HORIZON_OR_SIDE',
+        'INCOMPLETE_EVIDENCE');
+  }
+  // CSV rows not in the original frozen universe must not be quietly
+  // treated as if they were this decision catalog's complete source.
+  // Expired option tokens also must not be recycled into another contract.
+  for(const [instrument,observations] of quotes){
+    const expected=contractIdentities.get(instrument);
+    if(!expected)
+      return fail('PHASE82_NATIVE_L1_ROW_OUTSIDE_FROZEN_LISTED_CONTRACT_UNIVERSE',
+        'INCOMPLETE_EVIDENCE');
+    if(observations.some(q=>istDay(q.event)>expected.expiry))
+      return fail('PHASE82_NATIVE_L1_QUOTE_AFTER_DECLARED_OPTION_EXPIRY',
         'INCOMPLETE_EVIDENCE');
   }
   if(total!==pins.expectedOriginallyListedPairs||

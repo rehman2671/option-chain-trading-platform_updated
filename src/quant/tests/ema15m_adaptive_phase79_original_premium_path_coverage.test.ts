@@ -413,4 +413,92 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
     assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
   });
+
+  // Phase82: frozen original contract IDs must be immutable through time.
+  // Operator pins are only self-checks: re-pinning contradictions is blocked.
+  it('Phase82 rejects native CSV quote instrument absent from every originally listed alternative',()=>{
+    const f=fixture();
+    const when=ist('2026-11-20',9,20);
+    f.rows.push(['REC-UNLISTED','1','UNLISTED_OTHER_INDEX_OPTION',when,when,
+      '99','100','100','100']);
+    f.rebuild();f.repin();
+    rejected(f,'PHASE82_NATIVE_L1_ROW_OUTSIDE_FROZEN_LISTED_CONTRACT_UNIVERSE');
+  });
+  it('Phase82 quote for listed option arriving on a day after declared expiry is never a valid next-contract price',()=>{
+    const f=fixture(),when=ist('2026-11-27',9,20);
+    f.rows.push(['REC-EXPIRED','1','OPT_20261119_1W_CE',when,when,
+      '99','100','100','100']);
+    f.rebuild();f.repin();
+    rejected(f,'PHASE82_NATIVE_L1_QUOTE_AFTER_DECLARED_OPTION_EXPIRY');
+  });
+  it('Phase82 cross-decision reused token with changed expiry is an identity conflict, not a different holding horizon',()=>{
+    const f=fixture();
+    f.input.originalCatalog.decisions[1].originallyListedContracts[0].instrumentKey=
+      f.input.originalCatalog.decisions[0].originallyListedContracts[0].instrumentKey;
+    f.repin();
+    rejected(f,'PHASE82_REUSED_CONTRACT_TOKEN_CONTRADICTS_EXPIRY_SIDE_STRIKE_OR_LOT');
+  });
+  it('Phase82 cross-decision reuse of a CE token for a PE is an identity conflict',()=>{
+    const f=fixture(),a=f.input.originalCatalog.decisions[0].originallyListedContracts[0],
+      b=f.input.originalCatalog.decisions[1].originallyListedContracts[1];
+    b.instrumentKey=a.instrumentKey;
+    b.expiry=a.expiry;
+    f.repin();
+    rejected(f,'PHASE82_REUSED_CONTRACT_TOKEN_CONTRADICTS_EXPIRY_SIDE_STRIKE_OR_LOT');
+  });
+  it('Phase82 rejects source token reusing a different strike even with same expiry, right and lot',()=>{
+    const f=fixture(),a=f.input.originalCatalog.decisions[0].originallyListedContracts[0],
+      b=f.input.originalCatalog.decisions[1].originallyListedContracts[0];
+    b.instrumentKey=a.instrumentKey;
+    b.expiry=a.expiry;
+    b.strikePrice+=100;
+    f.repin();
+    rejected(f,'PHASE82_REUSED_CONTRACT_TOKEN_CONTRADICTS_EXPIRY_SIDE_STRIKE_OR_LOT');
+  });
+  it('Phase82 rejects source token reusing different lot size despite same right, strike and expiry',()=>{
+    const f=fixture(),a=f.input.originalCatalog.decisions[0].originallyListedContracts[0],
+      b=f.input.originalCatalog.decisions[1].originallyListedContracts[0];
+    b.instrumentKey=a.instrumentKey;
+    b.expiry=a.expiry;
+    b.lotSize=25;
+    f.repin();
+    rejected(f,'PHASE82_REUSED_CONTRACT_TOKEN_CONTRADICTS_EXPIRY_SIDE_STRIKE_OR_LOT');
+  });
+  it('Phase82 an original decision before the declared market opens cannot be an executable option decision',()=>{
+    const f=fixture();
+    f.input.originalCatalog.decisions[0].decisionAt=ist('2026-11-19',9,14);
+    f.repin();
+    rejected(f,'PHASE79_ORIGINAL_DECISION_OR_LISTED_UNIVERSE_INVALID');
+  });
+  it('Phase82 a claimed original decision after the declared close cannot be replayed as daytime as-of',()=>{
+    const f=fixture();
+    f.input.originalCatalog.decisions[1].decisionAt=ist('2026-11-20',15,31);
+    f.repin();
+    rejected(f,'PHASE79_ORIGINAL_DECISION_OR_LISTED_UNIVERSE_INVALID');
+  });
+  it('Phase82 non-finite/zero original strike cannot silently create an ambiguous contract identity',()=>{
+    for(const strike of [0,Number.NaN,Number.POSITIVE_INFINITY]){
+      const f=fixture();
+      f.input.originalCatalog.decisions[0].originallyListedContracts[0].strikePrice=strike;
+      f.repin();
+      rejected(f,'PHASE79_OPTION_CONTRACT_LOT_EXPIRY_OR_SIDE_INVALID');
+    }
+  });
+  it('Phase82 same immutable option legitimately listed on consecutive original decisions is not rejected',()=>{
+    const f=fixture(),a=f.input.originalCatalog.decisions[0].originallyListedContracts[0],
+      b=f.input.originalCatalog.decisions[1].originallyListedContracts[0],
+      oldToken=b.instrumentKey;
+    b.instrumentKey=a.instrumentKey;
+    b.expiry=a.expiry;
+    // The original source already has older session observations for the
+    // shared token; remove now-unlisted second token's redundant raw rows.
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][2]===oldToken)f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.equal(r.originallyListedPairs,16);
+    assert.equal(r.originalNoEntryDecisions,1);
+    assert.equal(r.entryPairsMissingClaimedAsOfAsk,1);
+  });
 });

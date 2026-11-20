@@ -82,6 +82,7 @@ on:
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
+      - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
   pull_request:
     branches:
       - main
@@ -165,6 +166,7 @@ on:
       - 'research/adaptive-v2-phase79-premium-path-coverage'
       - 'research/adaptive-v2-phase80-private-original-l1-intake'
       - 'research/adaptive-v2-phase81-causal-close-open-censor'
+      - 'research/adaptive-v2-phase82-contract-identity-horizon-isolation'
   workflow_dispatch:
 
 permissions:
