@@ -367,7 +367,7 @@ export function auditPhase73HistoricalSourceReadiness(
     horizons.reduce((a,x)=>a+x.originalNoEntryPairs,0)!==
       catalog.decisions.filter(d=>
         d.originalEntryDisposition==='NO_ENTRY').reduce((n,d)=>
-        n+d.originallyListedContracts.length,0)
+        n+d.originallyListedContracts.length,0))
     return fail('PHASE73_ALL_FOUR_ORIGINAL_HORIZON_NO_ENTRY_ROWS_MISSING',
       'INCOMPLETE_EVIDENCE',{...p,horizons});
   const gaps=horizons.reduce((n,h)=>
