@@ -66,6 +66,7 @@ on:
       - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
+      - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
   pull_request:
     branches:
       - main
@@ -133,6 +134,7 @@ on:
       - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
       - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
       - 'research/adaptive-v2-phase65-vendor-delivery-intake'
+      - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
   workflow_dispatch:
 
 permissions:
