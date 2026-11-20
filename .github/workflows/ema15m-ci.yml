@@ -73,6 +73,7 @@ on:
       - 'research/adaptive-v2-phase70-session-exception-evidence'
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
+      - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
   pull_request:
     branches:
       - main
@@ -147,6 +148,7 @@ on:
       - 'research/adaptive-v2-phase70-session-exception-evidence'
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
+      - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
   workflow_dispatch:
 
 permissions:

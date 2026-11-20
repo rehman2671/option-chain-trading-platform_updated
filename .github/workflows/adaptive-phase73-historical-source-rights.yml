@@ -1,0 +1,32 @@
+name: Adaptive Phase73 vendor historical L1 licence claim and source readiness
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-rights-and-full-expiry-source-intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase73 TypeScript static gate
+        run: npm run lint
+      - name: Phase73 all originally listed 1W–8W CE PE option acquisition and research rights claims
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase73_historical_source_rights.test.ts
