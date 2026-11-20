@@ -36,7 +36,7 @@ Aggregation is strictly by **owner-claimed regime × horizon × CE/PE**, retains
 ## Report states and unverified claims
 
 - INVALID_EVIDENCE: unpinned/modified source, malformed claimed delivery, missing independent source policy, forbidden source/replay/availability-clock claim.
-- INCOMPLETE_EVIDENCE: missing original OOS decisions/contracts or quotes, wrong expiry/type/lot, leaked train/test folds, unknown listed instruments, missing first-next-open prints, zero displayed BID/ASK depth, wide spreads, delayed claimed availability or insufficient original quote cadence.
+- INCOMPLETE_EVIDENCE: missing original OOS decisions/contracts or quotes, wrong expiry/type/lot, leaked train/test folds, duplicated OOS decision days, empty test folds, unknown listed instruments, missing first-next-open prints, zero displayed BID/ASK depth, wide spreads, delayed claimed availability or insufficient original quote cadence.
 - DESCRIPTIVE_COVERAGE_INSUFFICIENT_UNVERIFIED: mechanically complete candidate tape, but insufficient fold or claimed-regime OOS sample under prespecified criteria.
 - DESCRIPTIVE_OWNER_CANDIDATE_SOURCE_COVERAGE_UNVERIFIED: all *operator-declared* OOS contracts and quality thresholds satisfied. **This is NOT a vendor certification, genuine market data, valid licence, profitability, execution signal or production clearance.**
 
@@ -44,9 +44,9 @@ Always false: independently verified vendor identity, historical option research
 
 ## Synthetic test coverage
 
-The separate fixture src/quant/tests/phase66_synthetic_new_vendor_fixture.ts creates **4 original OOS dates across 2 disjoint folds and 2 fabricated regimes, including 2 NO_ENTRY days, 32 all-listed CE/PE contracts and 448 option L1 prints**. It is NOT the Phase65 simulated historical quote tape. src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts supplies **24 adversarial synthetic tests** of full OOS source completeness, stale/late quote receipt, bid/ask spread and displayed depth, first-next-open coverage, missing original quotes and unentered contracts, changed pinned files, overlapping/leaked folds, too-short hold embargo, invented regime labels and copied fake licence rights. The test intentionally allows operator to re-pin false strike price or relabel synthetic data while *never* granting independent exchange truth.
+The separate fixture src/quant/tests/phase66_synthetic_new_vendor_fixture.ts creates **4 original OOS dates across 2 disjoint folds and 2 fabricated regimes, including 2 NO_ENTRY days, 32 all-listed CE/PE contracts and 448 option L1 prints**. It is NOT the Phase65 simulated historical quote tape. src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts supplies **26 adversarial synthetic tests** of full OOS source completeness, stale/late quote receipt, bid/ask spread and displayed depth, first-next-open coverage, missing original quotes and unentered contracts, changed pinned files, overlapping/leaked folds, too-short hold embargo, invented regime labels and copied fake licence rights. The test intentionally allows operator to re-pin false strike price or relabel synthetic data while *never* granting independent exchange truth.
 
-The first dedicated test run exposed a late-as-of synthetic event: an event at 15:30 whose claimed receipt was 15:30:05. The validator correctly rejected it. The fixture's final event was moved to 15:25 without weakening as-of checks. The corrected 24-test focused run and TypeScript both passed.
+The first dedicated test run exposed a late-as-of synthetic event: an event at 15:30 whose claimed receipt was 15:30:05. The validator correctly rejected it. The fixture's final event was moved to 15:25 without weakening as-of checks. The corrected dedicated 24-test run and TypeScript passed; the subsequent added duplicate-OOS-day and empty-fold defenses are tested separately on this branch.
 
 CI: .github/workflows/adaptive-phase66-standalone-vendor-preflight.yml. Full Phase50–66 focused checks and the three-job EMA15M safety/build/full regression must pass separately before a merge discussion; synthetic CI is not evidence of trading profitability.
 
