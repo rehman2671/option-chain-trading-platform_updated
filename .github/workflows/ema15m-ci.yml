@@ -74,6 +74,7 @@ on:
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
       - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
+      - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
   pull_request:
     branches:
       - main
@@ -149,6 +150,7 @@ on:
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
       - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
+      - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
   workflow_dispatch:
 
 permissions:
