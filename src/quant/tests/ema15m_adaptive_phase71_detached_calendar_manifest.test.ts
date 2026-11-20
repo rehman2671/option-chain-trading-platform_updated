@@ -174,7 +174,7 @@ describe('Phase71 detached Ed25519 candidate holiday archive source integrity on
     assert.equal(r.status,
       'DESCRIPTIVE_CRYPTO_CONSISTENT_UNTRUSTED_ISSUER_ONLY',JSON.stringify(r));
     assert.equal(r.independentlyVerifiedOriginalExchangeCalendar,false);
-    assert.equal(r.genuineHistoricalOptionDataLicenseVerified,undefined);
+    assert.equal(r.independentlyVerifiedVendorHistoricalOptionL1License,false);
   });
   it('a self-signed document cannot make an original L1 BID executable or eliminate 100 percent long-option paid debit loss',()=>{
     const r=audit(fixture());noIssuerOrTrade(r);
