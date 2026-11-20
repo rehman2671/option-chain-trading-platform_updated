@@ -282,7 +282,7 @@ export function readPhase80PrivateFileSet(
         datasetKind:s.datasetKind,originalNativeL1Csv:csv,
         originalCatalog:originalCatalog as unknown as Phase79Input['originalCatalog'],
         declaredSessions:declaredSessions as Phase79Input['declaredSessions'],
-        policy:policyObj as Phase79Input['policy']
+        policy:policyObj as unknown as Phase79Input['policy']
       }},pins:pinsObj as unknown as Phase80Pins};
 }
 /** Thin runner produces only bounded redacted counters and fixed reason codes. */
