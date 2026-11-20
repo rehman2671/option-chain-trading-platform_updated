@@ -84,7 +84,7 @@ describe('Phase73 original 1W–8W option data grant/source acquisition rights r
       JSON.stringify(r));
     assert.equal(r.originalAllListedOptionsWithCalendarOrBidGaps,0);
     assert.ok(r.originalL1QuoteRows>448);
-    assert.equal(r.legalOptionHistoricalL1DataLicenseVerified,undefined);
+    assert.equal(r.genuineVendorLicenceGrantIndependentlyAuthenticated,false);
     assert.ok(r.horizons.every(h=>h.candidatePairsWithDetectedDataQualityGaps===0));
   });
   it('omitting original BID_QTY from claimed research rights cannot be covered by raw byte hash repinning',()=>{
