@@ -231,4 +231,17 @@ describe('Phase66 standalone NEW historical option vendor native L1 preflight',(
     assert.equal(r.brokerNativeNrmlStopAndGttAckVerified,false);
     assert.equal(r.originalOosDecisionDays,4);
   });
+  it('two decision timestamps on one OOS calendar date cannot inflate independent test-day counts',()=>{
+    const f=fixture();
+    f.catalog.decisions[1].sessionDate='2026-02-10';
+    f.catalog.decisions[1].decisionAt='2026-02-10T04:45:00.000Z';
+    f.updateCatalog();f.operatorRehashOriginalManifest();f.repinOuter();
+    rejected(f,'PHASE66_ORIGINAL_TEST_DECISION_OR_REGIME_CATALOG_INVALID');
+  });
+  it('an empty OOS test fold is not a second independent heldout experiment even after re-pinning all source hashes',()=>{
+    const f=fixture();
+    f.catalog.decisions.splice(0,2);
+    f.updateCatalog();f.operatorRehashOriginalManifest();f.repinOuter();
+    rejected(f,'PHASE66_DECLARED_OOS_TEST_FOLD_HAS_NO_ORIGINAL_DECISION_DAYS');
+  });
 });
