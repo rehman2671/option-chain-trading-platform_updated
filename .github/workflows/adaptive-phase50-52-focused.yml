@@ -1,4 +1,4 @@
-name: Adaptive Phase50-69 focused offline research checks
+name: Adaptive Phase50-70 focused offline research checks
 on:
   push:
     branches:
@@ -20,6 +20,7 @@ on:
       - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
       - 'research/adaptive-v2-phase68-long-horizon-censoring'
       - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
+      - 'research/adaptive-v2-phase70-session-exception-evidence'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -40,6 +41,7 @@ on:
       - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
       - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
       - 'research/adaptive-v2-phase68-long-horizon-censoring'
+      - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
   workflow_dispatch:
 
 permissions:
@@ -60,7 +62,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-69 focused synthetic offline invariants
+      - name: Phase50-70 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -82,4 +84,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts \
             src/quant/tests/ema15m_adaptive_phase67_issuer_calendar_crosscheck.test.ts \
             src/quant/tests/ema15m_adaptive_phase68_original_full_duration_censoring.test.ts \
-            src/quant/tests/ema15m_adaptive_phase69_calendar_blind_spots.test.ts
+            src/quant/tests/ema15m_adaptive_phase69_calendar_blind_spots.test.ts \
+            src/quant/tests/ema15m_adaptive_phase70_session_exception_evidence.test.ts

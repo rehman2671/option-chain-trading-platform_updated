@@ -1,0 +1,32 @@
+name: Adaptive Phase70 third-source holiday and special session exceptions
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase70-session-exception-evidence'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-exchange-like-calendar-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase70 TypeScript static gate
+        run: npm run lint
+      - name: Phase70 complete third calendar holiday special-session and OOS source audit
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase70_session_exception_evidence.test.ts
