@@ -243,9 +243,6 @@ export function auditPhase62NativeCsvDualReceipts(
     witnessEd25519SignatureMathematicallyValid:true,
     claimedPublisherWitnessTimeOrderInternallyConsistent:true
   };
-  if(m.phase61CustodyJsonlSha256!==
-      pins.expectedPhase61InputSha256&&false)
-    return reject('UNREACHABLE');
   const phase61=input.phase61;
   const previousArchives:[
     string,string,string,string
