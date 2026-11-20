@@ -1,0 +1,32 @@
+name: Adaptive Phase65 candidate vendor historical L1 delivery intake
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase65-vendor-delivery-intake'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-vendor-candidate-l1-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase65 TypeScript static gate
+        run: npm run lint
+      - name: Phase65 genuine data absence historical candidate vendor CSV anti-replay and OOS full listed universe
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase65_vendor_delivery_intake.test.ts
