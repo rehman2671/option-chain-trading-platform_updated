@@ -1,0 +1,31 @@
+name: Adaptive Phase78 offline original GET body to NRML stop join
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase78-raw-broker-get-join'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase77-offline-nrml-stop-lifecycle'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-original-get-body-claim-join:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static type gate
+        run: npm run lint
+      - name: Phase77 upstream and Phase78 original raw GET claim join synthetic regression
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase77_offline_nrml_stop_lifecycle.test.ts \
+            src/quant/tests/ema15m_adaptive_phase78_raw_broker_readonly_join.test.ts
