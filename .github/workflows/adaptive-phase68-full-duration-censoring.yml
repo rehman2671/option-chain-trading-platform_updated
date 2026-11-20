@@ -1,0 +1,37 @@
+name: Adaptive Phase68 multiweek option-premium censoring and TLS fixture
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase68-long-horizon-censoring'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase67-exchange-master-calendar-crosscheck'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  complete-multiweek-bid-mark-censoring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: OpenSSL fixture requirements
+        run: |
+          test -x /usr/bin/openssl
+          /usr/bin/openssl version
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase68 all listed original long-option expiry censoring and independent historic Phase42 TLS fixture
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase68_original_full_duration_censoring.test.ts \
+            src/quant/tests/ema15m_adaptive_upstox_phase42_raw_get_receipts.test.ts
