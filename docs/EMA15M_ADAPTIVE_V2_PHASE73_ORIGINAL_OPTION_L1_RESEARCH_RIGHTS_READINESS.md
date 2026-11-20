@@ -33,15 +33,15 @@ Hard FALSE: genuine legally authenticated grant; actual research/retention right
 
 ## Synthetic adversarial tests
 
-Test: src/quant/tests/ema15m_adaptive_phase73_historical_source_rights.test.ts — **20 cases**:
+Test: src/quant/tests/ema15m_adaptive_phase73_historical_source_rights.test.ts — **21 cases**:
 
 - Full original 448 option best L1 rows, 4 OOS decision days with 2 NO_ENTRY dates, 32 full listed 1W/2W/4W/8W CE/PE candidate pairs and owner-claimed fake vendor grant, resulting in insufficient full-horizon source data.
 - Fake complete-day 1W–8W original best-BID source, fabricated calendars, fake re-signed issuer/registrar/witness signatures and rehashed newly invented archive/download receipt; still no real market source or rights, no profitable or executable strategy.
 - Missing BID_QTY research rights, unsupported live-order rights, redistribution claimed allowed, false self-declaration of legally authenticated grant, source claimed client receipt authority contrary to retrospective nature.
 - Grant scope ending before latest 8W expiry, claimed licence effective after archive receipt, claimed acquisition preceding publication, archive received before last original option expiry.
-- Original CSV byte corruption, fake vendor acquisition checksum, altered original quote rows or NO_ENTRY count or original listed CE/PE denominator, changed Phase72 independent parent source, and an owner-renamed hypothetical vendor with new self-pins that remains unverified.
+- Original CSV byte corruption that fails upstream dossier pins, independently falsified native CSV SHA pin, fake vendor acquisition checksum, altered original quote rows or NO_ENTRY count or original listed CE/PE denominator, changed Phase72 independent parent source, and an owner-renamed hypothetical vendor with new self-pins that remains unverified.
 
-Dedicated CI: .github/workflows/adaptive-phase73-historical-source-rights.yml runs TypeScript and all 20 tests. Phase50–73 combined research CI, EMA targeted safety invariant tests, production build and full regression must pass separately. Synthetic CI is **not real historical NSE/BSE market PnL, source licensing or broker stop verification**.
+Dedicated CI: .github/workflows/adaptive-phase73-historical-source-rights.yml runs TypeScript and all 21 tests. Phase50–73 combined research CI, EMA targeted safety invariant tests, production build and full regression must pass separately. Synthetic CI is **not real historical NSE/BSE market PnL, source licensing or broker stop verification**.
 
 ## Owner-private command
 
