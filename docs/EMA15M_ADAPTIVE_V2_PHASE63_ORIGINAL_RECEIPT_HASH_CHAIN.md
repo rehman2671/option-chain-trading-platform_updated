@@ -35,7 +35,7 @@ The chain cannot demonstrate executable BID fills, listed contract truth, offici
 2. Re-signed claimed receive time changed vs `availableAt` denied.
 3. Altered source full BID/ASK quote hash denied.
 4. Broken prior hash-chain link even after sign/pin refresh denied.
-5. Dropped final option record cannot vanish from the denominator.
+5. Dropped final option record fails the independently pinned final chain root before a shortened denominator can be accepted.
 6. Duplicated ordinal cannot collapse original quotes.
 7. Collector key reused as claimed publisher denied.
 8. Collector signature bitflip after new SHA pin denied.
@@ -51,7 +51,7 @@ The chain cannot demonstrate executable BID fills, listed contract truth, offici
 
 ## Owner-private audit
 
-`scripts/audit-adaptive-phase63-capture-receipts.ts` reads only two owner-0600 JSON files in 0700 private directories, never logs quotes, instruments, keys, accounts or raw data. Run under an **OS-level enforced no-network-ejection environment**; the Node CLI itself does not create a sandbox.
+`scripts/audit-adaptive-phase63-capture-receipts.ts` reads only two owner-0600 JSON files in 0700 private directories, never logs quotes, instruments, keys, accounts or raw data. Run under an **OS-level enforced no-network-egress environment**; the Node CLI itself does not create a sandbox.
 
 ```bash
 npx tsx scripts/audit-adaptive-phase63-capture-receipts.ts \
