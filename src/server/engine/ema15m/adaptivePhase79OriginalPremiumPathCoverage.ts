@@ -60,6 +60,8 @@ export interface Phase79Cell{
   originalEntryClaimedPairs:number;
   entryClaimedPairsMissingCausalQuotedAsk:number;
   entryClaimedPairsWithClaimedDecisionAsk:number;
+  entryClaimedPairsWithUnmarketableDecisionBid:number;
+  entryClaimedPairsWithDecisionSpreadAtLeastArmingGain:number;
   entryClaimedPairsWithObservedIlliquidBidUpdate:number;
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   entryClaimedPairsWithUnderTargetQuotedGiveback:number;
@@ -86,6 +88,8 @@ export interface Phase79Report{
   parsedNativeQuoteRows:number;
   claimedAsOfEntryAskPairs:number;
   entryPairsMissingClaimedAsOfAsk:number;
+  entryPairsWithUnmarketableDecisionBid:number;
+  entryPairsWithDecisionSpreadAtLeastArmingGain:number;
   entryPairsWithObservedIlliquidBidUpdate:number;
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
@@ -171,6 +175,8 @@ function blank():Phase79Report{
     originallyListedPairs:0,originallyNoEntryPairs:0,
     originalEntryClaimedPairs:0,parsedNativeQuoteRows:0,
     claimedAsOfEntryAskPairs:0,entryPairsMissingClaimedAsOfAsk:0,
+    entryPairsWithUnmarketableDecisionBid:0,
+    entryPairsWithDecisionSpreadAtLeastArmingGain:0,
     entryPairsWithObservedIlliquidBidUpdate:0,
     entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
@@ -361,7 +367,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
   }>();
   let noEntryDecisions=0,total=0,noEntries=0,entries=0;
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
-    illiquidBidPairs=0,staleQuoteObservations=0,censored=0,missingCloses=0;
+    illiquidBidPairs=0,unmarketableEntryBids=0,wideDecisionSpreads=0,
+    staleQuoteObservations=0,censored=0,missingCloses=0;
   const sessionDates=[...sessions.keys()].sort();
   const adjacent=new Map<string,string>();
   for(let i=0;i<sessionDates.length-1;i++)
@@ -412,6 +419,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
           originalListedPairs:0,originalNoEntryPairs:0,
           originalEntryClaimedPairs:0,entryClaimedPairsMissingCausalQuotedAsk:0,
           entryClaimedPairsWithClaimedDecisionAsk:0,
+          entryClaimedPairsWithUnmarketableDecisionBid:0,
+          entryClaimedPairsWithDecisionSpreadAtLeastArmingGain:0,
           entryClaimedPairsWithObservedIlliquidBidUpdate:0,
           entryCandidateStaleLateQuoteObservationsIgnored:0,
           entryClaimedPairsWithUnderTargetQuotedGiveback:0,
@@ -446,6 +455,22 @@ export function auditPhase79OriginalPremiumPathCoverage(
         if(!entry){missingAsk++;cell.entryClaimedPairsMissingCausalQuotedAsk++;}
         else {
           asOf++;cell.entryClaimedPairsWithClaimedDecisionAsk++;
+          // Entry purchase-side ASK availability is NOT guaranteed
+          // immediate sell-side liquidity. Audit the SAME as-of book state
+          // without assuming a fill or inventing any BID after decision.
+          const noUsableEntryBid=entry.bid<=0||
+            entry.bidQty<p.minBestBidAndAskDepthLots*c.lotSize;
+          if(noUsableEntryBid){
+            unmarketableEntryBids++;
+            cell.entryClaimedPairsWithUnmarketableDecisionBid++;
+          }
+          // The frozen arming threshold is already part of the separately
+          // pinned policy. A displayed round-trip spread at least this large
+          // is a severe quote-cost warning, NOT a PnL or executable cost.
+          if(entry.ask-entry.bid>=p.armingGainPremiumPoints){
+            wideDecisionSpreads++;
+            cell.entryClaimedPairsWithDecisionSpreadAtLeastArmingGain++;
+          }
           // A quote that arrived after the claimed session CLOSE was
           // NOT available to the algorithm during that tradable session,
           // regardless of its exchange-side event timestamp.
@@ -589,12 +614,17 @@ export function auditPhase79OriginalPremiumPathCoverage(
     'RAW_VENDOR_AVAILABLE_AT_NOT_AUTHENTICATED_CLIENT_RECEIPT',
     'DISPLAYED_QUOTED_BID_IS_NOT_AN_EXECUTABLE_EXIT_OR_STOP_FILL'];
   if(missingAsk>0)reasons.push('ORIGINAL_ENTRY_CLAIMED_PAIRS_LACK_CAUSAL_QUOTED_ASK');
+  if(unmarketableEntryBids>0)
+    reasons.push('ENTRY_ASK_WITH_NO_SAME_SNAPSHOT_MARKETABLE_BID_EXIT_LIQUIDITY');
+  if(wideDecisionSpreads>0)
+    reasons.push('ENTRY_QUOTED_BID_ASK_SPREAD_AT_LEAST_FROZEN_ARMING_GAIN');
   if(illiquidBidPairs>0)reasons.push('POST_DECISION_NO_BID_OR_SUBLOT_DEPTH_CENSORS_EXIT_LIQUIDITY');
   if(staleQuoteObservations>0)reasons.push('OUT_OF_ORDER_LATE_STALE_QUOTE_EVENTS_EXCLUDED_FROM_PREMIUM_PATH');
   if(censored>0)reasons.push('MISSING_DECLARED_SESSION_CLOSE_BID_CENSORS_HOLDING_PATH');
   if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
   return {...blank(),status:missingAsk||censored||missingNextOpen||
+      unmarketableEntryBids||wideDecisionSpreads||
       illiquidBidPairs||staleQuoteObservations?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
       'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED',
@@ -603,6 +633,8 @@ export function auditPhase79OriginalPremiumPathCoverage(
     originallyListedPairs:total,originallyNoEntryPairs:noEntries,
     originalEntryClaimedPairs:entries,parsedNativeQuoteRows:raw.length-1,
     claimedAsOfEntryAskPairs:asOf,entryPairsMissingClaimedAsOfAsk:missingAsk,
+    entryPairsWithUnmarketableDecisionBid:unmarketableEntryBids,
+    entryPairsWithDecisionSpreadAtLeastArmingGain:wideDecisionSpreads,
     entryPairsWithObservedIlliquidBidUpdate:illiquidBidPairs,
     entryCandidateStaleLateQuoteObservationsIgnored:staleQuoteObservations,
     quotedUnderTargetPremiumGivebackPairs:giveback,

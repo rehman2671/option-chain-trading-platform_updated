@@ -68,6 +68,8 @@ export interface Phase80Report{
   originallyNoEntryPairs:number;
   parsedNativeQuoteRows:number;
   entryPairsMissingClaimedAsOfAsk:number;
+  entryPairsWithUnmarketableDecisionBid:number;
+  entryPairsWithDecisionSpreadAtLeastArmingGain:number;
   entryPairsWithObservedIlliquidBidUpdate:number;
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
@@ -81,6 +83,8 @@ export interface Phase80Report{
     claimedRegime:typeof REGIMES[number];horizon:'1W'|'2W'|'4W'|'8W';
     side:'CE'|'PE';originalListedPairs:number;originalNoEntryPairs:number;
     entryClaimedPairsMissingCausalQuotedAsk:number;
+    entryClaimedPairsWithUnmarketableDecisionBid:number;
+    entryClaimedPairsWithDecisionSpreadAtLeastArmingGain:number;
     entryClaimedPairsWithObservedIlliquidBidUpdate:number;
     entryCandidateStaleLateQuoteObservationsIgnored:number;
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
@@ -110,6 +114,8 @@ function base():Phase80Report{
     syntheticDataset:null,originalDecisionDates:0,originalNoEntryDecisions:0,
     originallyListedPairs:0,originallyNoEntryPairs:0,parsedNativeQuoteRows:0,
     entryPairsMissingClaimedAsOfAsk:0,
+    entryPairsWithUnmarketableDecisionBid:0,
+    entryPairsWithDecisionSpreadAtLeastArmingGain:0,
     entryPairsWithObservedIlliquidBidUpdate:0,
     entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
@@ -190,6 +196,10 @@ export function auditPhase80PrivateOriginalL1(
     originalNoEntryPairs:c.originalNoEntryPairs,
     entryClaimedPairsMissingCausalQuotedAsk:
       c.entryClaimedPairsMissingCausalQuotedAsk,
+    entryClaimedPairsWithUnmarketableDecisionBid:
+      c.entryClaimedPairsWithUnmarketableDecisionBid,
+    entryClaimedPairsWithDecisionSpreadAtLeastArmingGain:
+      c.entryClaimedPairsWithDecisionSpreadAtLeastArmingGain,
     entryClaimedPairsWithObservedIlliquidBidUpdate:
       c.entryClaimedPairsWithObservedIlliquidBidUpdate,
     entryCandidateStaleLateQuoteObservationsIgnored:
@@ -218,6 +228,10 @@ export function auditPhase80PrivateOriginalL1(
     originallyNoEntryPairs:p79.originallyNoEntryPairs,
     parsedNativeQuoteRows:p79.parsedNativeQuoteRows,
     entryPairsMissingClaimedAsOfAsk:p79.entryPairsMissingClaimedAsOfAsk,
+    entryPairsWithUnmarketableDecisionBid:
+      p79.entryPairsWithUnmarketableDecisionBid,
+    entryPairsWithDecisionSpreadAtLeastArmingGain:
+      p79.entryPairsWithDecisionSpreadAtLeastArmingGain,
     entryPairsWithObservedIlliquidBidUpdate:
       p79.entryPairsWithObservedIlliquidBidUpdate,
     entryCandidateStaleLateQuoteObservationsIgnored:
