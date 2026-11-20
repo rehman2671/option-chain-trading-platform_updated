@@ -72,6 +72,7 @@ on:
       - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
       - 'research/adaptive-v2-phase70-session-exception-evidence'
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
+      - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
   pull_request:
     branches:
       - main
@@ -145,6 +146,7 @@ on:
       - 'research/adaptive-v2-phase69-horizon-calendar-blind-spots'
       - 'research/adaptive-v2-phase70-session-exception-evidence'
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
+      - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
   workflow_dispatch:
 
 permissions:
