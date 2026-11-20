@@ -21,7 +21,9 @@ The claimed issuer identifier must match in both documents and the independently
 
 For every original OOS decision and every listed CE/PE option, require exact master alignment on instrument key, expiry, type, strike and lot. Last-tradable session must exist on the alleged exchange calendar, not precede the original decision, and not be later than expiry. There cannot be a declared trading session AFTER alleged last-tradable date but BEFORE/ON expiry. This is a conservative data-consistency condition, **not an official exchange settlement/holiday policy**.
 
-Original Phase66 native historical BID/ASK quote rows are re-read, one by one, through the existing strict Phase22 parser. Each market event must occur inside a separately claimed calendar trading session and before the exact matching contract's last-tradable-session close. Any quote after claimed expiry is invalid even if earlier Phase66 acquisition coverage did not select that extra later quote. Missing OOS NO_ENTRY days, unrelated instruments, duplicate master snapshots, late publication and altered first-next-session chronology fail closed.
+The Phase67 conservative holdout gate additionally requires the original source's declared maximum holding days and train-to-test embargo to cover the **longest originally listed expiry** when no separately locked early-exit mandate is supplied. An 8W (56-day) option cannot silently rely on an earlier 40-day embargo while its exit might depend on still-open original outcomes. The synthetic Phase67 positive fixture therefore independently declares a **56-day** holding/embargo horizon; Phase66's older fixture and live MIS logic are not changed.
+
+Original Phase66 native historical BID/ASK quote rows are re-read, one by one, through the existing strict Phase22 parser. Each market event must occur inside a separately claimed calendar trading session and before the exact matching contract's last-tradable-session close. Any quote after claimed expiry is invalid even if earlier Phase66 acquisition coverage did not select that extra later quote. Every original quote's claimed arrival, including *unselected extra prints*, must also be before its exchange-like session close and within the preregistered event-to-arrival lag. Missing OOS NO_ENTRY days, unrelated instruments, duplicate master snapshots, late publication and altered first-next-session chronology fail closed.
 
 Phase67 re-runs the full Phase66 new-vendor preflight, preserving original chronological OOS folds, train/test hold embargo, first-next-open option BID, original source quote/depth/spread and full originally listed 1W, 2W, 4W, 8W CE/PE decision denominator. No source is automatically promoted into an executable option strategy.
 
@@ -36,7 +38,7 @@ All independent issuer/calendar, historical vendor data entitlement, trusted ori
 
 ## Synthetic tests
 
-The synthetic Phase66 NEW vendor archive has 4 original OOS decisions across 2 chronological folds, 2 operator-labeled regimes, 32 complete CE/PE listed option pairs and 448 quote prints. Phase67 independently constructs a SECOND, deliberately fake exchange-like master and extended expiry-session calendar. Its 19 adversarial tests verify:
+The synthetic Phase66 NEW vendor archive has 4 original OOS decisions across 2 chronological folds, 2 operator-labeled regimes, 32 complete CE/PE listed option pairs and 448 quote prints. Phase67 independently constructs a SECOND, deliberately fake exchange-like master and extended expiry-session calendar. Its 21 adversarial tests verify:
 
 - All 4 snapshots, 32 options, 448 original quotes and 4 first-next-session relationships internally align but never authenticate exchange identity.
 - Mutated source bytes, changed expiry/lot, unlisted or missing CE/PE, duplicated master snapshot, delayed master, option allegedly listed after master publication, late calendar, changed original session hours and absent next session are rejected.
