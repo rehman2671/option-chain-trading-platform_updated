@@ -197,6 +197,22 @@ function fail(reason:string,status:Phase79Report['status']='INVALID_EVIDENCE'):
   Phase79Report{return {...blank(),status,reasonCodes:[reason]};}
 const parsedNum=(s:string,min:number,max:number):number=>
   /^(?:0|[1-9]\d*)(?:\.\d{1,8})?$/.test(s)&&finite(Number(s),min,max)?Number(s):NaN;
+/** The source dates are strict YYYY-MM-DD, so lexicographic binary bounds work.
+ * Counts are only over operator-declared sessions, NOT an official calendar. */
+const lowerDay=(a:string[],key:string):number=>{
+  let lo=0,hi=a.length;
+  while(lo<hi){const mid=lo+Math.floor((hi-lo)/2);
+    if(a[mid]<key)lo=mid+1;else hi=mid;
+  }
+  return lo;
+};
+const upperDay=(a:string[],key:string):number=>{
+  let lo=0,hi=a.length;
+  while(lo<hi){const mid=lo+Math.floor((hi-lo)/2);
+    if(a[mid]<=key)lo=mid+1;else hi=mid;
+  }
+  return lo;
+};
 /** All returned marks are observed operator-claimed quotes, never fills. */
 export function auditPhase79OriginalPremiumPathCoverage(
   input:Phase79Input,pins:Phase79Pins
@@ -301,6 +317,40 @@ export function auditPhase79OriginalPremiumPathCoverage(
   // This claimed clock is still NOT authenticated historical client access.
   for(const qs of quotes.values())qs.sort((a,b)=>
     a.available-b.available||a.event-b.event||a.sequence-b.sequence);
+  // One causal source-state lookup per instrument + declared closing session.
+  // This replaces the old per-(original decision,contract,session) linear
+  // scan of the ENTIRE quote path, which grew explosively on large archives.
+  // Choose latest event / sequence BEFORE testing usable BID and lot depth.
+  const closingByInstrument=new Map<string,Map<string,Quote>>();
+  for(const [instrument,qs] of quotes){
+    const byDate=new Map<string,Quote>();
+    for(const q of qs){
+      const date=istDay(q.event),ses=sessions.get(date)!;
+      if(q.event<ses.close-p.closingBidWindowMinutes*MIN||
+         q.event>ses.close||q.available>ses.close)continue;
+      const prior=byDate.get(date);
+      if(!prior||q.event>prior.event||
+         (q.event===prior.event&&q.sequence>prior.sequence)||
+         (q.event===prior.event&&q.sequence===prior.sequence&&
+          q.available>prior.available))
+        byDate.set(date,q);
+    }
+    closingByInstrument.set(instrument,byDate);
+  }
+  // A source token's lot metadata is immutable across original decision
+  // dates (Phase82). Its sorted usable closing-session dates are cached
+  // exactly once. Counts then use O(log declared sessions) binary bounds.
+  const usableClosingDates=new Map<string,{lot:number;dates:string[]}>();
+  const validClosingDates=(instrument:string,lot:number):string[]=>{
+    const cached=usableClosingDates.get(instrument);
+    if(cached&&cached.lot===lot)return cached.dates;
+    const dates=[...(closingByInstrument.get(instrument)??new Map())]
+      .filter(([,q])=>q.bid>0&&
+        q.bidQty>=p.minBestBidAndAskDepthLots*lot)
+      .map(([date])=>date).sort();
+    usableClosingDates.set(instrument,{lot,dates});
+    return dates;
+  };
   const groups=new Map<string,Phase79Cell>();
   const originalPairs=new Set<string>(),decisionDates=new Set<string>();
   // A source instrument token is one immutable option contract across ALL
@@ -313,10 +363,11 @@ export function auditPhase79OriginalPremiumPathCoverage(
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
     illiquidBidPairs=0,staleQuoteObservations=0,censored=0,missingCloses=0;
   const sessionDates=[...sessions.keys()].sort();
-  const nextDeclaredSession=(date:string):string|null=>{
-    const ix=sessionDates.indexOf(date);
-    return ix>=0&&ix+1<sessionDates.length?sessionDates[ix+1]:null;
-  };
+  const adjacent=new Map<string,string>();
+  for(let i=0;i<sessionDates.length-1;i++)
+    adjacent.set(sessionDates[i],sessionDates[i+1]);
+  const nextDeclaredSession=(date:string):string|null=>
+    adjacent.get(date)??null;
   for(const d of catalog.decisions){
     if(!d||!day(d.sessionDate)||decisionDates.has(d.sessionDate)||
       stamp(d.decisionAt)<0||!Number.isFinite(stamp(d.decisionAt))||
@@ -471,40 +522,36 @@ export function auditPhase79OriginalPremiumPathCoverage(
           // session OPEN. Without one, absence of an observed gap is NOT
           // evidence that overnight exposure was safe. This is a lower
           // bound on missing opens, not a complete continuous tick tape.
-          const missingBoundedOpen=[...newArmedPeakNextOpens].some(day=>{
-            const session=sessions.get(day)!;
-            return !after.some(x=>istDay(x.event)===day&&
-              x.event>=session.open&&
-              x.event<=session.open+p.nextOpenBidWindowMinutes*MIN&&
-              x.available<=session.open+p.nextOpenBidWindowMinutes*MIN);
-          });
+          // Use one pass for first eligible opening receipt per session.
+          // Each later armed peak can then check coverage in O(1), instead
+          // of rescanning the full option quote path for every new peak.
+          const boundedOpenSessions=new Set<string>();
+          for(const x of after){
+            const day=istDay(x.event),session=sessions.get(day)!;
+            if(x.event>=session.open&&
+               x.event<=session.open+p.nextOpenBidWindowMinutes*MIN&&
+               x.available<=session.open+p.nextOpenBidWindowMinutes*MIN)
+              boundedOpenSessions.add(day);
+          }
+          const missingBoundedOpen=[...newArmedPeakNextOpens]
+            .some(day=>!boundedOpenSessions.has(day));
           if(missingBoundedOpen){
             missingNextOpen++;
             cell.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak++;
           }
         }
       }
-      // Calendar contains only operator-declared sessions. Missing entire
-      // weekdays not in that list are a separate, unresolved external blocker.
-      let missed=0;
-      for(const [date,session] of sessions){
-        if(date<d.sessionDate||date>c.expiry)continue;
-        // A newer illiquid book update near close REPLACES an older
-        // still-present historical CSV row; use the latest as-of state,
-        // not `some()` cherry-picking a favorable past displayed BID.
-        const closingQuote=q.filter(x=>istDay(x.event)===date&&
-            x.event>=session.close-p.closingBidWindowMinutes*MIN&&
-            x.event<=session.close&&x.available<=session.close)
-          .sort((a,b)=>b.event-a.event||b.sequence-a.sequence||
-            b.available-a.available)[0];
-        if(!closingQuote||closingQuote.bid<=0||
-           closingQuote.bidQty<p.minBestBidAndAskDepthLots*c.lotSize)
-          missed++;
-      }
-      // Missing the claimed expiry region cannot masquerade as complete
-      // positional history simply because an operator omitted late sessions.
-      const latestDeclared=sessionDates.filter(date=>
-        date>=d.sessionDate&&date<=c.expiry).at(-1);
+      // Count every ORIGINAL listed alternative, including NO_ENTRY,
+      // against operator-declared sessions, using immutable contract
+      // closing-state index. An absent/zero/sublot closing BID is censored.
+      // Missing entire unlisted weekdays remain an EXTERNAL calendar blocker.
+      const start=lowerDay(sessionDates,d.sessionDate),
+        end=upperDay(sessionDates,c.expiry),
+        good=validClosingDates(c.instrumentKey,c.lotSize);
+      let missed=end-start-
+        (upperDay(good,c.expiry)-lowerDay(good,d.sessionDate));
+      // No later session can silently extend the original expiry region.
+      const latestDeclared=end>start?sessionDates[end-1]:undefined;
       if(!latestDeclared||
          (Date.parse(c.expiry+'T00:00:00Z')-
           Date.parse(latestDeclared+'T00:00:00Z'))/86400000>4)missed++;
