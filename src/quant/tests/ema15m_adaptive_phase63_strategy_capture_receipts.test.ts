@@ -80,11 +80,12 @@ describe('Phase63 exact original quote claimed-receipt chain and third untrusted
     f.replaceLedger(f.ledger);f.refreshSeal();f.signAndRepin();
     fails(f,'PHASE63_COMPLETE_ORIGINAL_RECEIPT_HASH_CHAIN_BROKEN');
   });
-  it('dropped LAST original receipt is incomplete, not a harmless missing price or zero PnL',()=>{
+  it('dropped LAST receipt violates the independently pinned ORIGINAL final chain root, not a zero-loss event',()=>{
     const f=fixture();
     f.ledger.receipts.pop();
     f.replaceLedger(f.ledger);f.refreshSeal();f.signAndRepin();
-    fails(f,'PHASE63_COMPLETE_ORIGINAL_RECEIPT_COUNT_OR_SEED_INVALID');
+    fails(f,'PHASE63_COLLECTOR_SEAL_OR_INDEPENDENT_ROOT_INVALID',
+      'INVALID_EVIDENCE');
   });
   it('duplicate original source ordinal cannot collapse OOS L1 denominator',()=>{
     const f=fixture();
