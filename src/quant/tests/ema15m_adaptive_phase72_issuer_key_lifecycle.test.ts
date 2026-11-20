@@ -151,6 +151,12 @@ describe('Phase72 original OOS issuer key rotation and registrar/witness signatu
     f.signWitness();f.repin();
     rejected(f,'PHASE72_CLAIMED_REGISTRY_WITNESS_ORIGINAL_OOS_ASOF_INVALID');
   });
+  it('witness cannot claim to have received a manifest before its original signing instant, even with valid witness signature',()=>{
+    const f=fixture();
+    f.receipt.claimedObservedAt='2025-11-30T18:00:00.000Z';
+    f.signWitness();f.repin();
+    rejected(f,'PHASE72_CLAIMED_REGISTRY_WITNESS_ORIGINAL_OOS_ASOF_INVALID');
+  });
   it('registrar roster retrospectively published AFTER original calendar was signed fails as-of lifecycle',()=>{
     const f=fixture();
     f.roster.claimedPublishedAt='2025-12-05T00:00:00.000Z';
