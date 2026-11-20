@@ -1,4 +1,4 @@
-name: Adaptive Phase50-74 focused offline research checks
+name: Adaptive Phase50-75 focused offline research checks
 on:
   push:
     branches:
@@ -25,6 +25,7 @@ on:
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
       - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
       - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
+      - 'research/adaptive-v2-phase75-counterfactual-premium-stop-stress'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -50,6 +51,7 @@ on:
       - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
       - 'research/adaptive-v2-phase72-issuer-key-lifecycle-quarantine'
       - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
+      - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
   workflow_dispatch:
 
 permissions:
@@ -70,7 +72,7 @@ jobs:
       - run: npm ci
       - name: TypeScript static type gate
         run: npm run lint
-      - name: Phase50-74 focused synthetic offline invariants
+      - name: Phase50-75 focused synthetic offline invariants
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase50_multifold_l1_asof.test.ts \
@@ -97,4 +99,5 @@ jobs:
             src/quant/tests/ema15m_adaptive_phase71_detached_calendar_manifest.test.ts \
             src/quant/tests/ema15m_adaptive_phase72_issuer_key_lifecycle.test.ts \
             src/quant/tests/ema15m_adaptive_phase73_historical_source_rights.test.ts \
-            src/quant/tests/ema15m_adaptive_phase74_retrospective_causality.test.ts
+            src/quant/tests/ema15m_adaptive_phase74_retrospective_causality.test.ts \
+            src/quant/tests/ema15m_adaptive_phase75_counterfactual_premium_stop_stress.test.ts
