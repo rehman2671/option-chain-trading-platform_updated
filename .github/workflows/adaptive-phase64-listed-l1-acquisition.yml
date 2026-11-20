@@ -1,0 +1,32 @@
+name: Adaptive Phase64 all listed OOS option L1 acquisition coverage
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase64-listed-option-acquisition-coverage'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase63-strategy-capture-receipt-chain'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  complete-listed-ce-pe-acquisition-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase64 TypeScript static gate
+        run: npm run lint
+      - name: Original OOS all listed CE PE contract source coverage and data quality
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase64_all_listed_l1_acquisition.test.ts
