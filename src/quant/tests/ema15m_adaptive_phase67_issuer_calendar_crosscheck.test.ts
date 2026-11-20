@@ -202,4 +202,28 @@ describe('Phase67 separate purported issuer OOS contract/expiry/calendar crossch
       JSON.stringify(r));
     assert.equal(r.independentlyAuthenticatedExchangeMasterIssuer,false);
   });
+  it('8W originally listed contracts cannot use a 40-day training embargo absent a locked earlier exit mandate',()=>{
+    const f=fixture();
+    // Phase66's softer general admission may still pass 40 days, but
+    // Phase67 requires 56 days for the complete original expiry path.
+    f.vendor.input.policy.maximumHoldCalendarDays=40;
+    f.vendor.input.policy.minimumTrainToFirstTestEmbargoCalendarDays=40;
+    f.vendor.repinOuter();f.repin();
+    rejects(f,'PHASE67_EIGHT_WEEK_EXPIRY_EXCEEDS_ORIGINAL_HOLD_EMBARGO');
+  });
+  it('an EXTRA unselected expiry-session quote with post-close arrival is not a historical availableAt fill',()=>{
+    const f=fixture();
+    const quote=f.vendor.raw;
+    const c=f.issuerMaster.snapshots[0].optionContracts[0];
+    const seq=quote.length;
+    quote.push([
+      'MOCK_L1_RECORD_'+seq,String(seq),c.instrumentKey,
+      c.expiry+'T05:00:00.000Z',
+      c.expiry+'T12:00:00.000Z',
+      '100','101','100','100'
+    ]);
+    f.vendor.pins.expectedNativeQuoteRows++;
+    f.vendor.updateQuotes();f.vendor.repinOuter();f.repin();
+    rejects(f,'PHASE67_ORIGINAL_UNSELECTED_L1_ARRIVED_TOO_LATE');
+  });
 });
