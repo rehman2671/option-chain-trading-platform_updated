@@ -151,8 +151,8 @@ describe('Phase71 detached Ed25519 candidate holiday archive source integrity on
     const f=fixture();
     f.parent.archive.days.splice(10,1);
     f.rebindOriginalAndResign();
-    rejects(f,'PHASE71_ORIGINAL_FULL_OOS_ARCHIVE_SOURCE_DENOMINATORS_CHANGED',
-      'INCOMPLETE_EVIDENCE');
+    rejects(f,'PHASE71_DETACHED_MANIFEST_OR_SOURCE_IDENTITY_WRONG',
+      'INVALID_EVIDENCE');
   });
   it('independent no-entry count cannot be shrunk to turn original unentered options into fictitious positions',()=>{
     const f=fixture();
