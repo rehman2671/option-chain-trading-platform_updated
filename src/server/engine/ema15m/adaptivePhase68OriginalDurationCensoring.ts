@@ -25,7 +25,7 @@ import {parseOriginalNativeL1Csv}
   from './adaptiveNativeL1CsvBridge.js';
 
 const SHA=/^[a-f0-9]{64}$/;
-const IST=330*60000, MIN=60000;
+const MIN=60000;
 type H='1W'|'2W'|'4W'|'8W';
 type Side='CE'|'PE';
 type Regime='TREND'|'RANGE'|'VOLATILE'|'MIXED'|'UNCLASSIFIED';
@@ -287,13 +287,10 @@ export function auditPhase68OriginalDurationCensoring(
   // Phase66/67 already validate original source sequence/clock and quote
   // trading-session boundaries. Preserve claimed availability of each mark.
   const cellMap=new Map<string,Phase68Cell>();
-  let originalPairs=0,noEntry=0,claimedEntry=0,
-    noEntryPairs=0,marks=0,missingEntry=0,censored=0,
+  let originalPairs=0,noEntryPairs=0,marks=0,missingEntry=0,censored=0,
     complete=0,gaps=0,reversals=0,missingSessions=0;
   const sessionOrder=cal.sessions.map(s=>s.sessionDate);
   for(const dec of cat.decisions){
-    if(dec.originalEntryDisposition==='NO_ENTRY')noEntry++;
-    else claimedEntry++;
     for(const c of dec.originallyListedContracts){
       originalPairs++;
       const h=bucket(
@@ -336,7 +333,6 @@ export function auditPhase68OriginalDurationCensoring(
         return fail('PHASE68_LAST_TRADABLE_SESSION_NOT_IN_CALENDAR',
           'INCOMPLETE_EVIDENCE',parent);
       let missing=0;
-      const validBySession=new Map<string,Quote[]>();
       for(const sessionDate of requiredSessions){
         const session=cal.sessions.find(s=>s.sessionDate===sessionDate)!;
         const start=t(session.openAt),end=t(session.closeAt);
@@ -349,7 +345,6 @@ export function auditPhase68OriginalDurationCensoring(
         if(bids.length<
           input.policy.minimumOriginalBidObservationsPerDeclaredSession)
           missing++;
-        validBySession.set(sessionDate,bids);
       }
       cell.missingDeclaredTradingSessionBidMarks+=missing;
       missingSessions+=missing;
@@ -361,8 +356,6 @@ export function auditPhase68OriginalDurationCensoring(
         cell.declaredSessionBidPathCompletePairs++;
       }
       if(dec.originalEntryDisposition==='NO_ENTRY'){
-        noEntry++; // placeholder overwritten via explicit day counter below
-        noEntry--; // preserve independent NO_ENTRY day count, not pairs
         noEntryPairs++;cell.originalNoEntryPairs++;continue;
       }
       cell.originalEntryClaimedPairs++;
