@@ -177,6 +177,27 @@ describe('Phase97 fresh broker reads AFTER durable exit claim',()=>{
     assert.equal(r.reason,'BROKER_EXISTING_SELL_NOT_TERMINAL');
     assert.deepEqual(b.calls,['orders']);
   });
+  it('a new pending BUY on same option after claim can increase net after the broker read',async()=>{
+    const b=broker();
+    b.getOrderBook=async()=>{b.calls.push('orders');return [{
+      instrument_token:inst,product:'I',transaction_type:'BUY',
+      status:'open',order_id:'PH97-PENDING-MANUAL-BUY'
+    }];};
+    const r=await reviewPostClaimBrokerSell(b,brokerArgs());
+    assert.equal(r.allowed,false);
+    assert.equal(r.reason,'BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+    assert.deepEqual(b.calls,['orders']);
+  });
+  it('the same option instrument with conflicting NRML D book entry blocks MIS SELL recheck',async()=>{
+    const b=broker();
+    b.getOrderBook=async()=>{b.calls.push('orders');return [{
+      instrument_token:inst,product:'D',transaction_type:'BUY',
+      status:'complete',order_id:'PH97-CONCURRENT-NRML-BOOK'
+    }];};
+    const r=await reviewPostClaimBrokerSell(b,brokerArgs());
+    assert.equal(r.allowed,false);
+    assert.equal(r.reason,'BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+  });
   it('fresh GTT SELL becomes scheduled after pre-CAS read, block duplicate exit',async()=>{
     const b=broker();
     b.getGttOrders=async()=>{b.calls.push('gtts');return [{
