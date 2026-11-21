@@ -19,8 +19,8 @@ const sell=()=>({
   order_type:'SL-M',status:'trigger pending',quantity:100,order_id:'TEST-SELL-1'
 });
 const gtt=()=>({
-  instrument_token:req.instrumentKey,product:'D',gtt_order_id:'TEST-GTT-1',
-  rules:[{transaction_type:'SELL',status:'ACTIVE',quantity:100}]
+  instrument_token:req.instrumentKey,product:'D',gtt_order_id:'TEST-GTT-1',quantity:100,
+  rules:[{transaction_type:'SELL',status:'SCHEDULED',order_id:null}]
 });
 const fixture=():NrmlBrokerEvidence=>({
   connected:true,accountId:req.expectedAccountId,
@@ -146,16 +146,27 @@ describe('Phase91 read-only NRML broker snapshot is not protective child exchang
       assert.ok(r.reasonCodes.includes('UNVERIFIED_OR_MISMATCHED_ACTIVE_SELL_STOP'));
     }
   });
-  it('unrecognised GTT SELL rule and no quantity are unresolved not an ACK',()=>{
+  it('unrecognised GTT SELL rules are unresolved, but SCHEDULED rule has no child by design',()=>{
     for(const leg of [
-      {transaction_type:'SELL',status:'NEW_VENDOR_STATE',quantity:100},
-      {transaction_type:'SELL',status:'ACTIVE'},
-      {transaction_type:'SIDE_UNKNOWN',status:'ACTIVE',quantity:100}
+      {transaction_type:'SELL',status:'NEW_VENDOR_STATE'},
+      {transaction_type:'SIDE_UNKNOWN',status:'SCHEDULED'}
     ]){
       const e=fixture();e.gttOrders=[{...gtt(),rules:[leg]}];
       const r=auditNrmlBrokerEvidence(req,e);neverApproved(r);
-      assert.equal(r.liveNrmlBuyAuthorized,false);
       assert.equal(r.duplicateOrUnresolvedSellProtection,true);
+    }
+    const e=fixture();e.gttOrders=[gtt()];
+    const r=auditNrmlBrokerEvidence(req,e);neverApproved(r);
+    assert.equal(r.activeGttSellRuleCandidates,1);
+    assert.equal(r.duplicateOrUnresolvedSellProtection,false);
+  });
+  it('parent GTT order quantity missing or mismatched rejects even with a valid SCHEDULED leg',()=>{
+    for(const quantity of [undefined,50,0,NaN]){
+      const e=fixture();e.gttOrders=[{...gtt(),quantity}];
+      const r=auditNrmlBrokerEvidence(req,e);neverApproved(r);
+      assert.ok(r.reasonCodes.includes('GTT_SELL_QUANTITY_MISSING_OR_MISMATCHED'));
+      assert.equal(r.duplicateOrUnresolvedSellProtection,true);
+      assert.equal(r.activeGttSellRuleCandidates,0);
     }
   });
   it('strict request requires exact positive lot-multiple size and account scope',()=>{

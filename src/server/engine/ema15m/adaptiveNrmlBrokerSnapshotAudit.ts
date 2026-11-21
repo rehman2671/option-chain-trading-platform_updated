@@ -51,7 +51,7 @@ const asUpper=(x:unknown):string=>
 const activeStatus=new Set([
   'OPEN','PENDING','TRIGGER PENDING','VALIDATION PENDING',
   'PUT ORDER REQ RECEIVED','MODIFY PENDING','CANCEL PENDING',
-  'UNKNOWN','NOT TRIGGERED','ACTIVE'
+  'UNKNOWN','NOT TRIGGERED','ACTIVE','SCHEDULED','TRIGGERED'
 ]);
 const completedStatus=new Set([
   'COMPLETE','COMPLETED','CANCELLED','CANCELED','REJECTED','EXPIRED',
@@ -188,8 +188,10 @@ export function auditNrmlBrokerEvidence(
       }
       // API versions and GTT rule schemas vary: no assumption that an
       // ACTIVE GTT rule has spawned an exchange child order.
-      const qty=Number(rule.quantity);
-      if(!Number.isSafeInteger(qty)||qty!==nrml){
+      // Official Upstox GTT v3 schema supplies quantity at PARENT order,
+      // not at rules[]. This was mistakenly read from each rule in Phase91.
+      const qty=Number(row.quantity);
+      if(!Number.isSafeInteger(qty)||qty<=0||qty!==nrml){
         reasons.push('GTT_SELL_QUANTITY_MISSING_OR_MISMATCHED');
         unresolved=true;continue;
       }

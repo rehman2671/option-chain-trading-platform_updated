@@ -92,6 +92,7 @@ on:
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
+      - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
   pull_request:
     branches:
       - main
@@ -185,6 +186,7 @@ on:
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
+      - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
   workflow_dispatch:
 
 permissions:
