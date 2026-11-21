@@ -74,6 +74,7 @@ export interface Phase80Report{
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
+  entryPairsWithUnresolvedOvernightCalendarTransition:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   originalPairsWithPotentialUndeclaredWeekdays:number;
@@ -90,6 +91,7 @@ export interface Phase80Report{
     entryClaimedPairsWithObservedIlliquidBidUpdate:number;
     entryCandidateStaleLateQuoteObservationsIgnored:number;
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
+    entryClaimedPairsWithUnresolvedOvernightCalendarTransition:number;
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
     originalPairsCensoredByMissingSessionCloseBid:number;
     originalPairsWithPotentialUndeclaredWeekdays:number;
@@ -124,6 +126,7 @@ function base():Phase80Report{
     entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
+    entryPairsWithUnresolvedOvernightCalendarTransition:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     originalPairsWithPotentialUndeclaredWeekdays:0,
@@ -212,6 +215,8 @@ export function auditPhase80PrivateOriginalL1(
       c.entryCandidateStaleLateQuoteObservationsIgnored,
     entryClaimedPairsWithUnderTargetQuotedGiveback:
       c.entryClaimedPairsWithUnderTargetQuotedGiveback,
+    entryClaimedPairsWithUnresolvedOvernightCalendarTransition:
+      c.entryClaimedPairsWithUnresolvedOvernightCalendarTransition,
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:
       c.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak,
     originalPairsCensoredByMissingSessionCloseBid:
@@ -248,6 +253,8 @@ export function auditPhase80PrivateOriginalL1(
       p79.entryCandidateStaleLateQuoteObservationsIgnored,
     quotedUnderTargetPremiumGivebackPairs:p79.quotedUnderTargetPremiumGivebackPairs,
     quotedNextOpenGapThroughTrailPairs:p79.quotedNextOpenGapThroughTrailPairs,
+    entryPairsWithUnresolvedOvernightCalendarTransition:
+      p79.entryPairsWithUnresolvedOvernightCalendarTransition,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:
       p79.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,
     listedPairsWithMissingDeclaredSessionCloseBid:
