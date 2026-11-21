@@ -868,4 +868,69 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.officialExchangeExpiryAndSessionCalendarAuthenticated,false);
     assert.equal(r.externalEvidenceRequired.some(x=>x.includes('EXCHANGE')),true);
   });
+
+  // Phase88: a later DECLARED session is not necessarily the next possible
+  // exchange session if an unlisted weekday might have traded in between.
+  it('Phase88 normal Friday to Monday opening on continuous declared weekdays preserves original quote gap evidence',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,0);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+  });
+  it('Phase88 missing Monday blocks Friday to Tuesday inferred first-open gap after all eight armed option peaks',()=>{
+    const f=fixture(),gone='2026-11-23';
+    f.input.declaredSessions=f.input.declaredSessions.filter(s=>s.sessionDate!==gone);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].startsWith(gone))f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,0);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,8);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,16);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('ARMED_OVERNIGHT_NEXT_OPEN_UNRESOLVED_BY_POTENTIAL_MISSING_SESSION'));
+    assert.equal(r.cells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithUnresolvedOvernightCalendarTransition,0),8);
+  });
+  it('Phase88 a valid Tuesday morning low BID still cannot pretend it is the FIRST Monday open after a Friday premium peak',()=>{
+    const f=fixture(),gone='2026-11-23',key='OPT_20261120_1W_CE',
+      next='2026-11-24',open=ist(next,9,16);
+    f.input.declaredSessions=f.input.declaredSessions.filter(s=>s.sessionDate!==gone);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].startsWith(gone))f.rows.splice(i,1);
+    const close=f.rows.find(x=>x[2]===key&&
+      x[3].includes(next+'T15:29'))!;
+    assert.ok(close);
+    close[1]='2';
+    f.rows.push(['REC88-TUES-OPEN','1',key,open,open,'120','121','100','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,0);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,8);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+  });
+  it('Phase88 missing Tuesday after a real Monday bounded opening quote does not erase the earlier observed Friday to Monday gap',()=>{
+    const f=fixture(),gone='2026-11-24';
+    f.input.declaredSessions=f.input.declaredSessions.filter(s=>s.sessionDate!==gone);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].startsWith(gone))f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,0);
+    assert.equal(r.originalPairsWithPotentialUndeclaredWeekdays,16);
+  });
+  it('Phase88 armed peak at end of supplied session list with potential next weekday before expiry is censored, not an assumed uneventful overnight',()=>{
+    const f=fixture(),last='2026-11-20';
+    f.input.declaredSessions=f.input.declaredSessions.filter(s=>s.sessionDate<=last);
+    for(let i=f.rows.length-1;i>=0;i--)
+      if(f.rows[i][3].slice(0,10)>last)f.rows.splice(i,1);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,8);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,0);
+    assert.equal(r.realOutOfSampleOptionReturnOrProfitabilityProven,false);
+    assert.equal(r.nativeBrokerNrmlGttStopChildAckVerified,false);
+  });
 });
