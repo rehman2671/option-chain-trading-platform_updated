@@ -91,6 +91,7 @@ on:
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+      - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
   pull_request:
     branches:
       - main
@@ -183,6 +184,7 @@ on:
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+      - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
   workflow_dispatch:
 
 permissions:
