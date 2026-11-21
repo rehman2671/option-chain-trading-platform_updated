@@ -349,4 +349,22 @@ describe('Phase80 owner-private file-backed original option L1 intake (offline o
     assert.equal(r.officialExchangeFOMasterVerified,false);
     assert.equal(r.productionSafe,false);
   });
+
+  it('Phase88 private retrospective report forwards unresolved armed calendar transitions without raw contracts or dates',()=>{
+    const f=fixture(),date='2026-11-20',ts=ist(date,10,0);
+    f.input.phase79.originalNativeL1Csv=Buffer.concat([
+      f.input.phase79.originalNativeL1Csv,
+      Buffer.from('RAW-PH88-PEAK,2,OPT1H0CE,'+ts+','+ts+
+        ',170,171,100,100\n')
+    ]);
+    f.repin();
+    const r=audit(f);neverTrading(r);
+    assert.equal(r.entryPairsWithUnresolvedOvernightCalendarTransition,1);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithUnresolvedOvernightCalendarTransition,0),1);
+    assert.ok(!JSON.stringify(r).includes('OPT1H0CE'));
+    assert.ok(!JSON.stringify(r).includes('RAW-PH88-PEAK'));
+    assert.equal(r.actualOptionEntryOrExitFillVerified,false);
+    assert.equal(r.productionSafe,false);
+  });
 });
