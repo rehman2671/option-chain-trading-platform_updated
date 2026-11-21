@@ -50,6 +50,8 @@ import {fetchOriginalBuyTradeEvidenceReadOnly} from
   './src/server/engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
 import {previewJointBuySellReceipts} from
   './src/server/engine/ema15m/adaptiveJointTradeReceiptReconciliation.js';
+import {reviewAccountWideExposureBrokerReadOnly} from
+  './src/server/engine/ema15m/adaptiveAccountWideExposureReview.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1870,6 +1872,91 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Joint local receipts or broker read-only reconciliation unavailable.'
+      });
+    }
+  });
+
+  // Phase103: a read-only broker ACCOUNT order/GTT/position census on the
+  // exact selected option, alongside the private immutable BUY/SELL ledger.
+  // Current-day broker endpoints cannot certify historical completeness.
+  app.post('/api/ema15m/account-wide-exposure-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Exact pending position and broker account are required.'
+      });
+    try{
+      const positions=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(positions.length!==1||positions[0].status!=='EXIT_PENDING'||
+         positions[0].brokerAccountId!==expectedAccountId||
+         !positions[0].brokerInstrumentKey||
+         !positions[0].entryBrokerOrderId||
+         !positions[0].exitBrokerOrderId||
+         !Number.isSafeInteger(positions[0].quantity)||
+         !Number.isSafeInteger(positions[0].lotSize)||
+         positions[0].quantity<=0||positions[0].lotSize<=0||
+         positions[0].quantity%positions[0].lotSize!==0)
+        return res.status(409).json({
+          error:'No unique scoped pending option with original BUY and SELL IDs.'
+        });
+      const p=positions[0];
+      const before=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const source=before.observations;
+      const latest=source[source.length-1] as Record<string,unknown>|undefined;
+      // Never infer exited volume from a mutable local exit_filled_quantity.
+      // Exactly one child is supported and its final durable observation
+      // must match the original option position and requested SELL size.
+      if(!before.position||source.length===0||!latest||
+         latest.positionId!==positionId||
+         latest.accountId!==expectedAccountId||
+         latest.brokerOrderId!==p.exitBrokerOrderId||
+         latest.requestedQuantity!==p.quantity||
+         !Number.isSafeInteger(latest.filledQuantity)||
+         (latest.filledQuantity as number)<0||
+         (latest.filledQuantity as number)>p.quantity)
+        return res.status(409).json({
+          error:'Durable exact SELL child observation unavailable; cannot census scope.'
+        });
+      const report=await reviewAccountWideExposureBrokerReadOnly(
+        activeProvider as any,{
+          expectedAccountId,instrumentKey:p.brokerInstrumentKey,
+          product:p.productType,
+          originalBuyOrderId:p.entryBrokerOrderId,
+          exitSellOrderId:p.exitBrokerOrderId,
+          originalBuyQuantity:p.quantity,
+          confirmedExitFilledQuantity:latest.filledQuantity as number,
+          lotSize:p.lotSize
+        });
+      // DB read AGAIN after the broker awaits so local journal changes
+      // cannot be mistaken for a single coherent account snapshot.
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      if(JSON.stringify(before)!==JSON.stringify(after))
+        return res.status(409).json({
+          state:'DURABLE_LEDGER_CHANGED_DURING_BROKER_REVIEW',
+          automaticPositionClosureAuthorized:false,
+          netRealisedPnlAuthorized:false,
+          liveNrmlBuyAuthorized:false,
+          brokerWrites:0,localWrites:0
+        });
+      const joint=previewJointBuySellReceipts({
+        positionId,accountId:expectedAccountId
+      },{...after,freshBrokerNetQuantity:report.brokerNetLongQuantity});
+      // Do not return original BUY/SELL raw ledgers, order IDs, broker
+      // packets, fee figures or even indicative profits in this account
+      // exposure view. The join remains source evidence, NOT clearance.
+      return res.json({
+        ...report,jointReceiptState:joint.state,
+        jointReceiptIndependentSettlementCertified:false
+      });
+    }catch{
+      return res.status(503).json({
+        error:'Account read-only broker census or local receipt review unavailable.'
       });
     }
   });
