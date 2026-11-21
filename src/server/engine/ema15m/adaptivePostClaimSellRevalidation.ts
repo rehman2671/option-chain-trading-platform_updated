@@ -13,9 +13,9 @@ import {assessBrokerSellInterlock,assessGttSellInterlock}
   from './protectiveExitSafety.js';
 type Obj=Record<string,unknown>;
 const rec=(x:unknown):x is Obj=>!!x&&typeof x==='object'&&!Array.isArray(x);
-const nonempty=(x:unknown)=>typeof x==='string'&&x.length>0;
-const positive=(x:unknown)=>typeof x==='number'&&Number.isSafeInteger(x)&&x>0;
-const nonnegative=(x:unknown)=>typeof x==='number'&&Number.isSafeInteger(x)&&x>=0;
+const nonempty=(x:unknown):x is string=>typeof x==='string'&&x.length>0;
+const positive=(x:unknown):x is number=>typeof x==='number'&&Number.isSafeInteger(x)&&x>0;
+const nonnegative=(x:unknown):x is number=>typeof x==='number'&&Number.isSafeInteger(x)&&x>=0;
 export type ExitRecheckBlocker =
   'DURABLE_EXIT_POSITION_NOT_UNIQUE'|
   'DURABLE_EXIT_CLAIM_NOT_CURRENT'|
