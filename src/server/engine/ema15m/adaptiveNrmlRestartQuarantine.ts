@@ -149,7 +149,7 @@ export function auditNrmlRestartQuarantine(
     reasons.push('BROKER_NRML_POSITION_MISSING_OR_DUPLICATED');
   else{
     const net=numeric(brokerNetRows[0].net_quantity);
-    const remaining=(p.quantity as number)-(p.exitFilledQuantity??0 as number);
+    const remaining=(p.quantity as number)-Number(p.exitFilledQuantity??0);
     if(net!==null&&net===remaining)
       counts.brokerNetMatchesJournalRemainder=true;
     else reasons.push('CURRENT_BROKER_NET_DISAGREES_WITH_DURABLE_EXIT_LEDGER');
