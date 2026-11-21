@@ -305,7 +305,7 @@ describe('Phase99 real SQLite WAL child-trade evidence persistence (never broker
     assert.equal(b.recordedChildObservations,2);
     const stale=dbEngine.appendEmaExitChildTradeEvidence(first);
     assert.equal(stale.state,'EVIDENCE_CONFLICT');
-    assert.equal(stale.reason,'BROKER_CHILD_CUMULATIVE_FILL_REGRESSED');
+    assert.equal(stale.reason,'BROKER_CHILD_TERMINAL_LIFECYCLE_REGRESSED_OR_CHANGED');
     const missing=dbEngine.appendEmaExitChildTradeEvidence({
       ...later,trades:[{...base.trades[0],tradeId:'TRADE-2',quantity:50}]
     });
