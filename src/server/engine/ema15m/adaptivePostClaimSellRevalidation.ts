@@ -23,6 +23,7 @@ export type ExitRecheckBlocker =
   'ENTRY_BUY_ATTEMPT_UNVERIFIED_OR_STILL_EXECUTABLE'|
   'BROKER_READ_ONLY_RECHECK_UNAVAILABLE'|
   'BROKER_EXISTING_SELL_NOT_TERMINAL'|
+  'BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET'|
   'BROKER_GTT_SELL_STILL_EXECUTABLE'|
   'BROKER_NET_CHANGED_AFTER_ORIGINAL_VERIFICATION';
 export type ExitRecheckResult =
@@ -124,6 +125,28 @@ export async function reviewPostClaimBrokerSell(
     if(assessBrokerSellInterlock(
        orders,args.instrumentKey,args.product).safe!==true)
       return reject('BROKER_EXISTING_SELL_NOT_TERMINAL');
+    // The original BUY may be FILLED in the durable journal, yet a new
+    // manual/external BUY can remain pending in the broker book and fill
+    // after our current position GET. Do not treat current net as fixed.
+    const nativeProduct=args.product==='NRML'?'D':'I';
+    if(!Array.isArray(orders))
+      return reject('BROKER_READ_ONLY_RECHECK_UNAVAILABLE');
+    const terminalBuys=new Set([
+      'COMPLETE','COMPLETED','CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED'
+    ]);
+    for(const order of orders){
+      if(!rec(order)||typeof order.instrument_token!=='string')
+        return reject('BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+      if(order.instrument_token!==args.instrumentKey)continue;
+      if(order.product!==nativeProduct)
+        return reject('BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+      const side=String(order.transaction_type||'').trim().toUpperCase();
+      const status=String(order.status||'').trim().toUpperCase();
+      if(side!=='BUY'&&side!=='SELL')
+        return reject('BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+      if(side==='BUY'&&!terminalBuys.has(status))
+        return reject('BROKER_PENDING_BUY_OR_OTHER_PRODUCT_MAY_CHANGE_NET');
+    }
     gtts=await broker.getGttOrders();
     if(assessGttSellInterlock(
        gtts,args.instrumentKey,args.product).safe!==true)
