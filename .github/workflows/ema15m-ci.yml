@@ -94,6 +94,7 @@ on:
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
       - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
       - 'research/adaptive-v2-phase93-nrml-stop-fill-position-conservation'
+      - 'research/adaptive-v2-phase94-account-wide-conflicting-stop-census'
   pull_request:
     branches:
       - main
@@ -189,6 +190,7 @@ on:
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
       - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
       - 'research/adaptive-v2-phase93-nrml-stop-fill-position-conservation'
+      - 'research/adaptive-v2-phase94-account-wide-conflicting-stop-census'
   workflow_dispatch:
 
 permissions:
