@@ -31,7 +31,7 @@ const position=()=>({
 });
 const fixture=():GttChildReviewEvidence=>({
   connected:true,connectedAccountId:req.expectedAccountId,
-  gtt:[gtt()],order:order(),trades:[],
+  gtt:[gtt()],gttOrders:[gtt()],order:order(),trades:[],
   positions:[position()],orderBook:[order()]
 });
 const review=(e:GttChildReviewEvidence,request=req)=>
@@ -213,6 +213,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       getGttOrderDetails:async()=>{called++;return [gtt()];},
       getVerifiedNrmlPositionRows:async()=>{called++;return [position()];},
       getOrderBook:async()=>{called++;return [order()];},
+      getGttOrders:async()=>{called++;return [gtt()];},
       getOrderDetails:async()=>{called++;return order();},
       getOrderTrades:async()=>{called++;return [];}
     };
@@ -230,12 +231,13 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       }];},
       getVerifiedNrmlPositionRows:async()=>{called.push('positions');return [position()];},
       getOrderBook:async()=>{called.push('orderBook');return [];},
+      getGttOrders:async()=>{called.push('gttList');return [gtt()];},
       getOrderDetails:async()=>{throw Error('MUST_NOT_FETCH_CHILD');},
       getOrderTrades:async()=>{throw Error('MUST_NOT_FETCH_TRADES');}
     };
     const r=await reviewNrmlGttChildReadOnly(broker,req);neverRelease(r);
     assert.equal(r.status,'SCHEDULED_GTT_NO_EXCHANGE_CHILD');
-    assert.deepEqual(called.sort(),['gtt','orderBook','positions']);
+    assert.deepEqual(called.sort(),['gtt','gttList','orderBook','positions']);
   });
   it('read-only triggered GTT fetches 5 authorised reads, no order write',async()=>{
     const calls:string[]=[];
@@ -244,6 +246,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       getGttOrderDetails:async(_:string)=>{calls.push('gtt');return [gtt()];},
       getVerifiedNrmlPositionRows:async()=>{calls.push('positions');return [position()];},
       getOrderBook:async()=>{calls.push('orderBook');return [order()];},
+      getGttOrders:async()=>[gtt()],
       getOrderDetails:async(_:string)=>{calls.push('childDetails');return order();},
       getOrderTrades:async(_:string)=>{calls.push('trades');return [];},
       placeOrder:()=>{throw Error('NO_BROKER_WRITE');},
@@ -252,7 +255,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
     };
     const r=await reviewNrmlGttChildReadOnly(broker,req);neverRelease(r);
     assert.equal(r.status,'OBSERVED_BROKER_CHILD_EXCHANGE_REFERENCE_NOT_RELEASE');
-    assert.deepEqual(calls.sort(),['childDetails','gtt','orderBook','positions','trades']);
+    assert.deepEqual(calls.sort(),['childDetails','gtt','gttList','orderBook','positions','trades']);
   });
   it('child GET transport exception fails closed without echoing broker secrets',async()=>{
     const broker={
@@ -260,6 +263,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       getGttOrderDetails:async()=>[gtt()],
       getVerifiedNrmlPositionRows:async()=>[position()],
       getOrderBook:async()=>[order()],
+      getGttOrders:async()=>[gtt()],
       getOrderDetails:async()=>{throw Error('AUTH_TOKEN_DO_NOT_PRINT');},
       getOrderTrades:async()=>[]
     };
