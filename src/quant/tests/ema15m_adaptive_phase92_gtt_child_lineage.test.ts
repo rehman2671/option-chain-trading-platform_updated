@@ -89,6 +89,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
   });
   it('two STOPLOSS SELL rules on same GTT cannot be silently netted',()=>{
     const e=fixture();const g=gtt();g.rules.push({...g.rules[0]});
+    e.gtt=[g];
     const r=review(e);neverRelease(r);
     assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
   });
