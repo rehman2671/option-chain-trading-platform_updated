@@ -4423,6 +4423,100 @@ class DatabaseEngine {
   }
 
   /**
+   * Phase100: internally scoped, consistent SQLite READ snapshot of one
+   * pending SELL child and its original BUY / immutable trade evidence.
+   * Caller must authenticate/authorise before invoking this private reader.
+   * Do not return this raw snapshot to an API consumer (broker identifiers
+   * and trade prices are sensitive); use the redacted pure preview.
+   */
+  public readEmaExitSettlementEvidence(positionId:string): {
+    position:Record<string,unknown>|null;
+    entryAttempt:Record<string,unknown>|null;
+    observations:Record<string,unknown>[];
+    trades:Record<string,unknown>[];
+  } {
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: readEmaExitSettlementEvidence');
+    if(typeof positionId!=='string'||positionId.length===0||positionId.length>128)
+      throw new Error('EMA_LIVE_SETTLEMENT_READ_POSITION_ID_INVALID');
+    const db=this.db;
+    const read=db.transaction(()=>{
+      const raw=db.prepare(`
+        SELECT id,attempt_id,broker_account_id,broker_instrument_key,
+          product_type,status,entry_broker_order_id,exit_broker_order_id,
+          quantity,lot_size,exit_filled_quantity,entry_price
+        FROM ema_live_positions WHERE id=?
+      `).get(positionId) as any;
+      if(!raw)return {
+        position:null,entryAttempt:null,observations:[],trades:[]
+      };
+      const buy=db.prepare(`
+        SELECT id,broker_account_id,broker_instrument_key,
+          broker_order_id,order_status,requested_quantity,
+          filled_quantity,average_fill_price
+        FROM ema_live_order_attempts WHERE id=?
+      `).get(raw.attempt_id) as any;
+      const observations=db.prepare(`
+        SELECT observation_id,position_id,broker_order_id,
+          broker_account_id,broker_instrument_key,product_type,
+          requested_quantity,exchange_order_id,
+          observed_filled_quantity,observed_pending_quantity,
+          observed_net_quantity,observed_broker_status,
+          observed_trade_count
+        FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY observation_id ASC LIMIT 2001
+      `).all(positionId,raw.exit_broker_order_id) as any[];
+      const trades=db.prepare(`
+        SELECT broker_trade_id,broker_exchange_order_id,
+          reported_quantity,reported_average_price
+        FROM ema_exit_trade_evidence
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY broker_trade_id ASC LIMIT 5001
+      `).all(positionId,raw.exit_broker_order_id) as any[];
+      return {
+        position:{
+          id:raw.id,attemptId:raw.attempt_id,
+          brokerAccountId:raw.broker_account_id,
+          brokerInstrumentKey:raw.broker_instrument_key,
+          productType:raw.product_type,status:raw.status,
+          entryBrokerOrderId:raw.entry_broker_order_id,
+          exitBrokerOrderId:raw.exit_broker_order_id,
+          quantity:raw.quantity,lotSize:raw.lot_size,
+          exitFilledQuantity:raw.exit_filled_quantity,
+          entryPrice:raw.entry_price
+        },
+        entryAttempt:buy?{
+          id:buy.id,brokerAccountId:buy.broker_account_id,
+          brokerInstrumentKey:buy.broker_instrument_key,
+          brokerOrderId:buy.broker_order_id,
+          orderStatus:buy.order_status,
+          requestedQuantity:buy.requested_quantity,
+          filledQuantity:buy.filled_quantity,
+          averageFillPrice:buy.average_fill_price
+        }:null,
+        observations:observations.map(r=>({
+          observationId:r.observation_id,positionId:r.position_id,
+          brokerOrderId:r.broker_order_id,accountId:r.broker_account_id,
+          instrumentKey:r.broker_instrument_key,product:r.product_type,
+          requestedQuantity:r.requested_quantity,
+          exchangeOrderId:r.exchange_order_id,
+          filledQuantity:r.observed_filled_quantity,
+          pendingQuantity:r.observed_pending_quantity,
+          currentNetQuantity:r.observed_net_quantity,
+          brokerStatus:r.observed_broker_status,
+          tradeCount:r.observed_trade_count
+        })),
+        trades:trades.map(t=>({
+          tradeId:t.broker_trade_id,
+          exchangeOrderId:t.broker_exchange_order_id,
+          quantity:t.reported_quantity,price:t.reported_average_price
+        }))
+      };
+    });
+    return read();
+  }
+
+  /**
    * Phase99: only append local BROKER-REPORTED SELL child observations and
    * immutable per-trade evidence, never change positions/CLOSED/P&L.
    * This transaction must not be called from automatic order placement or
