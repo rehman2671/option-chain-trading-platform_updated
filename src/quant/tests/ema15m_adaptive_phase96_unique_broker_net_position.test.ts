@@ -82,7 +82,9 @@ describe('Phase96 exact-one native portfolio snapshot, not duplicate summation o
   });
   it('unrecognised broker product, lowercase mode and null product fail closed',()=>{
     for(const value of ['nrml','CNC','',null,undefined]){
-      const r=inspect([record(100)],value);locked(r);
+      // Passing undefined through the wrapper would invoke its NRML default;
+      // test the raw evidence gate with the explicit invalid input instead.
+      const r=resolveUniqueBrokerNetPosition([record(100)],key,value);locked(r);
       assert.equal(r.verified,false);
       assert.equal(r.issue,'INVALID_EXACT_INSTRUMENT_OR_PRODUCT');
     }
