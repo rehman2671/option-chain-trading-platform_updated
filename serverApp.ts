@@ -40,6 +40,8 @@ import {reviewNrmlGttChildReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttChildLineageAudit.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
+import {reviewBrokerExitFillReadOnly} from
+  './src/server/engine/ema15m/adaptiveLiveExitSettlementAudit.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1564,6 +1566,63 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Durable NRML journal or read-only broker review unavailable.'
+      });
+    }
+  });
+
+  // Phase98: SUPERADMIN read-only SELL-fill diagnostic. Neither an
+  // Upstox placeOrder ACK nor even a consistent broker-reported trade set
+  // authorises automatic CLOSED/P&L, NRML live BUY or duplicate SELL retry.
+  app.post('/api/ema15m/live-exit-fill-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>256||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>256)
+      return res.status(400).json({
+        error:'Exact durable exit position and connected broker-account comparison target required.'
+      });
+    try{
+      const matches=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(matches.length!==1||matches[0].status!=='EXIT_PENDING'||
+         matches[0].brokerAccountId!==expectedAccountId||
+         !matches[0].exitBrokerOrderId)
+        return res.status(409).json({
+          error:'No unique matching EXIT_PENDING broker-acknowledged position to inspect.'
+        });
+      const p=matches[0];
+      // A position with previously recorded SELL fills requires a persisted
+      // per-child requested size and lifecycle ledger, not a reconstructed
+      // order quantity from a potentially already-updated cumulative field.
+      if(p.exitFilledQuantity!==0||
+         !Number.isSafeInteger(p.quantity)||p.quantity<=0||
+         !Number.isSafeInteger(p.lotSize)||p.lotSize<=0||
+         p.quantity%p.lotSize!==0||
+         !p.brokerInstrumentKey)
+        return res.status(409).json({
+          error:'Original submitted SELL quantity or native option lot not independently reconstructable.'
+        });
+      const brokerAuth=typeof (activeProvider as any)?.getLiveConnectionStatus==='function'
+        ?(activeProvider as any).getLiveConnectionStatus():null;
+      if(brokerAuth?.isConnected!==true||
+         brokerAuth?.userId!==expectedAccountId)
+        return res.status(503).json({
+          error:'Connected broker account could not be independently matched.'
+        });
+      const report=await reviewBrokerExitFillReadOnly(activeProvider as any,{
+        instrumentKey:p.brokerInstrumentKey,
+        product:p.productType,
+        orderId:p.exitBrokerOrderId,
+        requestedSellQuantity:p.quantity,
+        lotSize:p.lotSize
+      });
+      return res.json(report);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only live exit fill evidence review unavailable.'
       });
     }
   });

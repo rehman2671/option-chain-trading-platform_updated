@@ -24,6 +24,7 @@ import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveE
 import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGuard.js';
 import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
   from './adaptivePostClaimSellRevalidation.js';
+import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
 import {
   assessEmaLiveProductGate,isMisForcedSquareOffEligible
 } from './adaptiveNrmlLiveReleaseInterlock.js';
@@ -879,98 +880,55 @@ export class LiveExecutionService {
         tag: emaBrokerOrderTag('SELL', pos.id)
       });
 
-      const exitBrokerOrderId = exitRes?.order_id || exitRes?.orderId;
-      if (!exitBrokerOrderId) {
-        throw new Error('Broker did not return an authoritative order identifier for exit.');
-      }
-
-      const exitStatusStr = (exitRes?.status || exitRes?.order_status || '').toUpperCase();
-      const brokerExitQty = Number(exitRes?.filled_quantity ?? exitRes?.filledQuantity ?? 0);
-      const brokerExitPrice = Number(exitRes?.average_price ?? exitRes?.averagePrice ?? 0);
-      // Even a fully filled *remaining* SELL cannot settle cumulative P&L
-      // if this local position already had earlier partial SELLs. Leave the
-      // position pending until the original child fills are reconciled.
-      const isExitFilled = sellSize.priorExitFilledQuantity === 0 &&
-        (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
-        Number.isInteger(brokerExitQty) && brokerExitQty === remainingQty &&
-        Number.isFinite(brokerExitPrice) && brokerExitPrice > 0;
-
+      // Phase98: an Upstox placeOrder() HTTP response is an ORDER ACK,
+      // even if its payload says COMPLETE, quotes a price or claims a fill.
+      // Do not mark a position CLOSED or post realised P&L based on an ACK.
+      // A missing order ID is UNKNOWN and must remain EXIT_REQUESTED.
+      const placement=assessExitPlacementAck(exitRes);
+      if(placement.state!=='EXIT_PENDING_NOT_CONFIRMED_FILLED')
+        throw new Error('Broker SELL acceptance UNKNOWN: no validated child order ID.');
+      const exitBrokerOrderId=placement.orderId;
       const randomSuffix = Math.random().toString(36).slice(2, 8);
-      if (isExitFilled) {
-        const exitPrice = brokerExitPrice;
-        const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, exitPrice, pos.quantity);
-        const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
 
-        dbEngine.updateEmaLivePosition(pos.id, {
-          status: 'CLOSED',
-          exitBrokerOrderId,
-          exitTimestamp: new Date().toISOString(),
-          exitPrice,
-          exitReason: reason,
-          grossPnl,
-          netPnl,
-          unrealizedPnl: 0
-        });
+      // Persist the broker-reported child ID and preserve unresolved exposure
+      // until separately reviewed child order details, unique trades and
+      // remaining net quantity can be reconciled. No automatic retry.
+      dbEngine.updateEmaLivePosition(pos.id, {
+        status: 'EXIT_PENDING',
+        exitBrokerOrderId,
+        exitReason: reason
+      });
 
-        dbEngine.logEmaExecutionEvent({
-          id: `evt-live-exit-ok-${Date.now()}-${randomSuffix}`,
-          signalId: pos.signalId,
-          executionId: pos.id,
-          executionMode: 'LIVE',
-          stage: 'LIVE_EXIT_FILLED',
-          status: 'SUCCESS',
-          instrument: pos.instrument,
-          brokerOrderId: exitBrokerOrderId,
-          details: { exitBrokerOrderId, exitPrice, grossPnl, netPnl, reason },
-          timestamp: new Date().toISOString()
-        });
+      dbEngine.logEmaExecutionEvent({
+        id: `evt-live-exit-sub-${Date.now()}-${randomSuffix}`,
+        signalId: pos.signalId,
+        executionId: pos.id,
+        executionMode: 'LIVE',
+        stage: 'LIVE_EXIT_SUBMITTED',
+        status: 'PENDING',
+        instrument: pos.instrument,
+        brokerOrderId: exitBrokerOrderId,
+        details: { exitBrokerOrderId, reason,
+          requestedQuantity:remainingQty,
+          placementEvidence:'ACK_ONLY_NOT_FILL_OR_REALISED_PNL' },
+        timestamp: new Date().toISOString()
+      });
 
-        dbEngine.logEmaExecution({
-          id: `exec-live-exit-ok-${Date.now()}-${randomSuffix}`,
-          timestamp: new Date().toISOString(),
-          level: 'SUCCESS',
-          stage: 'EXIT',
-          instrument: pos.instrument,
-          message: `🟢 LIVE Position CLOSED on Upstox! Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol} @ ₹${exitPrice} (Net P&L: ₹${netPnl})`,
-          details: { exitBrokerOrderId, exitPrice, netPnl }
-        });
+      dbEngine.logEmaExecution({
+        id: `exec-live-exit-sub-${Date.now()}-${randomSuffix}`,
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        stage: 'EXIT',
+        instrument: pos.instrument,
+        message: `🟡 LIVE SELL acknowledged by Upstox; fill NOT verified. Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol}`,
+        details: { exitBrokerOrderId, reason,
+          placementEvidence:'ACK_ONLY_NOT_FILL_OR_REALISED_PNL' }
+      });
 
-        this.pendingExitIds.delete(pos.id);
-        return { success: true, message: `Live position closed on broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
-      } else {
-        // Exit order submitted to broker; remains visible and tracked until fill confirmed
-        dbEngine.updateEmaLivePosition(pos.id, {
-          status: 'EXIT_PENDING',
-          exitBrokerOrderId,
-          exitReason: reason
-        });
-
-        dbEngine.logEmaExecutionEvent({
-          id: `evt-live-exit-sub-${Date.now()}-${randomSuffix}`,
-          signalId: pos.signalId,
-          executionId: pos.id,
-          executionMode: 'LIVE',
-          stage: 'LIVE_EXIT_SUBMITTED',
-          status: 'SUCCESS',
-          instrument: pos.instrument,
-          brokerOrderId: exitBrokerOrderId,
-          details: { exitBrokerOrderId, reason },
-          timestamp: new Date().toISOString()
-        });
-
-        dbEngine.logEmaExecution({
-          id: `exec-live-exit-sub-${Date.now()}-${randomSuffix}`,
-          timestamp: new Date().toISOString(),
-          level: 'INFO',
-          stage: 'EXIT',
-          instrument: pos.instrument,
-          message: `🟡 LIVE Exit Order SUBMITTED to Upstox. Awaiting fill. Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol}`,
-          details: { exitBrokerOrderId, reason }
-        });
-
-        this.pendingExitIds.delete(pos.id);
-        return { success: true, message: `Live exit order submitted to broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
-      }
+      this.pendingExitIds.delete(pos.id);
+      return { success: true, message:
+        `Broker SELL acknowledged, fill unverified; position remains EXIT_PENDING. Order ID: ${exitBrokerOrderId}`,
+        exitBrokerOrderId };
     } catch (exitErr: any) {
       console.error(`[EMA LIVE] 🔴 Error dispatching broker exit order for ${pos.tradingsymbol}:`, exitErr.message);
 

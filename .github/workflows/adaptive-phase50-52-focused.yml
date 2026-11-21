@@ -1,4 +1,4 @@
-name: Adaptive Phase50-97 focused offline research checks
+name: Adaptive Phase50-98 focused offline research checks
 on:
   push:
     branches:
@@ -48,6 +48,7 @@ on:
       - 'research/adaptive-v2-phase95-nrml-restart-quarantine'
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
+      - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -97,6 +98,7 @@ on:
       - 'research/adaptive-v2-phase95-nrml-restart-quarantine'
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
+      - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
   workflow_dispatch:
 
 permissions:

@@ -98,6 +98,7 @@ on:
       - 'research/adaptive-v2-phase95-nrml-restart-quarantine'
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
+      - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
   pull_request:
     branches:
       - main
@@ -197,6 +198,7 @@ on:
       - 'research/adaptive-v2-phase95-nrml-restart-quarantine'
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
+      - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
   workflow_dispatch:
 
 permissions:
