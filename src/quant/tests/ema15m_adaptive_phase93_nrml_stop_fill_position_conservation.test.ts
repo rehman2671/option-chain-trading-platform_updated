@@ -16,7 +16,7 @@ const child=(fill=0,pending=100)=>({
   exchange_order_id:'PH93-EXCHANGE',instrument_token:req.instrumentKey,
   product:'D',transaction_type:'SELL',order_type:'MARKET',quantity:100,
   filled_quantity:fill,pending_quantity:pending,
-  status:fill?'partially filled':'open'
+  status:fill===100?'complete':fill>0?'partially filled':'open'
 });
 const trade=(id:string,quantity:number)=>({
   order_id:'PH93-CHILD',exchange_order_id:'PH93-EXCHANGE',
@@ -141,6 +141,31 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
       const r=inspect(e);locked(r);
       assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
     }
+  });
+  it('COMPLETE broker status with only partial SELL execution is contradictory',()=>{
+    const e=fixture(50,50,50);
+    e.order={...child(50,50),status:'complete'};
+    e.orderBook=[{...child(50,50),status:'complete'}];
+    const r=inspect(e);locked(r);
+    assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
+    assert.ok(r.reasonCodes.includes(
+      'CHILD_ORDER_STATUS_DISAGREES_WITH_EXECUTED_REMAINING_QUANTITY'));
+  });
+  it('PARTIALLY FILLED status with zero pending cannot be called active protection',()=>{
+    const e=fixture(100,0,0);
+    e.order={...child(100,0),status:'partially filled'};
+    e.orderBook=[{...child(100,0),status:'partially filled'}];
+    const r=inspect(e);locked(r);
+    assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
+    assert.ok(r.reasonCodes.includes(
+      'CHILD_ORDER_STATUS_DISAGREES_WITH_EXECUTED_REMAINING_QUANTITY'));
+  });
+  it('active OPEN broker child cannot have unexplained missing quantity',()=>{
+    const e=fixture(0,75,100);
+    const r=inspect(e);locked(r);
+    assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
+    assert.ok(r.reasonCodes.includes(
+      'NONTERMINAL_CHILD_FILLED_PLUS_PENDING_NOT_EQUAL_TO_ORDER_QUANTITY'));
   });
   it('nonzero SELL without exact unique trades never reconciles',()=>{
     const e=fixture(50,50,50);
