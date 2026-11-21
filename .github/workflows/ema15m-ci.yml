@@ -99,6 +99,7 @@ on:
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
       - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
+      - 'research/adaptive-v2-phase99-durable-sell-child-trade-evidence'
   pull_request:
     branches:
       - main
@@ -199,6 +200,7 @@ on:
       - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
       - 'research/adaptive-v2-phase97-post-claim-sell-revalidation'
       - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
+      - 'research/adaptive-v2-phase99-durable-sell-child-trade-evidence'
   workflow_dispatch:
 
 permissions:
