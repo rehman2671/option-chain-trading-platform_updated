@@ -76,6 +76,7 @@ export function auditNrmlBrokerEvidence(
   request:NrmlBrokerReviewRequest,evidence:NrmlBrokerEvidence
 ):NrmlBrokerReviewReport{
   if(!request||!text(request.expectedAccountId)||
+     request.expectedAccountId.length>128||
      !text(request.instrumentKey)||request.instrumentKey.length>256||
      !positiveInt(request.lotSize)||!positiveInt(request.expectedLongQuantity)||
      request.expectedLongQuantity%request.lotSize!==0)
@@ -144,6 +145,10 @@ export function auditNrmlBrokerEvidence(
       unresolved=true;reasons.push('UNKNOWN_SELL_ORDER_STATUS');continue;
     }
     if(!activeStatus.has(st))continue;
+    if(['CANCEL PENDING','MODIFY PENDING','UNKNOWN',
+        'VALIDATION PENDING','PUT ORDER REQ RECEIVED'].includes(st)){
+      unresolved=true;reasons.push('UNRESOLVED_ACTIVE_SELL_ORDER_LIFECYCLE');
+    }
     const id=row.order_id,qty=Number(row.quantity),
       kind=asUpper(row.order_type);
     if(!text(id)||!Number.isSafeInteger(qty)||qty<=0||
@@ -177,6 +182,10 @@ export function auditNrmlBrokerEvidence(
         reasons.push('UNKNOWN_GTT_SELL_RULE_STATE');unresolved=true;continue;
       }
       if(!activeStatus.has(st))continue;
+      if(['CANCEL PENDING','MODIFY PENDING','UNKNOWN',
+          'VALIDATION PENDING'].includes(st)){
+        unresolved=true;reasons.push('UNRESOLVED_GTT_SELL_LIFECYCLE');
+      }
       // API versions and GTT rule schemas vary: no assumption that an
       // ACTIVE GTT rule has spawned an exchange child order.
       const qty=Number(rule.quantity);
