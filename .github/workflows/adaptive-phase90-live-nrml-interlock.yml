@@ -1,0 +1,32 @@
+name: Adaptive Phase90 live NRML request and MIS-only squareoff interlocks
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live-nrml-release-fail-closed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Live NRML blocked and 15:15 MIS-only product regression tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase90_nrml_live_release_interlock.test.ts \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
