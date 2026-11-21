@@ -32,6 +32,7 @@ import { PRIMARY_COVERAGE_SYMBOLS } from './src/shared/marketConfig.js';
 import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
 import { liveExecutionService } from './src/server/engine/ema15m/liveExecutionService.js';
+import { getNrmlLiveStatus } from './src/server/engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1460,12 +1461,34 @@ async function startServer() {
     }
   });
 
+  // Phase90: allow operators to inspect the NRML live-mode request and
+  // unresolved broker-native stop release conditions. Read-only; no orders.
+  app.get('/api/ema15m/nrml-live-status', requireSuperAdmin as any, (req, res) => {
+    const user = (req as any).user;
+    const userId = user ? user.id : 'GLOBAL';
+    const settings = dbEngine.getEmaNotificationSettings(userId);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(getNrmlLiveStatus(
+      settings.upstoxProductType || 'MIS',
+      settings.liveBrokerExecutionEnabled
+    ));
+  });
+
   // 6. Save Notification Settings (Strictly requires authenticated user)
   app.post('/api/ema15m/settings', requireSuperAdmin as any, (req, res) => {
     try {
       const user = (req as any).user;
       const userId = user ? user.id : 'GLOBAL';
       const settings = req.body;
+      // A generic MIS live toggle must never silently arm NRML order routing.
+      // A separate broker-native protective stop release does not exist yet.
+      if (settings?.upstoxProductType === 'NRML' &&
+          settings?.liveBrokerExecutionEnabled === true) {
+        return res.status(409).json({
+          error: 'NRML live BUY release blocked until broker-native stop/GTT child ACK, position reconciliation and independent risk signoff.',
+          nrmlStatus: getNrmlLiveStatus('NRML', true)
+        });
+      }
       dbEngine.saveEmaNotificationSettings(settings, userId);
       if (userId !== 'GLOBAL') {
         dbEngine.saveEmaNotificationSettings(settings, 'GLOBAL');
@@ -1629,6 +1652,12 @@ async function startServer() {
       const settings = dbEngine.getEmaNotificationSettings(userId);
       const enabled = req.body?.enabled === undefined ? !settings.liveBrokerExecutionEnabled : req.body.enabled;
       if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
+      if (enabled && settings.upstoxProductType === 'NRML') {
+        return res.status(409).json({
+          error: 'NRML live trading requested but not armed: native broker protective SELL stop/GTT and child ACK remain unverified.',
+          nrmlStatus: getNrmlLiveStatus('NRML', true)
+        });
+      }
       settings.liveBrokerExecutionEnabled = enabled;
       dbEngine.saveEmaNotificationSettings(settings, userId);
       if (userId !== 'GLOBAL') {
