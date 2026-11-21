@@ -1,4 +1,4 @@
-name: Adaptive Phase50-90 focused offline research checks
+name: Adaptive Phase50-91 focused offline research checks
 on:
   push:
     branches:
@@ -41,6 +41,7 @@ on:
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+      - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -83,6 +84,7 @@ on:
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
       - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+      - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
   workflow_dispatch:
 
 permissions:
