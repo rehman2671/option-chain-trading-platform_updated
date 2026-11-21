@@ -1,0 +1,33 @@
+name: Adaptive Phase91 read-only NRML broker portfolio order/GTT audit
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  nrml-broker-read-only-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase90/91 live NRML read-only broker and original option L1 tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase90_nrml_live_release_interlock.test.ts \
+            src/quant/tests/ema15m_adaptive_phase91_nrml_broker_snapshot_audit.test.ts \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
