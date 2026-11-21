@@ -1,0 +1,38 @@
+name: Adaptive Phase96 exact one broker net position before live SELL
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase96-unique-broker-net-position-evidence'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase95-nrml-restart-quarantine'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unique-broker-net-position:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase96 exact broker net source and prior NRML/L1 safety tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase96_unique_broker_net_position.test.ts \
+            src/quant/tests/ema15m_adaptive_phase95_restart_quarantine.test.ts \
+            src/quant/tests/ema15m_adaptive_phase94_nrml_competing_orders.test.ts \
+            src/quant/tests/ema15m_adaptive_phase93_nrml_stop_fill_position_conservation.test.ts \
+            src/quant/tests/ema15m_adaptive_phase92_gtt_child_lineage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase91_nrml_broker_snapshot_audit.test.ts \
+            src/quant/tests/ema15m_adaptive_phase90_nrml_live_release_interlock.test.ts \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts
