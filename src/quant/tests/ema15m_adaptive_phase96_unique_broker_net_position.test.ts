@@ -116,7 +116,7 @@ describe('Phase96 exact-one native portfolio snapshot, not duplicate summation o
   it('negative/unsafe/fractional and non-finite broker net values fail closed',()=>{
     for(const q of [-50,1.2,NaN,Infinity,-Infinity,
       Number.MAX_SAFE_INTEGER+1]){
-      const r=inspect([record(q)]);locked(r);
+      const r=inspect([{...record(100),net_quantity:q}]);locked(r);
       assert.equal(r.verified,false);
       assert.equal(r.issue,'INVALID_OR_SHORT_BROKER_NET_QUANTITY');
     }
@@ -124,7 +124,7 @@ describe('Phase96 exact-one native portfolio snapshot, not duplicate summation o
   it('null, booleans, exponent, padded or decimal strings never coerce into a trusted quantity',()=>{
     for(const q of [null,undefined,true,false,'',' ','05','0050',
       '5e1','50.0','-50','+50','50 ',' 50','Infinity','NaN']){
-      const r=inspect([record(q)]);locked(r);
+      const r=inspect([{...record(100),net_quantity:q}]);locked(r);
       assert.equal(r.verified,false);
       assert.equal(r.issue,'INVALID_OR_SHORT_BROKER_NET_QUANTITY');
     }
