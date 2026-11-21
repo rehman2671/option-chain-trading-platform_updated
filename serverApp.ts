@@ -38,6 +38,8 @@ import {
 } from './src/server/engine/ema15m/adaptiveNrmlBrokerSnapshotAudit.js';
 import {reviewNrmlGttChildReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttChildLineageAudit.js';
+import {reviewNrmlRestartReadOnly} from
+  './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1528,6 +1530,42 @@ async function startServer() {
       expectedAccountId,instrumentKey,gttOrderId,expectedLongQuantity,lotSize
     });
     return res.json(report);
+  });
+
+  // Phase95: durable local NRML position/entry journal against read-only
+  // Upstox account positions, ordinary orderbook, and full GTT list after
+  // restart. A review NEVER dispatches a BUY/SELL or retries unknown ACKs.
+  app.post('/api/ema15m/nrml-restart-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>256||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>256)
+      return res.status(400).json({
+        error:'Exact durable position ID and expected broker account required.'
+      });
+    try{
+      const positions=dbEngine.getOpenEmaLivePositions();
+      const matches=positions.filter(p=>p.id===positionId);
+      if(matches.length!==1||matches[0].productType!=='NRML'||
+         matches[0].brokerAccountId!==expectedAccountId)
+        return res.status(409).json({
+          error:'No uniquely matching open NRML durable position and broker account.'
+        });
+      const p=matches[0];
+      const entryAttempt=dbEngine.getEmaLiveOrderAttemptById(p.attemptId);
+      const report=await reviewNrmlRestartReadOnly(activeProvider as any,{
+        expectedAccountId,expectedPositionId:positionId,
+        journalPositions:positions,entryAttempt
+      });
+      return res.json(report);
+    }catch{
+      return res.status(503).json({
+        error:'Durable NRML journal or read-only broker review unavailable.'
+      });
+    }
   });
 
   // 6. Save Notification Settings (Strictly requires authenticated user)
