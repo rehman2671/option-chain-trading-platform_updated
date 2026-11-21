@@ -22,6 +22,9 @@ import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
 import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveExitSafety.js';
 import {
+  assessEmaLiveProductGate,isMisForcedSquareOffEligible
+} from './adaptiveNrmlLiveReleaseInterlock.js';
+import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
   OrderStatus,
@@ -53,6 +56,14 @@ export class LiveExecutionService {
     userId: string = 'GLOBAL'
   ): { passed: boolean; failureReason?: string } {
     const settings = dbEngine.getEmaNotificationSettings(userId);
+
+    // The generic Upstox live toggle is MIS-only while issue #20 is open.
+    // NRML product selection requests a positional mode, not stop protection
+    // or permission to route a real BUY. Unknown products fail closed.
+    const productGate = assessEmaLiveProductGate(settings.upstoxProductType || 'MIS');
+    if (!productGate.allowed) {
+      return { passed: false, failureReason: productGate.reason || 'NRML not released.' };
+    }
 
     // 1. Live Trading Enabled Check
     if (!settings.liveBrokerExecutionEnabled) {
@@ -152,6 +163,22 @@ export class LiveExecutionService {
     estimatedEntryPrice: number,
     userId: string
   ): Promise<DualExecutionResult['live']> {
+    const requestedSettings = dbEngine.getEmaNotificationSettings(userId);
+    const requestedProductType = requestedSettings.upstoxProductType || 'MIS';
+    const nrmlRelease = assessEmaLiveProductGate(requestedProductType);
+    // Check BEFORE any async broker contract verification, DB attempt,
+    // side effect, signal reversal, or potential BUY order submission.
+    if (!nrmlRelease.allowed) {
+      return {
+        enabled: false,
+        status: 'PRE_TRADE_REJECTED',
+        requestedQuantity: contract.lotSize,
+        filledQuantity: 0,
+        positionCreated: false,
+        rejectionReason: nrmlRelease.reason || 'NRML not released.',
+        message: nrmlRelease.reason || 'NRML live BUY not authorised.'
+      };
+    }
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
     const attemptId = `att-${inst.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -159,8 +186,10 @@ export class LiveExecutionService {
     // the broker's exact listed instrument key, expiry, lot size and tick size.
     contract = await ContractResolver.verifyLiveContract(contract, activeProvider as any);
     const quantity = contract.lotSize;
-    const settings = dbEngine.getEmaNotificationSettings(userId);
-    const productType: 'MIS' | 'NRML' = settings.upstoxProductType || 'MIS';
+    // Freeze product selected BEFORE awaiting broker I/O. A mid-flight UI
+    // change cannot silently convert a checked MIS intention to an NRML BUY.
+    const productType: 'MIS' | 'NRML' = requestedProductType as 'MIS' | 'NRML';
+    const settings = requestedSettings;
 
     // 0. Check if there is an in-flight pending entry attempt for this instrument
     const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 200);
@@ -941,10 +970,15 @@ export class LiveExecutionService {
     const openPositions = dbEngine.getOpenEmaLivePositions();
     if (!openPositions || openPositions.length === 0) return;
 
-    console.log(`[EMA LIVE INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Exiting ${openPositions.length} live position(s)...`);
+    // Restrict this legacy intraday path strictly to actual MIS positions.
+    // Neither a global product setting change nor an NRML position's OPEN
+    // state must induce a positional 15:15 market SELL.
+    const misPositions = openPositions.filter(isMisForcedSquareOffEligible);
+    if (misPositions.length === 0) return;
+    console.log(`[EMA LIVE INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Exiting ${misPositions.length} MIS live position(s)...`);
 
-    for (const pos of openPositions) {
-      if (pos.status === 'OPEN' && !this.pendingExitIds.has(pos.id)) {
+    for (const pos of misPositions) {
+      if (!this.pendingExitIds.has(pos.id)) {
         await this.requestLiveExit(pos.id, 'FORCED_INTRADAY_SQUARE_OFF');
       }
     }
