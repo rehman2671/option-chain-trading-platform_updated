@@ -101,6 +101,7 @@ on:
       - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
       - 'research/adaptive-v2-phase99-durable-sell-child-trade-evidence'
       - 'research/adaptive-v2-phase100-readonly-exit-ledger-settlement-preview'
+      - 'research/adaptive-v2-phase101-durable-buy-trade-receipts'
   pull_request:
     branches:
       - main
@@ -203,6 +204,7 @@ on:
       - 'research/adaptive-v2-phase98-sell-placement-ack-not-fill'
       - 'research/adaptive-v2-phase99-durable-sell-child-trade-evidence'
       - 'research/adaptive-v2-phase100-readonly-exit-ledger-settlement-preview'
+      - 'research/adaptive-v2-phase101-durable-buy-trade-receipts'
   workflow_dispatch:
 
 permissions:

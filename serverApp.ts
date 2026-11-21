@@ -46,6 +46,8 @@ import {prepareDurableSellChildEvidence} from
   './src/server/engine/ema15m/adaptiveDurableSellChildEvidence.js';
 import {previewDurableExitSettlement} from
   './src/server/engine/ema15m/adaptiveExitSettlementPreview.js';
+import {fetchOriginalBuyTradeEvidenceReadOnly} from
+  './src/server/engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1748,6 +1750,77 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only settlement preview currently unavailable.'
+      });
+    }
+  });
+
+  // Phase101: original BUY per-trade provenance, independent of later
+  // SELL. Requires explicit SUPERADMIN action and authenticated account,
+  // uses ONLY Upstox GET order/details, trades and order book; writes
+  // private local immutable receipts, never broker orders or P&L/CLOSED.
+  app.post('/api/ema15m/original-buy-evidence-capture',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Original durable position and expected broker account required.'
+      });
+    try{
+      const rows=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(rows.length!==1||rows[0].brokerAccountId!==expectedAccountId||
+         !rows[0].brokerInstrumentKey||!rows[0].entryBrokerOrderId||
+         !Number.isSafeInteger(rows[0].quantity)||
+         !Number.isSafeInteger(rows[0].lotSize)||
+         rows[0].quantity<=0||rows[0].lotSize<=0||
+         rows[0].quantity%rows[0].lotSize!==0)
+        return res.status(409).json({
+          error:'No unique, attributable original option position and lot.'
+        });
+      const p=rows[0],attempt=dbEngine.getEmaLiveOrderAttemptById(p.attemptId);
+      if(!attempt||attempt.brokerAccountId!==expectedAccountId||
+         attempt.brokerInstrumentKey!==p.brokerInstrumentKey||
+         attempt.brokerOrderId!==p.entryBrokerOrderId||
+         attempt.orderStatus!=='FILLED'||
+         attempt.filledQuantity!==p.quantity||
+         attempt.requestedQuantity!==p.quantity||
+         typeof attempt.averageFillPrice!=='number')
+        return res.status(409).json({
+          error:'Original fully filled BUY journal and exact broker child cannot be reconciled.'
+        });
+      const broker=activeProvider as any;
+      const auth=typeof broker?.getLiveConnectionStatus==='function'
+        ?broker.getLiveConnectionStatus():null;
+      if(auth?.isConnected!==true||auth?.userId!==expectedAccountId)
+        return res.status(503).json({
+          error:'Connected broker account not verified.'
+        });
+      const prepared=await fetchOriginalBuyTradeEvidenceReadOnly(broker,{
+        positionId:p.id,accountId:expectedAccountId,
+        attemptId:p.attemptId,orderId:p.entryBrokerOrderId,
+        instrumentKey:p.brokerInstrumentKey,
+        product:p.productType,originalQuantity:p.quantity,
+        lotSize:p.lotSize,entryFillPrice:attempt.averageFillPrice
+      });
+      if(!prepared.ok)return res.status(409).json({
+        state:'ORIGINAL_BUY_EVIDENCE_NOT_CAPTURED',
+        reasonCode:prepared.reason,
+        automaticClosureAuthorized:false,
+        realisedPnlWriteAuthorized:false,
+        liveNrmlBuyAuthorized:false,brokerWrites:0
+      });
+      const capture=dbEngine.appendEmaOriginalBuyTradeEvidence(
+        prepared.prepared
+      );
+      return res.status(capture.state==='BUY_RECEIPT_CONFLICT'?409:200)
+        .json(capture);
+    }catch{
+      return res.status(503).json({
+        error:'Original BUY read-only broker receipts or private journal unavailable.'
       });
     }
   });
