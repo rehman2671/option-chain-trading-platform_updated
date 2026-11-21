@@ -21,6 +21,7 @@ import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
 import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
 import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveExitSafety.js';
+import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGuard.js';
 import {
   assessEmaLiveProductGate,isMisForcedSquareOffEligible
 } from './adaptiveNrmlLiveReleaseInterlock.js';
@@ -691,19 +692,25 @@ export class LiveExecutionService {
 
     // A manual/external broker exit can make the local position stale. Never
     // SELL the old local quantity without a fresh authoritative broker match.
-    const remainingQty = Number(pos.quantity) - Number(pos.exitFilledQuantity ?? 0);
     const provider = activeProvider as any;
     const brokerQty = pos.brokerInstrumentKey &&
       typeof provider?.getVerifiedLivePositionQuantity === 'function'
       ? await provider.getVerifiedLivePositionQuantity(pos.brokerInstrumentKey, pos.productType)
       : null;
-    if (!Number.isInteger(remainingQty) || remainingQty <= 0 ||
-        !Number.isInteger(brokerQty) || brokerQty !== remainingQty) {
+    const sellSize = assessBrokerRemainingSellQuantity({
+      originalPositionQuantity: pos.quantity,
+      previousConfirmedSellFills: pos.exitFilledQuantity ?? 0,
+      lotSize: pos.lotSize,
+      brokerNetQuantity: brokerQty
+    });
+    if (!sellSize.allowed) {
       return {
         success: false,
-        message: `Live SELL blocked: verified broker quantity ${brokerQty ?? 'unavailable'} does not match ledger remaining quantity ${remainingQty}. Reconcile in Upstox first.`
+        message: 'Live SELL blocked: ' + sellSize.reason +
+          '. Verify broker net and original option fill ledger before retry.'
       };
     }
+    const remainingQty = sellSize.remainingQuantity;
 
     // Any native exchange SL / existing pending SELL must first be cancelled
     // and its terminal status verified. A cancellation ACK alone is NOT proof.
@@ -765,7 +772,7 @@ export class LiveExecutionService {
       stage: 'LIVE_EXIT_REQUESTED',
       status: 'PENDING',
       instrument: pos.instrument,
-      details: { positionId: pos.id, tradingsymbol: pos.tradingsymbol, quantity: pos.quantity, reason },
+      details: { positionId: pos.id, tradingsymbol: pos.tradingsymbol, quantity: remainingQty, originalQuantity: pos.quantity, reason },
       timestamp: timestampStr
     });
 
@@ -817,7 +824,9 @@ export class LiveExecutionService {
 
       // Submit real SELL order to Upstox API v2
       const exitRes = await (activeProvider as any).placeOrder({
-        quantity: pos.quantity,
+        // Original position size can exceed broker remaining long after a
+        // partial prior exit. Never issue the original quantity again.
+        quantity: remainingQty,
         product: pos.productType || 'MIS',
         validity: 'DAY',
         orderType: 'MARKET',
@@ -836,8 +845,12 @@ export class LiveExecutionService {
       const exitStatusStr = (exitRes?.status || exitRes?.order_status || '').toUpperCase();
       const brokerExitQty = Number(exitRes?.filled_quantity ?? exitRes?.filledQuantity ?? 0);
       const brokerExitPrice = Number(exitRes?.average_price ?? exitRes?.averagePrice ?? 0);
-      const isExitFilled = (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
-        Number.isInteger(brokerExitQty) && brokerExitQty === Number(pos.quantity) &&
+      // Even a fully filled *remaining* SELL cannot settle cumulative P&L
+      // if this local position already had earlier partial SELLs. Leave the
+      // position pending until the original child fills are reconciled.
+      const isExitFilled = sellSize.priorExitFilledQuantity === 0 &&
+        (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
+        Number.isInteger(brokerExitQty) && brokerExitQty === remainingQty &&
         Number.isFinite(brokerExitPrice) && brokerExitPrice > 0;
 
       const randomSuffix = Math.random().toString(36).slice(2, 8);
