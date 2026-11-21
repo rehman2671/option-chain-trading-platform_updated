@@ -66,6 +66,7 @@ export interface Phase79Cell{
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   entryClaimedPairsWithUnderTargetQuotedGiveback:number;
   entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:number;
+  entryClaimedPairsWithUnresolvedOvernightCalendarTransition:number;
   entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   originalPairsCensoredByMissingSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
@@ -96,6 +97,7 @@ export interface Phase79Report{
   entryCandidateStaleLateQuoteObservationsIgnored:number;
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
+  entryPairsWithUnresolvedOvernightCalendarTransition:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
@@ -185,6 +187,7 @@ function blank():Phase79Report{
     entryCandidateStaleLateQuoteObservationsIgnored:0,
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
+    entryPairsWithUnresolvedOvernightCalendarTransition:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     missingDeclaredSessionCloseBidObservations:0,
@@ -241,6 +244,15 @@ const candidateWeekdaysInclusive=(first:string,last:string):number=>{
   }
   return total;
 };
+const isCalendarWeekday=(date:string):boolean=>{
+  const dow=new Date(date+'T00:00:00Z').getUTCDay();
+  return dow!==0&&dow!==6;
+};
+/** Candidate missing Mon-Fri dates strictly between two declared dates.
+ * A real exchange holiday remains possible and requires issuer evidence. */
+const interveningCandidateWeekdays=(from:string,to:string):number=>
+  Math.max(0,candidateWeekdaysInclusive(from,to)-
+    Number(isCalendarWeekday(from))-Number(isCalendarWeekday(to)));
 /** All returned marks are observed operator-claimed quotes, never fills. */
 export function auditPhase79OriginalPremiumPathCoverage(
   input:Phase79Input,pins:Phase79Pins
@@ -391,17 +403,28 @@ export function auditPhase79OriginalPremiumPathCoverage(
   let asOf=0,missingAsk=0,giveback=0,gap=0,missingNextOpen=0,
     illiquidBidPairs=0,unmarketableEntryBids=0,wideDecisionSpreads=0,
     staleQuoteObservations=0,censored=0,missingCloses=0,
-    weekdayGapPairs=0,weekdayGapObservations=0;
+    weekdayGapPairs=0,weekdayGapObservations=0,
+    unresolvedOvernightTransitions=0;
   const sessionDates=[...sessions.keys()].sort();
-  const weekdaySessionDates=sessionDates.filter(date=>{
-    const dow=new Date(date+'T00:00:00Z').getUTCDay();
-    return dow!==0&&dow!==6;
-  });
+  const weekdaySessionDates=sessionDates.filter(isCalendarWeekday);
   const adjacent=new Map<string,string>();
   for(let i=0;i<sessionDates.length-1;i++)
     adjacent.set(sessionDates[i],sessionDates[i+1]);
-  const nextDeclaredSession=(date:string):string|null=>
-    adjacent.get(date)??null;
+  // Do not treat the next AVAILABLE date as the next TRADING date if an
+  // undeclared weekday lies in between. The missing day could be a holiday,
+  // but without official evidence an overnight gap quote is not causal.
+  const nextDeclaredSession=(date:string):string|null=>{
+    const next=adjacent.get(date);
+    return next&&interveningCandidateWeekdays(date,next)===0?next:null;
+  };
+  const unresolvedArmedFollowingSession=(date:string,expiry:string):boolean=>{
+    const eligibleFutureWeekdays=candidateWeekdaysInclusive(date,expiry)-
+      Number(isCalendarWeekday(date));
+    if(eligibleFutureWeekdays<=0)return false;
+    const next=adjacent.get(date);
+    return !next||next>expiry||
+      interveningCandidateWeekdays(date,next)>0;
+  };
   for(const d of catalog.decisions){
     if(!d||!day(d.sessionDate)||decisionDates.has(d.sessionDate)||
       stamp(d.decisionAt)<0||!Number.isFinite(stamp(d.decisionAt))||
@@ -452,6 +475,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
           entryCandidateStaleLateQuoteObservationsIgnored:0,
           entryClaimedPairsWithUnderTargetQuotedGiveback:0,
           entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:0,
+          entryClaimedPairsWithUnresolvedOvernightCalendarTransition:0,
           entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
           originalPairsCensoredByMissingSessionCloseBid:0,
           missingDeclaredSessionCloseBidObservations:0,
@@ -537,6 +561,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
             cell.entryCandidateStaleLateQuoteObservationsIgnored+=ignoredStale;
           }
           let peak=entry.ask, peakSession=d.sessionDate,seenGiveback=false,seenGap=false;
+          let unresolvedArmedCalendar=false;
           const firstBidSession=new Set<string>();
           const newArmedPeakNextOpens=new Set<string>();
           for(const x of after){
@@ -563,6 +588,11 @@ export function auditPhase79OriginalPremiumPathCoverage(
             if(x.bid>peak){
               peak=x.bid;peakSession=next;
               if(peak-entry.ask>=p.armingGainPremiumPoints){
+                // A missing possible trading weekday between this armed
+                // peak and the next listed date is not evidence of a safe
+                // overnight gap (or a single-session next-open mark).
+                if(unresolvedArmedFollowingSession(next,c.expiry))
+                  unresolvedArmedCalendar=true;
                 const following=nextDeclaredSession(next);
                 if(following&&following<=c.expiry)
                   newArmedPeakNextOpens.add(following);
@@ -571,6 +601,10 @@ export function auditPhase79OriginalPremiumPathCoverage(
           }
           if(seenGiveback){giveback++;cell.entryClaimedPairsWithUnderTargetQuotedGiveback++;}
           if(seenGap){gap++;cell.entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail++;}
+          if(unresolvedArmedCalendar){
+            unresolvedOvernightTransitions++;
+            cell.entryClaimedPairsWithUnresolvedOvernightCalendarTransition++;
+          }
           // Observed NEW peaks that armed a theoretical trail require a
           // depth-positive, receipt-time-valid FIRST BID at next declared
           // session OPEN. Without one, absence of an observed gap is NOT
@@ -668,10 +702,13 @@ export function auditPhase79OriginalPremiumPathCoverage(
   if(censored>0)reasons.push('MISSING_DECLARED_SESSION_CLOSE_BID_CENSORS_HOLDING_PATH');
   if(weekdayGapPairs>0)
     reasons.push('POTENTIAL_UNDECLARED_WEEKDAY_REQUIRES_OFFICIAL_HOLIDAY_CALENDAR');
+  if(unresolvedOvernightTransitions>0)
+    reasons.push('ARMED_OVERNIGHT_NEXT_OPEN_UNRESOLVED_BY_POTENTIAL_MISSING_SESSION');
   if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
   return {...blank(),status:missingAsk||censored||missingNextOpen||
-      weekdayGapPairs||unmarketableEntryBids||wideDecisionSpreads||
+      weekdayGapPairs||unresolvedOvernightTransitions||
+      unmarketableEntryBids||wideDecisionSpreads||
       illiquidBidPairs||staleQuoteObservations?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
       'DESCRIPTIVE_CLAIMED_L1_COVERAGE_NOT_AUTHENTICATED',
@@ -686,6 +723,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
     entryCandidateStaleLateQuoteObservationsIgnored:staleQuoteObservations,
     quotedUnderTargetPremiumGivebackPairs:giveback,
     quotedNextOpenGapThroughTrailPairs:gap,
+    entryPairsWithUnresolvedOvernightCalendarTransition:unresolvedOvernightTransitions,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:missingNextOpen,
     listedPairsWithMissingDeclaredSessionCloseBid:censored,
     missingDeclaredSessionCloseBidObservations:missingCloses,
