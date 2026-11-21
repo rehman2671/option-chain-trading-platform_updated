@@ -56,7 +56,7 @@ export interface GttChildReviewReport{
 }
 type Status=GttChildReviewReport['status'];
 const result=(status:Status,reasons:string[],
-  data:Partial<O>={}):GttChildReviewReport=>({
+  data:Partial<Obj>={}):GttChildReviewReport=>({
   status,reasonCodes:[...new Set(reasons)].sort(),
   parentGttFound:data.parentGttFound===true,
   scheduledWithoutGeneratedOrder:data.scheduledWithoutGeneratedOrder===true,
@@ -104,7 +104,7 @@ export function auditNrmlGttChildLineage(
   if(!linked)return result('CHILD_LINEAGE_CONFLICT',
     ['GTT_NOT_UNIQUE_OR_WRONG_ACCOUNT_PRODUCT_INSTRUMENT_PARENT_QUANTITY_STOP_STRATEGY']);
   const {leg}=linked;
-  const data:Partial<O>={parentGttFound:true};
+  const data:Partial<Obj>={parentGttFound:true};
   const reasons:string[]=[];
   const matching=e.positions.filter((x:unknown)=>
     record(x)&&x.instrument_token===req.instrumentKey&&x.product==='D');
