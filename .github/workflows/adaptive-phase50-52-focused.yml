@@ -1,4 +1,4 @@
-name: Adaptive Phase50-93 focused offline research checks
+name: Adaptive Phase50-94 focused offline research checks
 on:
   push:
     branches:
@@ -44,6 +44,7 @@ on:
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
       - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
       - 'research/adaptive-v2-phase93-nrml-stop-fill-position-conservation'
+      - 'research/adaptive-v2-phase94-account-wide-conflicting-stop-census'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -89,6 +90,7 @@ on:
       - 'research/adaptive-v2-phase91-readonly-nrml-broker-snapshot-audit'
       - 'research/adaptive-v2-phase92-gtt-child-lineage-readonly'
       - 'research/adaptive-v2-phase93-nrml-stop-fill-position-conservation'
+      - 'research/adaptive-v2-phase94-account-wide-conflicting-stop-census'
   workflow_dispatch:
 
 permissions:
