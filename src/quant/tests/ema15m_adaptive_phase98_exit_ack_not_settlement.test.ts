@@ -103,7 +103,7 @@ describe('Phase98 placement ACK is NOT an exchange SELL fill or terminal P&L',()
 describe('Phase98 read-only order details / trades / book / net broker evidence',()=>{
   it('complete broker packet and net 0 is only a reported observation, NOT certified closure',()=>{
     const r=check(fixture());locked(r);
-    assert.equal(r.state,'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED');
+    assert.equal(r.state,'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED');
     assert.equal(r.brokerReportedFilledQuantity,100);
     assert.equal(r.brokerReportedRemainingLong,0);
     assert.equal(r.brokerReportedOrderStatus,'TERMINAL_FILLED');
@@ -118,7 +118,7 @@ describe('Phase98 read-only order details / trades / book / net broker evidence'
     e.trades=[trade('TRADE-ONE',50)];
     e.brokerNetAfterTrades=50;
     const r=check(e);locked(r);
-    assert.equal(r.state,'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED');
+    assert.equal(r.state,'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED');
     assert.equal(r.brokerReportedOrderStatus,'PARTIAL_OR_PENDING');
     assert.equal(r.brokerReportedFilledQuantity,50);
     assert.equal(r.brokerReportedRemainingLong,50);
@@ -128,7 +128,7 @@ describe('Phase98 read-only order details / trades / book / net broker evidence'
     e.order=order({filled_quantity:0,pending_quantity:100,status:'open'});
     e.orderBook=[e.order];e.trades=[];e.brokerNetAfterTrades=100;
     const r=check(e);locked(r);
-    assert.equal(r.state,'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED');
+    assert.equal(r.state,'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED');
     assert.equal(r.brokerReportedFilledQuantity,0);
     assert.equal(r.brokerReportedOrderStatus,'PARTIAL_OR_PENDING');
   });
@@ -175,7 +175,7 @@ describe('Phase98 read-only order details / trades / book / net broker evidence'
   it('same child two unique 50-unit executions can match total 100 without authorising closure',()=>{
     const e=fixture();e.trades=[trade('TRADE-ONE',50),trade('TRADE-TWO',50)];
     const r=check(e);locked(r);
-    assert.equal(r.state,'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED');
+    assert.equal(r.state,'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED');
     assert.equal(r.distinctBrokerTradeCount,2);
   });
   it('wrong child trade ID, order ID, side, product, exchange ref or full instrument fails',()=>{
@@ -238,6 +238,15 @@ describe('Phase98 read-only order details / trades / book / net broker evidence'
     assert.equal(r.state,'BROKER_EXIT_EVIDENCE_CONFLICT');
     assert.ok(r.reasonCodes.includes(
       'OTHER_SAME_OPTION_SELL_FILLS_NOT_IN_CHILD_LEDGER'));
+  });
+  it('other terminal SELL with missing fill count cannot be assumed harmless',()=>{
+    const e=fixture();e.orderBook=[order(),order({
+      order_id:'OTHER-SELL-UNCONFIRMED',status:'cancelled',
+      filled_quantity:null,pending_quantity:0
+    })];
+    const r=check(e);locked(r);
+    assert.equal(r.state,'BROKER_EXIT_EVIDENCE_CONFLICT');
+    assert.ok(r.reasonCodes.includes('OTHER_SAME_OPTION_SELL_FILL_COUNT_UNKNOWN'));
   });
   it('a pending manual BUY on same option may change net after this observation',()=>{
     const e=fixture();e.orderBook=[order(),order({
@@ -311,7 +320,7 @@ describe('Phase98 read-only order details / trades / book / net broker evidence'
       cancelOrder:()=>{throw Error('CANCEL_WRITE_NOT_ALLOWED');}
     };
     const r=await reviewBrokerExitFillReadOnly(b,req);locked(r);
-    assert.equal(r.state,'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED');
+    assert.equal(r.state,'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED');
     assert.deepEqual(calls.slice(0,3).sort(),['book','details','trades']);
     assert.equal(calls[3],'net');
   });
