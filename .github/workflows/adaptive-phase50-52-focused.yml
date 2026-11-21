@@ -1,4 +1,4 @@
-name: Adaptive Phase50-102 focused offline research checks
+name: Adaptive Phase50-103 focused offline research checks
 on:
   push:
     branches:
@@ -53,6 +53,7 @@ on:
       - 'research/adaptive-v2-phase100-readonly-exit-ledger-settlement-preview'
       - 'research/adaptive-v2-phase101-durable-buy-trade-receipts'
       - 'research/adaptive-v2-phase102-joint-buy-sell-receipt-reconciliation'
+      - 'research/adaptive-v2-phase103-account-wide-order-gtt-exposure-review'
   pull_request:
     branches:
       - 'research/adaptive-v2-phase51-declared-session-oos-ledger'
@@ -107,6 +108,7 @@ on:
       - 'research/adaptive-v2-phase100-readonly-exit-ledger-settlement-preview'
       - 'research/adaptive-v2-phase101-durable-buy-trade-receipts'
       - 'research/adaptive-v2-phase102-joint-buy-sell-receipt-reconciliation'
+      - 'research/adaptive-v2-phase103-account-wide-order-gtt-exposure-review'
   workflow_dispatch:
 
 permissions:
