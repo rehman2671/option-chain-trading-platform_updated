@@ -456,6 +456,30 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /**
+   * Phase91: broker-authoritative position rows for NRML safety review.
+   * Unlike the UI's getPositions(), a disconnection/HTTP error returns
+   * null, NEVER an empty list that might be misread as no exposure.
+   * Read-only: no broker order or GTT modifications.
+   */
+  public async getVerifiedNrmlPositionRows(): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken) return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
+        headers: {
+          'Authorization': 'Bearer ' + this.accessToken,
+          'Accept': 'application/json'
+        }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data)
+        ? json.data : null;
+    } catch {
+      return null;
+    }
+  }
+
   public async getPositions(): Promise<any> {
     if (!this.isConnected || !this.accessToken) return [];
 
