@@ -4582,7 +4582,9 @@ class DatabaseEngine {
         `).all(candidate.positionId,candidate.orderId) as any[];
         if(stored.length!==candidate.trades.length)
           return reject('IMMUTABLE_ORIGINAL_BUY_TRADE_COUNT_CHANGED');
-        const byId=new Map(candidate.trades.map(t=>[t.tradeId,t]));
+        const byId=new Map<string,typeof candidate.trades[number]>(
+          candidate.trades.map(t=>[t.tradeId,t] as const)
+        );
         for(const x of stored){
           const t=byId.get(x.broker_trade_id);
           if(!t||x.exchange_order_id!==t.exchangeOrderId||
@@ -4600,6 +4602,12 @@ class DatabaseEngine {
           liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
         };
       }
+      const alreadyLinked=db.prepare(`
+        SELECT position_id FROM ema_entry_buy_receipts
+        WHERE broker_account_id=? AND broker_order_id=? LIMIT 1
+      `).get(candidate.accountId,candidate.orderId) as {position_id:string}|undefined;
+      if(alreadyLinked&&alreadyLinked.position_id!==candidate.positionId)
+        return reject('ORIGINAL_BUY_ORDER_ALREADY_LINKED_TO_ANOTHER_POSITION');
       db.prepare(`
         INSERT INTO ema_entry_buy_receipts(
           position_id,broker_account_id,attempt_id,broker_order_id,
