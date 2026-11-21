@@ -4422,6 +4422,162 @@ class DatabaseEngine {
     }
   }
 
+  /**
+   * Phase99: only append local BROKER-REPORTED SELL child observations and
+   * immutable per-trade evidence, never change positions/CLOSED/P&L.
+   * This transaction must not be called from automatic order placement or
+   * risk-control retry paths. Authenticated admin capture does broker GETs
+   * first, then this single SQLite transaction.
+   */
+  public appendEmaExitChildTradeEvidence(candidate: PreparedSellChild): {
+    state:'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT'|'REPLAY_NO_NEW_EVIDENCE'|'EVIDENCE_CONFLICT';
+    reason:string;
+    newlyObservedTrades:number;
+    observedTrades:number;
+    recordedChildObservations:number;
+    automaticClosureAuthorized:false;
+    realisedPnlAuthorized:false;
+    brokerWrites:0;
+  } {
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: appendEmaExitChildTradeEvidence');
+    const db=this.db;
+    const reject=(reason:string)=>({
+      state:'EVIDENCE_CONFLICT' as const,reason,
+      newlyObservedTrades:0,observedTrades:0,recordedChildObservations:0,
+      automaticClosureAuthorized:false as const,
+      realisedPnlAuthorized:false as const,brokerWrites:0 as const
+    });
+    const capture=db.transaction(()=>{
+      if(!candidate||!candidate.positionId||!candidate.orderId||
+         !candidate.accountId||!candidate.instrumentKey||
+         !candidate.exchangeOrderId||
+         !['MIS','NRML'].includes(candidate.product)||
+         !Number.isSafeInteger(candidate.requestedQuantity)||
+         candidate.requestedQuantity<=0||
+         !Number.isSafeInteger(candidate.filledQuantity)||
+         candidate.filledQuantity<0||
+         !Number.isSafeInteger(candidate.pendingQuantity)||
+         candidate.pendingQuantity<0||
+         !Number.isSafeInteger(candidate.currentNetQuantity)||
+         candidate.currentNetQuantity<0||
+         !Array.isArray(candidate.trades))
+        return reject('INVALID_CANONICAL_BROKER_EVIDENCE');
+      const position=db.prepare(`
+        SELECT id,broker_account_id,broker_instrument_key,product_type,
+          status,quantity,lot_size,exit_filled_quantity,exit_broker_order_id
+        FROM ema_live_positions WHERE id=?
+      `).get(candidate.positionId) as any;
+      // Scope to one still-pending child only. Earlier partial exit orders
+      // need independent per-child original requested size and fill history,
+      // which Phase98/99 intentionally do not reconstruct from a mutable
+      // cumulative total.
+      if(!position||position.status!=='EXIT_PENDING'||
+         position.broker_account_id!==candidate.accountId||
+         position.broker_instrument_key!==candidate.instrumentKey||
+         position.product_type!==candidate.product||
+         position.exit_broker_order_id!==candidate.orderId||
+         position.exit_filled_quantity!==0||
+         !Number.isSafeInteger(position.quantity)||
+         !Number.isSafeInteger(position.lot_size)||
+         position.lot_size<=0||
+         position.quantity!==candidate.requestedQuantity||
+         position.quantity%position.lot_size!==0)
+        return reject('DURABLE_EXIT_POSITION_OR_CHILD_SCOPE_NOT_MATCHED');
+      const previous=db.prepare(`
+        SELECT broker_account_id,broker_instrument_key,product_type,
+          requested_quantity,exchange_order_id,observed_filled_quantity,
+          observed_pending_quantity,observed_net_quantity,
+          observed_broker_status,observed_trade_count
+        FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY observation_id DESC LIMIT 1
+      `).get(candidate.positionId,candidate.orderId) as any;
+      if(previous&&(
+         previous.broker_account_id!==candidate.accountId||
+         previous.broker_instrument_key!==candidate.instrumentKey||
+         previous.product_type!==candidate.product||
+         previous.requested_quantity!==candidate.requestedQuantity||
+         previous.exchange_order_id!==candidate.exchangeOrderId))
+        return reject('DURABLE_CHILD_IDENTITY_OR_EXCHANGE_REFERENCE_CHANGED');
+      const storedRows=db.prepare(`
+        SELECT broker_trade_id,broker_exchange_order_id,
+          reported_quantity,reported_average_price
+        FROM ema_exit_trade_evidence
+        WHERE position_id=? AND broker_order_id=?
+      `).all(candidate.positionId,candidate.orderId) as any[];
+      const stored:PreparedSellTrade[]=storedRows.map(x=>({
+        tradeId:x.broker_trade_id,
+        exchangeOrderId:x.broker_exchange_order_id,
+        quantity:Number(x.reported_quantity),
+        price:Number(x.reported_average_price)
+      }));
+      const replay=assessDurableSellEvidenceReplay(
+        stored,candidate.trades,
+        previous?Number(previous.observed_filled_quantity):0,
+        candidate.filledQuantity
+      );
+      if(!replay.accept)return reject(replay.reason);
+      if(candidate.filledQuantity+candidate.pendingQuantity>
+         candidate.requestedQuantity)
+        return reject('BROKER_EXIT_FILLED_PLUS_PENDING_EXCEEDS_ORDER_QUANTITY');
+      if(candidate.currentNetQuantity!==
+         candidate.requestedQuantity-candidate.filledQuantity)
+        return reject('BROKER_NET_NOT_EQUAL_TO_CHILD_REMAINING');
+      const present=new Set(stored.map(t=>t.tradeId));
+      const insertTrade=db.prepare(`
+        INSERT INTO ema_exit_trade_evidence(
+          position_id,broker_order_id,broker_trade_id,
+          broker_exchange_order_id,reported_quantity,reported_average_price
+        ) VALUES(?,?,?,?,?,?)
+      `);
+      for(const trade of candidate.trades){
+        if(!present.has(trade.tradeId))
+          insertTrade.run(candidate.positionId,candidate.orderId,
+            trade.tradeId,trade.exchangeOrderId,trade.quantity,trade.price);
+      }
+      const sameAsPrevious=!!previous&&
+        previous.observed_filled_quantity===candidate.filledQuantity&&
+        previous.observed_pending_quantity===candidate.pendingQuantity&&
+        previous.observed_net_quantity===candidate.currentNetQuantity&&
+        previous.observed_broker_status===candidate.brokerStatus&&
+        previous.observed_trade_count===candidate.trades.length;
+      if(!sameAsPrevious)
+        db.prepare(`
+          INSERT INTO ema_exit_child_observations(
+            position_id,broker_order_id,broker_account_id,
+            broker_instrument_key,product_type,requested_quantity,
+            exchange_order_id,observed_filled_quantity,
+            observed_pending_quantity,observed_net_quantity,
+            observed_broker_status,observed_trade_count
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        `).run(candidate.positionId,candidate.orderId,
+          candidate.accountId,candidate.instrumentKey,candidate.product,
+          candidate.requestedQuantity,candidate.exchangeOrderId,
+          candidate.filledQuantity,candidate.pendingQuantity,
+          candidate.currentNetQuantity,candidate.brokerStatus,
+          candidate.trades.length);
+      const count=db.prepare(`
+        SELECT COUNT(*) AS total FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+      `).get(candidate.positionId,candidate.orderId) as {total:number};
+      return {
+        state:(sameAsPrevious?'REPLAY_NO_NEW_EVIDENCE':
+          'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT') as
+          'REPLAY_NO_NEW_EVIDENCE'|'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT',
+        reason:'BROKER_REPORTED_EVIDENCE_ONLY_NO_CLOSED_OR_PNL',
+        newlyObservedTrades:replay.newTrades,
+        observedTrades:candidate.trades.length,
+        recordedChildObservations:count.total,
+        automaticClosureAuthorized:false as const,
+        realisedPnlAuthorized:false as const,
+        brokerWrites:0 as const
+      };
+    });
+    // IMMEDIATE obtains one SQLite writer lock before reading the previous
+    // trade IDs, making replay and the append atomic across workers.
+    return capture.immediate();
+  }
+
   /** Atomic claim: only one worker may transition an eligible position to EXIT_REQUESTED. */
   public claimEmaLiveExit(positionId: string): boolean {
     const db = this.db;
