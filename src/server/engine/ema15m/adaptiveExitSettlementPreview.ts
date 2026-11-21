@@ -10,6 +10,7 @@ const obj=(x:unknown):x is RecordShape=>
   x!==null&&typeof x==='object'&&!Array.isArray(x);
 const ident=(x:unknown):x is string=>
   typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const nativeKey=(x:unknown):x is string=>typeof x==='string'&&x.length>0&&x.length<=256;
 const positiveInt=(x:unknown):x is number=>
   typeof x==='number'&&Number.isSafeInteger(x)&&x>0;
 const nonnegative=(x:unknown):x is number=>
@@ -86,7 +87,7 @@ export function previewDurableExitSettlement(
     return missing('DURABLE_POSITION_ENTRY_OR_SELL_EVIDENCE_MISSING');
   const p=source.position,e=source.entryAttempt;
   if(p.id!==expected.positionId||p.brokerAccountId!==expected.accountId||
-     !ident(p.brokerInstrumentKey)||!ident(p.entryBrokerOrderId)||
+     !nativeKey(p.brokerInstrumentKey)||!ident(p.entryBrokerOrderId)||
      !ident(p.exitBrokerOrderId)||!ident(p.attemptId)||
      !['MIS','NRML'].includes(String(p.productType))||
      p.status!=='EXIT_PENDING'||!positiveInt(p.quantity)||
@@ -107,7 +108,7 @@ export function previewDurableExitSettlement(
     return conflict(['DURABLE_SELL_EVIDENCE_SOURCE_OVER_LIMIT']);
   const reasons:string[]=[];
   const obs=source.observations;
-  let previousFill=0,previousSequence=0,previousStatus='';
+  let previousFill=0,previousSequence=0,previousStatus='',previousExchangeId='';
   const end=obs[obs.length-1];
   if(!obj(end))return conflict(['INVALID_DURABLE_CHILD_OBSERVATION']);
   const baseData:Partial<SettlementPreviewReport>={
@@ -117,6 +118,7 @@ export function previewDurableExitSettlement(
     if(!obj(one)||!positiveInt(one.observationId)||
        one.observationId<=previousSequence||
        one.positionId!==p.id||one.brokerOrderId!==p.exitBrokerOrderId||
+       (previousExchangeId!==''&&one.exchangeOrderId!==previousExchangeId)||
        one.accountId!==p.brokerAccountId||
        one.instrumentKey!==p.brokerInstrumentKey||
        one.product!==p.productType||
@@ -142,6 +144,8 @@ export function previewDurableExitSettlement(
     if(obj(one)&&nonnegative(one.filledQuantity))
       previousFill=one.filledQuantity;
     if(obj(one))previousStatus=upper(one.brokerStatus);
+    if(obj(one)&&ident(one.exchangeOrderId))
+      previousExchangeId=one.exchangeOrderId;
   }
   if(!nonnegative(source.freshBrokerNetQuantity))
     return conflict([...reasons,'FRESH_BROKER_NET_UNAVAILABLE'],baseData);
@@ -176,6 +180,12 @@ export function previewDurableExitSettlement(
     'CANCEL PENDING','MODIFY PENDING','COMPLETE','COMPLETED','FILLED',
     'CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED'].includes(status);
   if(!known)reasons.push('UNKNOWN_LATEST_CHILD_LIFECYCLE_STATUS');
+  if(['CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED'].includes(status))
+    reasons.push('TERMINAL_UNFILLED_OR_PARTIAL_CHILD_REQUIRES_MANUAL_RECONCILIATION');
+  if(['OPEN','PENDING','TRIGGER PENDING','PARTIALLY FILLED',
+      'CANCEL PENDING','MODIFY PENDING'].includes(status)&&
+      lastFilled+lastPending!==p.quantity)
+    reasons.push('ACTIVE_CHILD_FILLED_PLUS_PENDING_NOT_CONSERVED');
   if(full&&(lastFilled!==p.quantity||lastPending!==0))
     reasons.push('FULL_STATUS_DISAGREES_WITH_SELL_FILLED_OR_PENDING');
   if(!full&&lastFilled===p.quantity)
