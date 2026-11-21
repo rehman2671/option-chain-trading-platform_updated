@@ -566,11 +566,30 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 23. Live SELL submission sets EXIT_PENDING, not prematurely CLOSED
   it('23. Live SELL Submission: sets EXIT_PENDING when order_id returned without immediate fill', async () => {
     const testPosId = `live-pos-test-exit-${Date.now()}`;
+    const attemptId = `att-exit-${Date.now()}`;
+    const originalBuyId = `ENTRY-EXIT-${Date.now()}`;
+    const brokerAccountId = 'PH-LEGACY-LIVE-SELL-ACCOUNT';
+    // Phase97 verifies original BUY provenance AFTER the exit CAS.
+    // Keep the legacy SELL invariant realistic rather than bypassing
+    // fail-closed matching of the durable entry journal.
+    dbEngine.saveEmaLiveOrderAttempt({
+      id: attemptId, signalId: `sig-entry-${Date.now()}`,
+      executionMode: 'LIVE', instrument: 'NIFTY',
+      brokerAccountId, brokerInstrumentKey: 'NSE_FO|123456',
+      tradingsymbol: 'NIFTY26NOV25200CE', optionType: 'CE',
+      strike: 25200, expiry: '2026-11-05',
+      requestedQuantity: 50, filledQuantity: 50,
+      averageFillPrice: 200, orderStatus: 'FILLED',
+      brokerOrderId: originalBuyId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
     dbEngine.saveEmaLivePosition({
       id: testPosId,
-      attemptId: `att-${Date.now()}`,
+      attemptId,
       signalId: `sig-${Date.now()}`,
       instrument: 'NIFTY',
+      brokerAccountId,
       tradingsymbol: 'NIFTY26NOV25200CE',
       brokerInstrumentKey: 'NSE_FO|123456',
       optionType: 'CE',
@@ -579,11 +598,12 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
       productType: 'MIS',
       side: 'BUY',
       marketBias: 'BULLISH',
-      entryBrokerOrderId: `ENTRY-${Date.now()}`,
+      entryBrokerOrderId: originalBuyId,
       entryTimestamp: new Date().toISOString(),
       entryPrice: 200,
       quantity: 50,
       lotSize: 50,
+      exitFilledQuantity: 0,
       currentPrice: 200,
       unrealizedPnl: 0,
       stopLoss: 170,
