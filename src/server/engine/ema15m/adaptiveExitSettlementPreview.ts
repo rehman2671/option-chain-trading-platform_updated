@@ -184,7 +184,8 @@ export function previewDurableExitSettlement(
     reasons.push('TERMINAL_UNFILLED_OR_PARTIAL_CHILD_REQUIRES_MANUAL_RECONCILIATION');
   if(['OPEN','PENDING','TRIGGER PENDING','PARTIALLY FILLED',
       'CANCEL PENDING','MODIFY PENDING'].includes(status)&&
-      lastFilled+lastPending!==p.quantity)
+      (!nonnegative(lastFilled)||!nonnegative(lastPending)||
+       lastFilled+lastPending!==p.quantity))
     reasons.push('ACTIVE_CHILD_FILLED_PLUS_PENDING_NOT_CONSERVED');
   if(full&&(lastFilled!==p.quantity||lastPending!==0))
     reasons.push('FULL_STATUS_DISAGREES_WITH_SELL_FILLED_OR_PENDING');
