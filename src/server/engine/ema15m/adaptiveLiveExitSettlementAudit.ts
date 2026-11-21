@@ -51,7 +51,7 @@ export interface ExitFillBrokerEvidence{
 export interface ExitFillReviewReport{
   state:'INVALID_EXIT_REVIEW_REQUEST'|'BROKER_EXIT_EVIDENCE_UNAVAILABLE'|
     'BROKER_EXIT_EVIDENCE_CONFLICT'|
-    'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED';
+    'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED';
   reasonCodes:readonly string[];
   brokerReportedFilledQuantity:number;
   brokerReportedRemainingLong:number|null;
@@ -146,6 +146,8 @@ export function auditBrokerExitFillEvidence(
       'REJECTED','EXPIRED','FAILED'];
     if(!['BUY','SELL'].includes(side)||!terminal.includes(st))
       reasons.push('OTHER_SAME_OPTION_ORDER_LIFECYCLE_UNRESOLVED');
+    if(side==='SELL'&&!nonnegative(other.filled_quantity))
+      reasons.push('OTHER_SAME_OPTION_SELL_FILL_COUNT_UNKNOWN');
     if(side==='SELL'&&nonnegative(other.filled_quantity)&&
        other.filled_quantity>0)
       reasons.push('OTHER_SAME_OPTION_SELL_FILLS_NOT_IN_CHILD_LEDGER');
@@ -193,7 +195,7 @@ export function auditBrokerExitFillEvidence(
   // There is no independently signed venue execution receipt and no
   // automatic persisted P&L/closure permission.
   return report(reasons.length?'BROKER_EXIT_EVIDENCE_CONFLICT':
-    'BROKER_REPORTED_EXIT_FILL_OBSERVATION_NOT_CERTIFIED',
+    'BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED',
     reasons.length?reasons:['BROKER_SOURCE_NOT_ATOMIC_OR_INDEPENDENTLY_CERTIFIED'],data);
 }
 export interface ReadOnlyExitFillBroker{
