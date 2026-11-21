@@ -226,13 +226,14 @@ describe('Phase101 original BUY trade ID and order-book evidence (pure)',()=>{
 });
 describe('Phase101 SQLite migration021 original entry BUY immutable trade receipt',()=>{
   const setup=(suffix:string)=>{
-    const positionId='PH101-SQL-'+suffix,attemptId='PH101-ATT-'+suffix,ts='2026-11-21T09:00:00Z';
+    const positionId='PH101-SQL-'+suffix,attemptId='PH101-ATT-'+suffix,
+      orderId='PH101-ENTRY-'+suffix,ts='2026-11-21T09:00:00Z';
     const attempt:EmaLiveOrderAttempt={
       id:attemptId,signalId:'PH101-SIGNAL',executionMode:'LIVE',
       instrument:'NIFTY',brokerAccountId:acct,brokerInstrumentKey:inst,
       tradingsymbol:'PH101CE',optionType:'CE',strike:24000,
       expiry:'2026-12-31',requestedQuantity:100,filledQuantity:100,
-      averageFillPrice:110,orderStatus:'FILLED',brokerOrderId:original,
+      averageFillPrice:110,orderStatus:'FILLED',brokerOrderId:orderId,
       createdAt:ts,updatedAt:ts
     };
     const position:EmaLivePosition={
@@ -240,7 +241,7 @@ describe('Phase101 SQLite migration021 original entry BUY immutable trade receip
       brokerAccountId:acct,brokerInstrumentKey:inst,tradingsymbol:'PH101CE',
       optionType:'CE',strikePrice:24000,expiryDate:'2026-12-31',
       productType:'MIS',side:'BUY',marketBias:'BULLISH',
-      entryBrokerOrderId:original,entryTimestamp:ts,entryPrice:110,
+      entryBrokerOrderId:orderId,entryTimestamp:ts,entryPrice:110,
       quantity:100,lotSize:50,currentPrice:110,unrealizedPnl:0,
       stopLoss:80,targetPrice:140,status:'EXIT_PENDING',
       exitBrokerOrderId:'PH101-SELL-PENDING',exitFilledQuantity:0,
@@ -252,7 +253,12 @@ describe('Phase101 SQLite migration021 original entry BUY immutable trade receip
   const prepared=(positionId:string,attemptId:string):PreparedBuyTradeEvidence=>{
     const r=prepare(positionId);
     if(!r.ok)throw Error('invalid synthetic original BUY fixture');
-    return {...r.prepared,attemptId};
+    const suffix=positionId.slice('PH101-SQL-'.length);
+    const newVenue='PH101-EXCHANGE-'+suffix;
+    return {...r.prepared,attemptId,
+      orderId:'PH101-ENTRY-'+suffix,exchangeOrderId:newVenue,
+      trades:r.prepared.trades.map(t=>({...t,exchangeOrderId:newVenue}))
+    };
   };
   it('SQLite append original BUY receipt once, identical restart replay idempotent, no position/P&L change',async()=>{
     await dbEngine.initialize();
