@@ -40,9 +40,9 @@ const brokerArgs=()=>({
 const broker=()=>{
   const calls:string[]=[];
   return {calls,
-    getOrderBook:async()=>{calls.push('orders');return [];},
-    getGttOrders:async()=>{calls.push('gtts');return [];},
-    getVerifiedLivePositionQuantity:async()=>{
+    getOrderBook:async():Promise<unknown>=>{calls.push('orders');return [];},
+    getGttOrders:async():Promise<unknown>=>{calls.push('gtts');return [];},
+    getVerifiedLivePositionQuantity:async():Promise<unknown>=>{
       calls.push('net');return 100;
     },
     placeOrder:()=>{throw Error('NO_LIVE_SELL_ALLOWED_IN_TEST');},
