@@ -51,12 +51,11 @@ export function resolveUniqueBrokerNetPosition(
   let found:Record<string,unknown>|null=null;
   let count=0;
   for(const candidate of rows){
-    if(!candidate||typeof candidate!=='object'||Array.isArray(candidate)||
-       typeof candidate.instrument_token!=='string'||
-       candidate.instrument_token.length===0){
+    if(!candidate||typeof candidate!=='object'||Array.isArray(candidate))
       return fail('MALFORMED_BROKER_POSITION_RECORD');
-    }
     const r=candidate as Record<string,unknown>;
+    if(typeof r.instrument_token!=='string'||r.instrument_token.length===0)
+      return fail('MALFORMED_BROKER_POSITION_RECORD');
     if(r.instrument_token!==instrumentKey)continue;
     count++;
     // A matching contract on another product cannot be ignored merely
