@@ -90,6 +90,7 @@ on:
       - 'research/adaptive-v2-phase87-undeclared-weekday-coverage'
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
+      - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
   pull_request:
     branches:
       - main
@@ -181,6 +182,7 @@ on:
       - 'research/adaptive-v2-phase87-undeclared-weekday-coverage'
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
       - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
+      - 'research/adaptive-v2-phase90-live-nrml-release-interlocks'
   workflow_dispatch:
 
 permissions:
