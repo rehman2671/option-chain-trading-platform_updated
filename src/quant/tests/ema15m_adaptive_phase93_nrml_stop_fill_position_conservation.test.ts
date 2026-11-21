@@ -93,7 +93,11 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
   });
   it('unknown, negative and coercible nonsensical net quantities cannot pass equality',()=>{
     for(const net of [undefined,null,'',false,'5e1','050','50.0',-50,NaN,Infinity]){
-      const r=inspect(fixture(50,50,net));locked(r);
+      const e=fixture(50,50,50);
+      // Force even undefined into the broker row: an optional test helper
+      // parameter would otherwise substitute its default net=100.
+      e.positions=[row(net)];
+      const r=inspect(e);locked(r);
       assert.equal(r.status,'CHILD_LINEAGE_CONFLICT');
       assert.ok(r.reasonCodes.includes(
         'BROKER_NRML_NET_POSITION_QUANTITY_UNKNOWN_OR_DUPLICATED'));
