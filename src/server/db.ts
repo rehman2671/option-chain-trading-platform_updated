@@ -11,6 +11,9 @@ import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
 import type { EmaLiveOrderAttempt, EmaLivePosition, EmaExecutionEvent } from './engine/ema15m/types.js';
+import {assessDurableSellEvidenceReplay,
+  type PreparedSellChild,type PreparedSellTrade
+} from './engine/ema15m/adaptiveDurableSellChildEvidence.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
 export interface MigrationReport {
@@ -2303,6 +2306,47 @@ class DatabaseEngine {
         "INSERT INTO schema_migrations (version, description) VALUES (19, 'EMA live cumulative exit fill tracking')"
       ).run();
       console.log('DatabaseEngine: Applied Migration 019 - EMA live exit fill quantity.');
+    }
+
+    // Migration 020: local append-only broker-REPORTED child/trade evidence.
+    // Never a broker order, independently certified exchange fill, CLOSED
+    // position or realised P&L. Historical observations are immutable;
+    // identity (position, order, trade) is unique across restarts.
+    if (!appliedVersions.has(20)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_exit_child_observations (
+          observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_account_id TEXT NOT NULL,
+          broker_instrument_key TEXT NOT NULL,
+          product_type TEXT NOT NULL CHECK(product_type IN ('MIS','NRML')),
+          requested_quantity INTEGER NOT NULL CHECK(requested_quantity > 0),
+          exchange_order_id TEXT NOT NULL,
+          observed_filled_quantity INTEGER NOT NULL CHECK(observed_filled_quantity >= 0),
+          observed_pending_quantity INTEGER NOT NULL CHECK(observed_pending_quantity >= 0),
+          observed_net_quantity INTEGER NOT NULL CHECK(observed_net_quantity >= 0),
+          observed_broker_status TEXT NOT NULL,
+          observed_trade_count INTEGER NOT NULL CHECK(observed_trade_count >= 0),
+          observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ema_exit_child_observations
+          ON ema_exit_child_observations(position_id,broker_order_id,observation_id);
+        CREATE TABLE IF NOT EXISTS ema_exit_trade_evidence (
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_trade_id TEXT NOT NULL,
+          broker_exchange_order_id TEXT NOT NULL,
+          reported_quantity INTEGER NOT NULL CHECK(reported_quantity > 0),
+          reported_average_price REAL NOT NULL CHECK(reported_average_price > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(position_id,broker_order_id,broker_trade_id)
+        );
+      `);
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version, description) VALUES (20, 'Immutable EMA live SELL child observations and unique trade-ID broker evidence')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 020 - Append-only broker SELL evidence; no automatic settlement.');
     }
 
     // Safeguard: Ensure all modern columns exist on ema_notification_settings
