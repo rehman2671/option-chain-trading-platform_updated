@@ -44,6 +44,8 @@ import {reviewBrokerExitFillReadOnly} from
   './src/server/engine/ema15m/adaptiveLiveExitSettlementAudit.js';
 import {prepareDurableSellChildEvidence} from
   './src/server/engine/ema15m/adaptiveDurableSellChildEvidence.js';
+import {previewDurableExitSettlement} from
+  './src/server/engine/ema15m/adaptiveExitSettlementPreview.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1697,6 +1699,55 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Local SELL evidence journal or broker read-only capture unavailable.'
+      });
+    }
+  });
+
+  // Phase100: read-only, intentionally non-authorising preview of durable
+  // SELL child/trades and locally saved original BUY against a fresh broker
+  // net snapshot. Never mutates local position/P&L, broker order or GTT.
+  app.post('/api/ema15m/live-exit-settlement-preview',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Valid durable position and expected broker account required.'
+      });
+    try{
+      const positions=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(positions.length!==1||positions[0].status!=='EXIT_PENDING'||
+         positions[0].brokerAccountId!==expectedAccountId||
+         !positions[0].brokerInstrumentKey)
+        return res.status(409).json({
+          error:'Unique pending broker position and expected account could not be matched.'
+        });
+      const p=positions[0],provider=activeProvider as any;
+      const conn=typeof provider?.getLiveConnectionStatus==='function'
+        ?provider.getLiveConnectionStatus():null;
+      if(conn?.isConnected!==true||conn?.userId!==expectedAccountId||
+         typeof provider?.getVerifiedLivePositionQuantity!=='function')
+        return res.status(503).json({
+          error:'Authenticated broker net read unavailable.'
+        });
+      // Broker GET only. A later portfolio observation reduces stale-net
+      // risk but does not make local/broker sources atomic.
+      const freshBrokerNetQuantity=await provider.getVerifiedLivePositionQuantity(
+        p.brokerInstrumentKey,p.productType
+      );
+      const raw=dbEngine.readEmaExitSettlementEvidence(positionId);
+      // Never echo raw local broker IDs, trade IDs, prices or auth tokens.
+      const result=previewDurableExitSettlement({
+        positionId,accountId:expectedAccountId
+      },{...raw,freshBrokerNetQuantity});
+      return res.json(result);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only settlement preview currently unavailable.'
       });
     }
   });
