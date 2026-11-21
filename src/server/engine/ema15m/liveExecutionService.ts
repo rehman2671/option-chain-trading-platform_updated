@@ -22,6 +22,8 @@ import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
 import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
 import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveExitSafety.js';
 import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGuard.js';
+import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
+  from './adaptivePostClaimSellRevalidation.js';
 import {
   assessEmaLiveProductGate,isMisForcedSquareOffEligible
 } from './adaptiveNrmlLiveReleaseInterlock.js';
@@ -821,6 +823,46 @@ export class LiveExecutionService {
         this.pendingExitIds.delete(pos.id);
         return { success: false, message: disconnectMsg };
       }
+
+      // Phase97: the earlier broker net + order-book + GTT checks occurred
+      // BEFORE the durable EXIT_REQUESTED CAS. Another actor may have
+      // changed the account or local exit ledger during those awaits.
+      // Re-evaluate local state, fresh broker GETs, then local state again
+      // immediately before the existing SELL order boundary.
+      // A failure keeps the CAS claim EXIT_REQUESTED: no implicit retry.
+      const quarantine=(reason:string)=>{
+        dbEngine.updateEmaLivePosition(pos.id,{
+          exitReason:'POST_CLAIM_SELL_RECHECK_QUARANTINED: '+reason
+        });
+        this.pendingExitIds.delete(pos.id);
+        return {success:false,message:
+          'Live SELL quarantined after durable claim: '+reason+
+          '. Reconcile local and Upstox broker order/GTT/position evidence; do not auto-retry.'};
+      };
+      const journalCheck=()=>{
+        const latest=dbEngine.getOpenEmaLivePositions();
+        return assessPostClaimExitJournal({
+          original:pos,currentPositions:latest,
+          currentEntryAttempt:dbEngine.getEmaLiveOrderAttemptById(pos.attemptId),
+          requestedRemainingQuantity:remainingQty
+        });
+      };
+      const localBefore=journalCheck();
+      if(!localBefore.allowed)
+        return quarantine(localBefore.reason);
+      const brokerAfterClaim=await reviewPostClaimBrokerSell(provider,{
+        instrumentKey:pos.brokerInstrumentKey||'',
+        product:pos.productType,
+        originalQuantity:pos.quantity,
+        priorConfirmedSellFills:pos.exitFilledQuantity??0,
+        lotSize:pos.lotSize,
+        requestedRemainingQuantity:remainingQty
+      });
+      if(!brokerAfterClaim.allowed)
+        return quarantine(brokerAfterClaim.reason);
+      const localAfter=journalCheck();
+      if(!localAfter.allowed)
+        return quarantine(localAfter.reason);
 
       // Submit real SELL order to Upstox API v2
       const exitRes = await (activeProvider as any).placeOrder({
