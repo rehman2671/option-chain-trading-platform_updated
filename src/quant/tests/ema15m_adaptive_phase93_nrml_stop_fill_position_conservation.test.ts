@@ -37,7 +37,7 @@ const fixture=(fill=0,pending=100,net:unknown=100):GttChildReviewEvidence=>{
   const o=child(fill,pending);
   return {
     connected:true,connectedAccountId:req.expectedAccountId,
-    gtt:[gtt()],order:o,orderBook:[{...o}],positions:[row(net)],
+    gtt:[gtt()],gttOrders:[gtt()],order:o,orderBook:[{...o}],positions:[row(net)],
     trades:fill>0?[trade('TRADE-A',fill)]:[]
   };
 };
@@ -193,6 +193,7 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>{events.push('gtt');return [gtt()];},
       getOrderBook:async()=>{events.push('book');return [child(50,50)];},
+      getGttOrders:async()=>{events.push('gttList');return [gtt()];},
       getOrderDetails:async(_:string)=>{
         events.push('child');childFetched=true;return child(50,50);
       },
@@ -216,6 +217,7 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>[gtt()],
       getOrderBook:async()=>[child()],
+      getGttOrders:async()=>[gtt()],
       getOrderDetails:async(_:string)=>child(),
       getOrderTrades:async(_:string)=>[],
       getVerifiedNrmlPositionRows:async()=>{
