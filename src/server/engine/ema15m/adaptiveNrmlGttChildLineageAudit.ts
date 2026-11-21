@@ -187,7 +187,16 @@ export function auditNrmlGttChildLineage(
   if(!integer(fill)||!integer(pending)||!integer(qty)||fill>qty||
      pending>qty||fill+pending>qty){
     reasons.push('CHILD_FILLED_PENDING_QUANTITY_INCONSISTENT');
-  }else data.brokerReportedChildFilledQuantity=fill;
+  }else{
+    data.brokerReportedChildFilledQuantity=fill;
+    if(['OPEN','TRIGGER PENDING','PARTIALLY FILLED','COMPLETE',
+        'COMPLETED'].includes(status)&&fill+pending!==qty)
+      reasons.push('NONTERMINAL_CHILD_FILLED_PLUS_PENDING_NOT_EQUAL_TO_ORDER_QUANTITY');
+    if((status==='PARTIALLY FILLED'&&(fill===0||pending===0))||
+       (['COMPLETE','COMPLETED'].includes(status)&&
+        (fill!==qty||pending!==0)))
+      reasons.push('CHILD_ORDER_STATUS_DISAGREES_WITH_EXECUTED_REMAINING_QUANTITY');
+  }
   reconcileNetAfterSell(fill);
   const book=e.orderBook.filter((x:unknown)=>record(x)&&x.order_id===id);
   if(book.length!==1||!record(book[0])||
