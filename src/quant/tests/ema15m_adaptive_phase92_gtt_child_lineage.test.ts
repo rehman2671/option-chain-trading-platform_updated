@@ -66,6 +66,9 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
     e.gtt=[{...gtt(),rules:[{strategy:'STOPLOSS',transaction_type:'SELL',
       status:'SCHEDULED',order_id:null}]}];
     e.gttOrders=[e.gtt[0]]; // full GTT census must agree with selected parent
+    // A scheduled, untriggered parent cannot already have a generated
+    // active SELL in the full broker book.
+    e.orderBook=[];
     e.order=null;e.trades=null;
     const r=review(e);neverRelease(r);
     assert.equal(r.status,'SCHEDULED_GTT_NO_EXCHANGE_CHILD');
