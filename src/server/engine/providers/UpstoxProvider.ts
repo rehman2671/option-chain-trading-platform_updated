@@ -651,6 +651,45 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /** Phase92: broker-native GTT details by its exact ID (read-only).
+   * This API cannot retrieve completed GTTs. Null is UNKNOWN, not absent.
+   */
+  public async getGttOrderDetails(gttId: string): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !/^GTT-[A-Za-z0-9-]{1,240}$/.test(gttId)) return null;
+    try {
+      const url = 'https://api.upstox.com/v3/order/gtt?gtt_order_id=' +
+        encodeURIComponent(gttId);
+      const res = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data)
+        ? json.data : null;
+    } catch { return null; }
+  }
+
+  /** Phase92: read exact generated child exchange order details, never write.
+   * Null on API error or missing order; never fabricate an ACK or fill.
+   */
+  public async getOrderDetails(orderId: string): Promise<any | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
+    try {
+      const url = 'https://api.upstox.com/v2/order/details?order_id=' +
+        encodeURIComponent(orderId);
+      const res = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && json?.data &&
+        !Array.isArray(json.data) && typeof json.data === 'object'
+        ? json.data : null;
+    } catch { return null; }
+  }
+
   public async getOrderBook(): Promise<any[] | null> {
     if (!this.isConnected || !this.accessToken) return null;
     try {
