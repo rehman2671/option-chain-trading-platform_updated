@@ -65,6 +65,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
     const e=fixture();
     e.gtt=[{...gtt(),rules:[{strategy:'STOPLOSS',transaction_type:'SELL',
       status:'SCHEDULED',order_id:null}]}];
+    e.gttOrders=[e.gtt[0]]; // full GTT census must agree with selected parent
     e.order=null;e.trades=null;
     const r=review(e);neverRelease(r);
     assert.equal(r.status,'SCHEDULED_GTT_NO_EXCHANGE_CHILD');
@@ -231,7 +232,10 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       }];},
       getVerifiedNrmlPositionRows:async()=>{called.push('positions');return [position()];},
       getOrderBook:async()=>{called.push('orderBook');return [];},
-      getGttOrders:async()=>{called.push('gttList');return [gtt()];},
+      getGttOrders:async()=>{called.push('gttList');return [{
+        ...gtt(),rules:[{strategy:'STOPLOSS',transaction_type:'SELL',
+          status:'SCHEDULED',order_id:null}]
+      }];},
       getOrderDetails:async()=>{throw Error('MUST_NOT_FETCH_CHILD');},
       getOrderTrades:async()=>{throw Error('MUST_NOT_FETCH_TRADES');}
     };
@@ -246,7 +250,7 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
       getGttOrderDetails:async(_:string)=>{calls.push('gtt');return [gtt()];},
       getVerifiedNrmlPositionRows:async()=>{calls.push('positions');return [position()];},
       getOrderBook:async()=>{calls.push('orderBook');return [order()];},
-      getGttOrders:async()=>[gtt()],
+      getGttOrders:async()=>{calls.push('gttList');return [gtt()];},
       getOrderDetails:async(_:string)=>{calls.push('childDetails');return order();},
       getOrderTrades:async(_:string)=>{calls.push('trades');return [];},
       placeOrder:()=>{throw Error('NO_BROKER_WRITE');},
