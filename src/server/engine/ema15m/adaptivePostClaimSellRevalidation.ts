@@ -35,14 +35,14 @@ const reject=(reason:ExitRecheckBlocker):ExitRecheckResult=>({
 export interface ExitLedgerSnapshot{
   id:unknown;
   attemptId:unknown;
-  brokerAccountId:unknown;
-  brokerInstrumentKey:unknown;
+  brokerAccountId?:unknown;
+  brokerInstrumentKey?:unknown;
   productType:unknown;
   status:unknown;
   quantity:unknown;
   lotSize:unknown;
-  exitFilledQuantity:unknown;
-  exitBrokerOrderId:unknown;
+  exitFilledQuantity?:unknown;
+  exitBrokerOrderId?:unknown;
 }
 /** Called twice after CAS: once before and once after network GETs. */
 export function assessPostClaimExitJournal(args:{
