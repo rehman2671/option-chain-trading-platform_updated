@@ -80,7 +80,7 @@ export function assessPostClaimExitJournal(args:{
   if(!rec(entry)||entry.id!==before.attemptId||
      entry.brokerAccountId!==before.brokerAccountId||
      entry.brokerInstrumentKey!==before.brokerInstrumentKey||
-     !['COMPLETE','FILLED'].includes(String(entry.orderStatus))||
+     entry.orderStatus!=='FILLED'||
      !nonnegative(entry.filledQuantity)||
      entry.filledQuantity!==before.quantity)
     return reject('ENTRY_BUY_ATTEMPT_UNVERIFIED_OR_STILL_EXECUTABLE');
