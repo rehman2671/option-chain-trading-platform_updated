@@ -4461,6 +4461,178 @@ class DatabaseEngine {
   }
 
   /**
+   * Phase101: single IMMEDIATE SQLite transaction for *original BUY receipt*
+   * provenance only. Never writes to ema_live_positions, closes an exit,
+   * books P&L, or invokes any brokerage API. An existing receipt is immutable.
+   */
+  public appendEmaOriginalBuyTradeEvidence(candidate:PreparedBuyTradeEvidence):{
+    state:'BROKER_BUY_RECEIPT_RECORDED_NOT_SETTLEMENT'|
+      'IDENTICAL_RECEIPT_REPLAY'|'BUY_RECEIPT_CONFLICT';
+    reason:string;
+    recordedBuyTrades:number;
+    independentExchangeReceiptCertified:false;
+    realisedPnlWriteAuthorized:false;
+    automaticClosureAuthorized:false;
+    liveNrmlBuyAuthorized:false;
+    brokerWrites:0;
+  } {
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: appendEmaOriginalBuyTradeEvidence');
+    const db=this.db;
+    const reject=(reason:string)=>({
+      state:'BUY_RECEIPT_CONFLICT' as const,reason,
+      recordedBuyTrades:0,independentExchangeReceiptCertified:false as const,
+      realisedPnlWriteAuthorized:false as const,
+      automaticClosureAuthorized:false as const,
+      liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+    });
+    const capture=db.transaction(()=>{
+      const id=(x:unknown)=>typeof x==='string'&&
+        /^[A-Za-z0-9_-]{1,128}$/.test(x);
+      const price=(x:unknown)=>typeof x==='number'&&
+        Number.isFinite(x)&&x>0&&Number.isSafeInteger(Math.round(x*100))&&
+        Math.abs(x*100-Math.round(x*100))<0.00001;
+      if(!candidate||!id(candidate.positionId)||
+         !id(candidate.accountId)||!id(candidate.attemptId)||
+         !id(candidate.orderId)||!id(candidate.exchangeOrderId)||
+         typeof candidate.instrumentKey!=='string'||
+         !candidate.instrumentKey||candidate.instrumentKey.length>256||
+         !['MIS','NRML'].includes(candidate.product)||
+         !Number.isSafeInteger(candidate.originalQuantity)||
+         candidate.originalQuantity<=0||
+         !price(candidate.brokerReportedAveragePrice)||
+         !Array.isArray(candidate.trades)||candidate.trades.length===0||
+         candidate.trades.length>5000)
+        return reject('INVALID_CANONICAL_ORIGINAL_BUY_RECEIPT');
+      const original=db.prepare(`
+        SELECT p.id,p.broker_account_id,p.broker_instrument_key,
+          p.product_type,p.status,p.attempt_id,
+          p.entry_broker_order_id,p.quantity,p.lot_size,
+          p.entry_price,p.exit_filled_quantity,
+          a.broker_order_id AS buy_broker_order_id,
+          a.broker_account_id AS buy_broker_account_id,
+          a.broker_instrument_key AS buy_instrument_key,
+          a.order_status AS buy_status,
+          a.requested_quantity AS buy_requested_quantity,
+          a.filled_quantity AS buy_filled_quantity,
+          a.average_fill_price AS buy_price
+        FROM ema_live_positions p
+        JOIN ema_live_order_attempts a ON a.id=p.attempt_id
+        WHERE p.id=? LIMIT 1
+      `).get(candidate.positionId) as any;
+      if(!original||
+         !['OPEN','EXIT_REQUESTED','EXIT_PENDING',
+           'EXIT_FAILED','PARTIALLY_CLOSED'].includes(original.status)||
+         original.broker_account_id!==candidate.accountId||
+         original.broker_instrument_key!==candidate.instrumentKey||
+         original.product_type!==candidate.product||
+         original.attempt_id!==candidate.attemptId||
+         original.entry_broker_order_id!==candidate.orderId||
+         original.buy_broker_order_id!==candidate.orderId||
+         original.buy_broker_account_id!==candidate.accountId||
+         original.buy_instrument_key!==candidate.instrumentKey||
+         original.buy_status!=='FILLED'||
+         original.buy_requested_quantity!==candidate.originalQuantity||
+         original.buy_filled_quantity!==candidate.originalQuantity||
+         original.quantity!==candidate.originalQuantity||
+         !Number.isSafeInteger(original.lot_size)||original.lot_size<=0||
+         candidate.originalQuantity%original.lot_size!==0||
+         !price(original.entry_price)||!price(original.buy_price)||
+         Math.abs(original.entry_price-original.buy_price)>0.011||
+         Math.abs(candidate.brokerReportedAveragePrice-original.buy_price)>0.011)
+        return reject('DURABLE_ORIGINAL_BUY_ATTEMPT_AND_POSITION_NOT_MATCHED');
+      const seen=new Set<string>();let total=0,totalPaise=0;
+      for(const t of candidate.trades){
+        if(!t||!id(t.tradeId)||seen.has(t.tradeId)||
+           t.exchangeOrderId!==candidate.exchangeOrderId||
+           !Number.isSafeInteger(t.quantity)||t.quantity<=0||
+           !price(t.price))
+          return reject('INVALID_OR_DUPLICATED_IMMUTABLE_BUY_TRADE');
+        seen.add(t.tradeId);
+        total+=t.quantity;
+        totalPaise+=Math.round(t.price*100)*t.quantity;
+        if(!Number.isSafeInteger(total)||!Number.isSafeInteger(totalPaise))
+          return reject('BUY_TRADE_TOTAL_OVERFLOW');
+      }
+      if(total!==candidate.originalQuantity||
+         Math.abs(Math.round(totalPaise/total)-
+           Math.round(candidate.brokerReportedAveragePrice*100))>1)
+        return reject('BUY_TRADE_EXECUTED_QUANTITY_OR_WEIGHTED_PRICE_MISMATCH');
+      const old=db.prepare(`
+        SELECT broker_account_id,attempt_id,broker_order_id,
+          instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        FROM ema_entry_buy_receipts WHERE position_id=?
+      `).get(candidate.positionId) as any;
+      if(old){
+        if(old.broker_account_id!==candidate.accountId||
+           old.attempt_id!==candidate.attemptId||
+           old.broker_order_id!==candidate.orderId||
+           old.instrument_key!==candidate.instrumentKey||
+           old.product_type!==candidate.product||
+           old.exchange_order_id!==candidate.exchangeOrderId||
+           old.original_quantity!==candidate.originalQuantity||
+           old.reported_average_price!==candidate.brokerReportedAveragePrice||
+           old.trade_count!==candidate.trades.length)
+          return reject('IMMUTABLE_ORIGINAL_BUY_HEADER_CHANGED');
+        const stored=db.prepare(`
+          SELECT broker_trade_id,exchange_order_id,
+            reported_quantity,reported_price
+          FROM ema_entry_buy_trade_receipts
+          WHERE position_id=? AND broker_order_id=?
+        `).all(candidate.positionId,candidate.orderId) as any[];
+        if(stored.length!==candidate.trades.length)
+          return reject('IMMUTABLE_ORIGINAL_BUY_TRADE_COUNT_CHANGED');
+        const byId=new Map(candidate.trades.map(t=>[t.tradeId,t]));
+        for(const x of stored){
+          const t=byId.get(x.broker_trade_id);
+          if(!t||x.exchange_order_id!==t.exchangeOrderId||
+             x.reported_quantity!==t.quantity||
+             x.reported_price!==t.price)
+            return reject('REPLAYED_ORIGINAL_BUY_TRADE_ID_MUTATED_OR_MISSING');
+        }
+        return {
+          state:'IDENTICAL_RECEIPT_REPLAY' as const,
+          reason:'BROKER_REPORTED_ORIGINAL_BUY_ONLY_NOT_CERTIFIED',
+          recordedBuyTrades:stored.length,
+          independentExchangeReceiptCertified:false as const,
+          realisedPnlWriteAuthorized:false as const,
+          automaticClosureAuthorized:false as const,
+          liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+        };
+      }
+      db.prepare(`
+        INSERT INTO ema_entry_buy_receipts(
+          position_id,broker_account_id,attempt_id,broker_order_id,
+          instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+      `).run(candidate.positionId,candidate.accountId,candidate.attemptId,
+        candidate.orderId,candidate.instrumentKey,candidate.product,
+        candidate.exchangeOrderId,candidate.originalQuantity,
+        candidate.brokerReportedAveragePrice,candidate.trades.length);
+      const insert=db.prepare(`
+        INSERT INTO ema_entry_buy_trade_receipts(
+          position_id,broker_order_id,broker_trade_id,exchange_order_id,
+          reported_quantity,reported_price
+        ) VALUES(?,?,?,?,?,?)
+      `);
+      for(const t of candidate.trades)
+        insert.run(candidate.positionId,candidate.orderId,t.tradeId,
+          t.exchangeOrderId,t.quantity,t.price);
+      return {
+        state:'BROKER_BUY_RECEIPT_RECORDED_NOT_SETTLEMENT' as const,
+        reason:'BROKER_REPORTED_ORIGINAL_BUY_ONLY_NOT_CERTIFIED',
+        recordedBuyTrades:candidate.trades.length,
+        independentExchangeReceiptCertified:false as const,
+        realisedPnlWriteAuthorized:false as const,
+        automaticClosureAuthorized:false as const,
+        liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+      };
+    });
+    return capture.immediate();
+  }
+
+  /**
    * Phase100: internally scoped, consistent SQLite READ snapshot of one
    * pending SELL child and its original BUY / immutable trade evidence.
    * Caller must authenticate/authorise before invoking this private reader.
