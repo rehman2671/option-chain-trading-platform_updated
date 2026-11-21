@@ -36,6 +36,8 @@ import { getNrmlLiveStatus } from './src/server/engine/ema15m/adaptiveNrmlLiveRe
 import {
   reviewNrmlBrokerReadOnly
 } from './src/server/engine/ema15m/adaptiveNrmlBrokerSnapshotAudit.js';
+import {reviewNrmlGttChildReadOnly} from
+  './src/server/engine/ema15m/adaptiveNrmlGttChildLineageAudit.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1499,6 +1501,31 @@ async function startServer() {
     // No broker order placement/modification/cancellation method is called.
     const report=await reviewNrmlBrokerReadOnly(activeProvider as any,{
       expectedAccountId,instrumentKey,expectedLongQuantity,lotSize
+    });
+    return res.json(report);
+  });
+
+  // Phase92: exact GTT STOPLOSS rule -> generated order -> exchange ref
+  // research diagnostic. SUPERADMIN only, read-only; no live release.
+  app.post('/api/ema15m/nrml-gtt-child-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {expectedAccountId,instrumentKey,gttOrderId,
+      expectedLongQuantity,lotSize}=req.body||{};
+    if(typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128||
+       typeof instrumentKey!=='string'||instrumentKey.length<1||
+       instrumentKey.length>256||
+       typeof gttOrderId!=='string'||
+       !/^GTT-[A-Za-z0-9-]{1,240}$/.test(gttOrderId)||
+       !Number.isSafeInteger(expectedLongQuantity)||expectedLongQuantity<=0||
+       !Number.isSafeInteger(lotSize)||lotSize<=0||
+       expectedLongQuantity%lotSize!==0)
+      return res.status(400).json({
+        error:'Exact authenticated-account comparison target, option contract, GTT ID and positive lot-multiple quantity required.'
+      });
+    const report=await reviewNrmlGttChildReadOnly(activeProvider as any,{
+      expectedAccountId,instrumentKey,gttOrderId,expectedLongQuantity,lotSize
     });
     return res.json(report);
   });
