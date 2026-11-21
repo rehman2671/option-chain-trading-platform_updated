@@ -149,11 +149,17 @@ export function previewDurableExitSettlement(
   }
   if(!nonnegative(source.freshBrokerNetQuantity))
     return conflict([...reasons,'FRESH_BROKER_NET_UNAVAILABLE'],baseData);
-  const lastFilled=end.filledQuantity,lastPending=end.pendingQuantity;
-  const remaining=p.quantity-(nonnegative(lastFilled)?lastFilled:0);
-  baseData.brokerReportedExitFilledQuantity=nonnegative(lastFilled)?lastFilled:0;
+  const rawFilled=end.filledQuantity,rawPending=end.pendingQuantity;
+  if(!nonnegative(rawFilled)||!nonnegative(rawPending))
+    reasons.push('LATEST_CHILD_FILLED_OR_PENDING_QUANTITY_INVALID');
+  // Only narrow strictly validated broker numbers; any invalid input
+  // has already added a conflict and will NEVER return a preview amount.
+  const lastFilled=nonnegative(rawFilled)?rawFilled:0;
+  const lastPending=nonnegative(rawPending)?rawPending:0;
+  const remaining=p.quantity-lastFilled;
+  baseData.brokerReportedExitFilledQuantity=lastFilled;
   baseData.brokerReportedRemainingQuantity=source.freshBrokerNetQuantity;
-  if(!nonnegative(lastFilled)||!nonnegative(lastPending)||
+  if(!nonnegative(rawFilled)||!nonnegative(rawPending)||
      source.freshBrokerNetQuantity!==remaining)
     reasons.push('LATEST_BROKER_NET_DISAGREES_WITH_DURABLE_SELL_FILLS');
   const ids=new Set<string>();
