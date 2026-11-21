@@ -93,21 +93,12 @@ export const validateOriginalBuyTradeEvidence=(
      !['COMPLETE','COMPLETED','FILLED'].includes(upper(candidates[0].status))||
      candidates[0].exchange_order_id!==order.exchange_order_id)
     return deny('ORIGINAL_BUY_ORDER_BOOK_CHILD_NOT_UNIQUE_OR_CONSISTENT');
-  // Another SAME CONTRACT order can change account net independently of
-  // the saved original BUY. Full account-wide trades are still unverified.
-  const terminal=new Set(['COMPLETE','COMPLETED','FILLED','CANCELLED',
-    'CANCELED','REJECTED','FAILED','EXPIRED']);
+  // This is ORIGINAL BUY RECEIPT provenance only. Other same-contract
+  // order rows (including this position's later SELL) do not invalidate
+  // the historical BUY trade IDs; account-wide exposure is NOT certified.
   for(const candidate of evidence.orderBook){
     if(!obj(candidate)||typeof candidate.instrument_token!=='string')
       return deny('ORIGINAL_BUY_ORDER_BOOK_MALFORMED');
-    if(candidate.instrument_token!==s.instrumentKey||
-       candidate.order_id===s.orderId)continue;
-    if(candidate.product!==native||
-       !terminal.has(upper(candidate.status)))
-      return deny('OTHER_SAME_CONTRACT_BROKER_ORDER_UNRESOLVED');
-    if(upper(candidate.transaction_type)==='SELL'&&
-       (!uint(candidate.filled_quantity)||candidate.filled_quantity>0))
-      return deny('OTHER_SAME_CONTRACT_SELL_EXECUTION_UNRECONCILED');
   }
   if(evidence.trades.length===0||evidence.trades.length>5000)
     return deny('ORIGINAL_BUY_TRADE_SET_EMPTY_OR_TRUNCATED');
