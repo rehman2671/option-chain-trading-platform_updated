@@ -4461,6 +4461,62 @@ class DatabaseEngine {
   }
 
   /**
+   * Phase102: private read-only joint original BUY receipt + SELL receipt
+   * snapshot under one SQLite transaction. The existing Phase100 private
+   * ledger reader runs as a nested SAVEPOINT on the same DB connection.
+   * Never return raw trade/order/account IDs via the public API.
+   */
+  public readEmaJointBuySellEvidence(positionId:string):{
+    position:Record<string,unknown>|null;
+    entryAttempt:Record<string,unknown>|null;
+    observations:Record<string,unknown>[];
+    trades:Record<string,unknown>[];
+    originalBuyReceipt:Record<string,unknown>|null;
+    originalBuyTrades:Record<string,unknown>[];
+  }{
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: readEmaJointBuySellEvidence');
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128)throw new Error('EMA_LIVE_JOINT_RECEIPTS_SCOPE_INVALID');
+    const db=this.db;
+    const query=db.transaction(()=>{
+      const base=this.readEmaExitSettlementEvidence(positionId);
+      if(!base.position)return {...base,
+        originalBuyReceipt:null,originalBuyTrades:[]};
+      const buy=db.prepare(`
+        SELECT position_id,broker_account_id,attempt_id,
+          broker_order_id,instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        FROM ema_entry_buy_receipts WHERE position_id=?
+      `).get(positionId) as any;
+      if(!buy)return {...base,originalBuyReceipt:null,
+        originalBuyTrades:[]};
+      const executions=db.prepare(`
+        SELECT broker_trade_id,exchange_order_id,
+          reported_quantity,reported_price
+        FROM ema_entry_buy_trade_receipts
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY broker_trade_id ASC LIMIT 5001
+      `).all(positionId,buy.broker_order_id) as any[];
+      return {...base,
+        originalBuyReceipt:{
+          positionId:buy.position_id,accountId:buy.broker_account_id,
+          attemptId:buy.attempt_id,orderId:buy.broker_order_id,
+          instrumentKey:buy.instrument_key,product:buy.product_type,
+          exchangeOrderId:buy.exchange_order_id,
+          originalQuantity:buy.original_quantity,
+          brokerReportedAveragePrice:buy.reported_average_price,
+          tradeCount:buy.trade_count
+        },
+        originalBuyTrades:executions.map(e=>({
+          tradeId:e.broker_trade_id,exchangeOrderId:e.exchange_order_id,
+          quantity:e.reported_quantity,price:e.reported_price
+        }))
+      };
+    });
+    return query();
+  }
+
+  /**
    * Phase101: single IMMEDIATE SQLite transaction for *original BUY receipt*
    * provenance only. Never writes to ema_live_positions, closes an exit,
    * books P&L, or invokes any brokerage API. An existing receipt is immutable.

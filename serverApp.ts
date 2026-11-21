@@ -48,6 +48,8 @@ import {previewDurableExitSettlement} from
   './src/server/engine/ema15m/adaptiveExitSettlementPreview.js';
 import {fetchOriginalBuyTradeEvidenceReadOnly} from
   './src/server/engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
+import {previewJointBuySellReceipts} from
+  './src/server/engine/ema15m/adaptiveJointTradeReceiptReconciliation.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1821,6 +1823,53 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Original BUY read-only broker receipts or private journal unavailable.'
+      });
+    }
+  });
+
+  // Phase102: joint original BUY + SELL trade-ID snapshot, READ ONLY.
+  // This endpoint is NOT a settlement, P&L post, release or duplicate order
+  // retry. Protected by SUPERADMIN, exact broker identity, redacted output.
+  app.post('/api/ema15m/joint-receipt-reconciliation-preview',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Exact pending position and broker account are required.'
+      });
+    try{
+      const records=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(records.length!==1||records[0].status!=='EXIT_PENDING'||
+         records[0].brokerAccountId!==expectedAccountId||
+         !records[0].brokerInstrumentKey)
+        return res.status(409).json({
+          error:'No unique pending option position matches the expected broker account.'
+        });
+      const position=records[0],broker=activeProvider as any;
+      const conn=typeof broker?.getLiveConnectionStatus==='function'
+        ?broker.getLiveConnectionStatus():null;
+      if(conn?.isConnected!==true||conn?.userId!==expectedAccountId||
+         typeof broker?.getVerifiedLivePositionQuantity!=='function')
+        return res.status(503).json({
+          error:'Authenticated broker account or native position GET unavailable.'
+        });
+      const freshBrokerNetQuantity=await broker.getVerifiedLivePositionQuantity(
+        position.brokerInstrumentKey,position.productType);
+      const snapshot=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const review=previewJointBuySellReceipts({
+        positionId,accountId:expectedAccountId
+      },{...snapshot,freshBrokerNetQuantity});
+      // Never leak private receipts/order IDs, option contract, prices or
+      // account identifiers; pure review only exposes static reasons/counts.
+      return res.json(review);
+    }catch{
+      return res.status(503).json({
+        error:'Joint local receipts or broker read-only reconciliation unavailable.'
       });
     }
   });
