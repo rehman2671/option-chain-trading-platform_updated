@@ -17,7 +17,7 @@ const snapshot=(overrides:Record<string,unknown>={}):ExitLedgerSnapshot=>({
 });
 const entry=(overrides:Record<string,unknown>={})=>({
   id:'PH97-ENTRY',brokerAccountId:account,brokerInstrumentKey:inst,
-  orderStatus:'COMPLETE',filledQuantity:100,...overrides
+  orderStatus:'FILLED',filledQuantity:100,...overrides
 });
 const verifyLocal=(overrides:{
   original?:ExitLedgerSnapshot;
@@ -154,8 +154,10 @@ describe('Phase97 durable post-claim journal integrity',()=>{
   it('only explicitly fully-filled BUY exit ledger is accepted, never synthetic success',()=>{
     const r=verifyLocal({currentEntryAttempt:entry({orderStatus:'FILLED'})});
     assert.equal(r.allowed,true);
-    const cancelled=verifyLocal({currentEntryAttempt:entry({orderStatus:'CANCELLED'})});
-    assert.equal(cancelled.allowed,false);
+    for(const status of ['CANCELLED','COMPLETE']){
+      const result=verifyLocal({currentEntryAttempt:entry({orderStatus:status})});
+      assert.equal(result.allowed,false);
+    }
   });
 });
 describe('Phase97 fresh broker reads AFTER durable exit claim',()=>{
