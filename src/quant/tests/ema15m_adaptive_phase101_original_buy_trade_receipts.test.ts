@@ -143,7 +143,7 @@ describe('Phase101 original BUY trade ID and order-book evidence (pure)',()=>{
   it('missing, fractional, negative, string or unsafe execution quantity rejected',()=>{
     for(const bad of [null,undefined,0,-1,1.2,'50',NaN,Infinity]){
       const e=sample();e.trades=[
-        {...trade('PH101-TRADE-1',50,105),quantity:bad},
+        {...trade('PH101-TRADE-1',50,105),quantity:bad as number},
         trade('PH101-TRADE-2',50,115)
       ];
       assert.equal(validateOriginalBuyTradeEvidence(scope(),e).ok,false);
@@ -152,7 +152,7 @@ describe('Phase101 original BUY trade ID and order-book evidence (pure)',()=>{
   it('invalid BUY trade prices are never coerced into a valid weighted entry',()=>{
     for(const bad of [null,undefined,0,-10,'105',NaN,Infinity,105.123]){
       const e=sample();e.trades=[
-        {...trade('PH101-TRADE-1',50,105),average_price:bad},
+        {...trade('PH101-TRADE-1',50,105),average_price:bad as number},
         trade('PH101-TRADE-2',50,115)
       ];
       assert.equal(validateOriginalBuyTradeEvidence(scope(),e).ok,false);
