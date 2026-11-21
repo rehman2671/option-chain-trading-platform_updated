@@ -5,6 +5,8 @@
  * placement, cancellation, or permission to start a positional auto-trader.
  */
 import {emaBrokerOrderTag} from './brokerOrderEvidence.js';
+import {resolveUniqueBrokerNetPosition} from
+  './adaptiveUniqueBrokerPositionEvidence.js';
 type Row=Record<string,unknown>;
 const row=(x:unknown):x is Row=>!!x&&typeof x==='object'&&!Array.isArray(x);
 const text=(x:unknown):x is string=>
@@ -147,10 +149,13 @@ export function auditNrmlRestartQuarantine(
   counts.matchingBrokerNrmlPositions=brokerNetRows.length;
   if(brokerNetRows.length!==1||!row(brokerNetRows[0]))
     reasons.push('BROKER_NRML_POSITION_MISSING_OR_DUPLICATED');
+  const currentNet=resolveUniqueBrokerNetPosition(
+    input.brokerPositions,p.brokerInstrumentKey,'NRML');
+  if(!currentNet.verified)
+    reasons.push('BROKER_NRML_POSITION_SOURCE_NOT_UNIQUE_OR_TRUSTWORTHY');
   else{
-    const net=numeric(brokerNetRows[0].net_quantity);
     const remaining=(p.quantity as number)-Number(p.exitFilledQuantity??0);
-    if(net!==null&&net===remaining)
+    if(currentNet.netQuantity===remaining)
       counts.brokerNetMatchesJournalRemainder=true;
     else reasons.push('CURRENT_BROKER_NET_DISAGREES_WITH_DURABLE_EXIT_LEDGER');
   }
