@@ -12,6 +12,8 @@ import {
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
+import {resolveUniqueBrokerNetPosition}
+  from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
 
 export const COMMODITY_SYMBOLS = new Set(['GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER']);
 
@@ -440,16 +442,11 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if (json?.status !== 'success' || !Array.isArray(json?.data)) return null;
-      const expectedProduct = product === 'MIS' ? 'I' : 'D';
-      let quantity = 0;
-      for (const p of json.data) {
-        if (p?.instrument_token !== instrumentKey || p?.product !== expectedProduct) continue;
-        if (p.net_quantity === undefined || p.net_quantity === null) return null;
-        const q = Number(p.net_quantity);
-        if (!Number.isInteger(q)) return null;
-        quantity += q;
-      }
-      return quantity;
+      // Phase96: never SUM duplicate position rows or treat a missing
+      // contract in a successfully returned portfolio as zero exposure.
+      // Cross-product exposure or malformed rows require manual review.
+      const result = resolveUniqueBrokerNetPosition(json.data,instrumentKey,product);
+      return result.verified ? result.netQuantity : null;
     } catch (err: any) {
       console.warn('[EMA BROKER] Verified position lookup unavailable:', err?.message || String(err));
       return null;
