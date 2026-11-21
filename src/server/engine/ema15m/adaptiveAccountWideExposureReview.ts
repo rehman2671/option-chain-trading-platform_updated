@@ -187,6 +187,8 @@ export function auditAccountWideExposureReadOnly(
            (filled!==s.originalBuyQuantity||pending!==0))||
          (!terminal.has(status)&&filled+pending!==s.originalBuyQuantity))
         reasons.push('EXIT_SELL_CURRENT_BOOK_CONTRADICTS_IMMUTABLE_RECEIPT');
+      if(['CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED'].includes(status))
+        reasons.push('EXIT_CHILD_TERMINAL_WITHOUT_VALIDATED_FULL_SELL');
       continue;
     }
     siblingOrders++;
