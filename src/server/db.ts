@@ -4499,6 +4499,17 @@ class DatabaseEngine {
          previous.requested_quantity!==candidate.requestedQuantity||
          previous.exchange_order_id!==candidate.exchangeOrderId))
         return reject('DURABLE_CHILD_IDENTITY_OR_EXCHANGE_REFERENCE_CHANGED');
+      // A stale broker snapshot may return OPEN after an earlier
+      // terminal COMPLETE/CANCELLED observation with identical trade
+      // totals. Preserve the terminal lifecycle; never accept a
+      // backwards transition as fresh broker truth.
+      if(previous){
+        const terminal=new Set(['COMPLETE','COMPLETED','FILLED',
+          'CANCELLED','CANCELED','REJECTED','EXPIRED','FAILED']);
+        if(terminal.has(previous.observed_broker_status)&&
+           previous.observed_broker_status!==candidate.brokerStatus)
+          return reject('BROKER_CHILD_TERMINAL_LIFECYCLE_REGRESSED_OR_CHANGED');
+      }
       const storedRows=db.prepare(`
         SELECT broker_trade_id,broker_exchange_order_id,
           reported_quantity,reported_average_price
