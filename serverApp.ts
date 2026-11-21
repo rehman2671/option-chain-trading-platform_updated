@@ -42,6 +42,8 @@ import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
   './src/server/engine/ema15m/adaptiveLiveExitSettlementAudit.js';
+import {prepareDurableSellChildEvidence} from
+  './src/server/engine/ema15m/adaptiveDurableSellChildEvidence.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1623,6 +1625,78 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only live exit fill evidence review unavailable.'
+      });
+    }
+  });
+
+  // Phase99: explicit SUPERADMIN local evidence capture. Reads actual Upstox
+  // child, unique trades, full order book and latest native portfolio, then
+  // appends immutable local trade IDs/child observation in one SQLite TX.
+  // This route writes ONLY local diagnostic journal; never sends a broker
+  // order, creates GTT, changes position CLOSED, books P&L or permits retry.
+  app.post('/api/ema15m/live-exit-evidence-capture',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Exact pending position and expected broker account required.'
+      });
+    try{
+      const matches=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(matches.length!==1||matches[0].status!=='EXIT_PENDING'||
+         matches[0].brokerAccountId!==expectedAccountId||
+         !matches[0].exitBrokerOrderId||!matches[0].brokerInstrumentKey||
+         matches[0].exitFilledQuantity!==0||
+         !Number.isSafeInteger(matches[0].quantity)||
+         !Number.isSafeInteger(matches[0].lotSize)||
+         matches[0].quantity<=0||matches[0].lotSize<=0||
+         matches[0].quantity%matches[0].lotSize!==0)
+        return res.status(409).json({
+          error:'Pending child original requested quantity/account/lot not reconstructable.'
+        });
+      const p=matches[0],provider=activeProvider as any;
+      const auth=typeof provider?.getLiveConnectionStatus==='function'
+        ?provider.getLiveConnectionStatus():null;
+      if(auth?.isConnected!==true||auth?.userId!==expectedAccountId||
+         ['getOrderDetails','getOrderTrades','getOrderBook',
+          'getVerifiedLivePositionQuantity'].some(k=>typeof provider?.[k]!=='function'))
+        return res.status(503).json({
+          error:'Authenticated broker read-only evidence methods unavailable.'
+        });
+      const childId=p.exitBrokerOrderId!;
+      const [order,trades,orderBook]=await Promise.all([
+        provider.getOrderDetails(childId),provider.getOrderTrades(childId),
+        provider.getOrderBook()
+      ]);
+      // Child fill must be observed BEFORE the last broker net GET.
+      const brokerNetAfterTrades=await provider.getVerifiedLivePositionQuantity(
+        p.brokerInstrumentKey,p.productType
+      );
+      const prepared=prepareDurableSellChildEvidence({
+        positionId:p.id,accountId:expectedAccountId,
+        request:{
+          instrumentKey:p.brokerInstrumentKey,product:p.productType,
+          orderId:childId,requestedSellQuantity:p.quantity,lotSize:p.lotSize
+        },
+        evidence:{order,trades,orderBook,brokerNetAfterTrades}
+      });
+      if(!prepared.ok)return res.status(409).json({
+        state:'BROKER_EVIDENCE_CONFLICT_NOT_CAPTURED',
+        reasonCode:prepared.reason,
+        automaticClosureAuthorized:false,brokerWrites:0
+      });
+      // DB transaction repeats account/child/status/size checks atomically.
+      // It never mutates ema_live_positions, realised P&L or broker state.
+      const capture=dbEngine.appendEmaExitChildTradeEvidence(prepared.prepared);
+      return res.status(capture.state==='EVIDENCE_CONFLICT'?409:200).json(capture);
+    }catch{
+      return res.status(503).json({
+        error:'Local SELL evidence journal or broker read-only capture unavailable.'
       });
     }
   });
