@@ -33,6 +33,9 @@ import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
 import { liveExecutionService } from './src/server/engine/ema15m/liveExecutionService.js';
 import { getNrmlLiveStatus } from './src/server/engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
+import {
+  reviewNrmlBrokerReadOnly
+} from './src/server/engine/ema15m/adaptiveNrmlBrokerSnapshotAudit.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1472,6 +1475,32 @@ async function startServer() {
       settings.upstoxProductType || 'MIS',
       settings.liveBrokerExecutionEnabled
     ));
+  });
+
+  // Phase91: SUPERADMIN read-only live broker snapshot REVIEW, never a stop
+  // placement or live NRML release. Explicit expected account/lot is a
+  // comparison target, not independent verification of source ownership.
+  app.post('/api/ema15m/nrml-broker-review', requireSuperAdmin as any, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const {expectedAccountId,instrumentKey,expectedLongQuantity,lotSize} =
+      req.body || {};
+    if(typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128||
+       typeof instrumentKey!=='string'||instrumentKey.length<1||
+       instrumentKey.length>256||
+       !Number.isSafeInteger(expectedLongQuantity)||expectedLongQuantity<=0||
+       !Number.isSafeInteger(lotSize)||lotSize<=0||
+       expectedLongQuantity%lotSize!==0)
+      return res.status(400).json({
+        error: 'Exact account, instrument and positive lot-multiple expected NRML long quantity required.'
+      });
+    // UpstoxProvider's safe getVerifiedNrmlPositionRows() returns null on
+    // error; do NOT use generic getPositions() (empty on API failure).
+    // No broker order placement/modification/cancellation method is called.
+    const report=await reviewNrmlBrokerReadOnly(activeProvider as any,{
+      expectedAccountId,instrumentKey,expectedLongQuantity,lotSize
+    });
+    return res.json(report);
   });
 
   // 6. Save Notification Settings (Strictly requires authenticated user)
