@@ -933,4 +933,104 @@ describe('Phase79 all-original 1W 2W 4W 8W CE/PE L1 marks: coverage not fills',(
     assert.equal(r.realOutOfSampleOptionReturnOrProfitabilityProven,false);
     assert.equal(r.nativeBrokerNrmlGttStopChildAckVerified,false);
   });
+
+  // Phase89: first observable bounded next-open BOOK STATE includes zero BID,
+  // not a cherry-picked second quote after sell liquidity recovered.
+  it('Phase89 baseline first opening snapshots are liquid and all 8 original gap marks remain descriptive',()=>{
+    const r=audit(fixture());neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,0);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+  });
+  it('Phase89 first zero-BID Monday snapshot cannot be replaced by second good BID to claim first-next-open gap',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d))
+      row[1]=String(Number(row[1])+1);
+    const first=ist(d,9,15);
+    f.rows.push(['REC89-FIRST-ZERO','1',key,first,first,
+      '0','121','0','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,1);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+    assert.equal(r.status,'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING');
+    assert.ok(r.reasonCodes.includes('FIRST_CAUSALLY_OBSERVED_NEXT_OPEN_BID_ZERO_OR_SUBLOT_DEPTH'));
+    assert.equal(r.cells.reduce((n,c)=>n+
+      c.entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid,0),1);
+  });
+  it('Phase89 sublot first 09:15 BID cannot borrow depth from second 09:16 quote',()=>{
+    const f=fixture(),key='OPT_20261120_2W_PE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d))
+      row[1]=String(Number(row[1])+1);
+    const first=ist(d,9,15);
+    f.rows.push(['REC89-FIRST-SUBLOT','1',key,first,first,
+      '120','121','1','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,1);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+  });
+  it('Phase89 first genuinely usable 09:15 BID remains an observed quoted gap, never an actual stop fill',()=>{
+    const f=fixture(),key='OPT_20261120_4W_CE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d))
+      row[1]=String(Number(row[1])+1);
+    const first=ist(d,9,15);
+    f.rows.push(['REC89-FIRST-VALID','1',key,first,first,
+      '120','121','100','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,0);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+    assert.equal(r.actualEntryAndExitFillsVerified,false);
+  });
+  it('Phase89 first zero BID without any later bounded marketable opening BID is explicit liquidity blackout',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d)){
+      row[1]=String(Number(row[1])+1);
+      if(row[3].includes('T09:16')){
+        row[3]=ist(d,9,22);
+        row[4]=ist(d,9,22);
+      }
+    }
+    const first=ist(d,9,15);
+    f.rows.push(['REC89-FIRST-ZERO-NORECOVERY','1',key,first,first,
+      '0','121','0','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,1);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,7);
+  });
+  it('Phase89 quote for an earlier zero-BID 09:15 event received after bounded window cannot overwrite the received 09:16 opening book',()=>{
+    const f=fixture(),key='OPT_20261120_1W_CE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d))
+      row[1]=String(Number(row[1])+1);
+    const early=ist(d,9,15),late=ist(d,9,21);
+    f.rows.push(['REC89-RECEIVED-LATE','1',key,early,late,
+      '0','121','0','100']);
+    f.input.policy.maxClaimedEventToArrivalSeconds=600;
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,0);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,0);
+    assert.equal(r.entryCandidateStaleLateQuoteObservationsIgnored,1);
+    assert.equal(r.quotedNextOpenGapThroughTrailPairs,8);
+  });
+  it('Phase89 first illiquid opening of a NO_ENTRY option never becomes a purchased positional option',()=>{
+    const f=fixture(),key='OPT_20261119_1W_CE',d='2026-11-23';
+    for(const row of f.rows)if(row[2]===key&&row[3].startsWith(d))
+      row[1]=String(Number(row[1])+1);
+    const first=ist(d,9,15);
+    f.rows.push(['REC89-NOENTRY-FIRSTZERO','1',key,first,first,
+      '0','121','0','100']);
+    f.rebuild();f.repin();
+    const r=audit(f);neverTrades(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,0);
+    assert.equal(r.originalNoEntryDecisions,1);
+    assert.equal(r.originallyNoEntryPairs,8);
+    assert.equal(r.originalEntryClaimedPairs,8);
+  });
 });
