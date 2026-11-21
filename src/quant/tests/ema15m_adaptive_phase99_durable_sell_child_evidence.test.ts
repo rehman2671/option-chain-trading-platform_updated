@@ -7,6 +7,8 @@ import {
 } from '../../server/engine/ema15m/adaptiveDurableSellChildEvidence.js';
 import {assessEmaLiveProductGate} from
   '../../server/engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
+import {dbEngine} from '../../server/db.js';
+import type {EmaLivePosition} from '../../server/engine/ema15m/types.js';
 
 const pos='PH99-POS',account='PH99-ACCOUNT',inst='NSE_FO|PH99-CE',
   childId='PH99-ORDER',venueId='PH99-EXCHANGE';
@@ -222,5 +224,113 @@ describe('Phase99 idempotent immutable SELL trade replay guards',()=>{
     assert.ok(!method.includes('placeOrder('));
     assert.ok(!method.includes('cancelOrder('));
     assert.ok(!method.includes('calculateOptionNetPnl'));
+  });
+});
+
+
+describe('Phase99 real SQLite WAL child-trade evidence persistence (never broker writes)',()=>{
+  const position=(positionId:string):EmaLivePosition=>({
+    id:positionId,attemptId:'PH99-BUY-ATTEMPT',signalId:'PH99-SIGNAL',
+    instrument:'NIFTY',brokerAccountId:account,brokerInstrumentKey:inst,
+    tradingsymbol:'PH99TESTCE',optionType:'CE',
+    strikePrice:24000,expiryDate:'2026-12-31',productType:'MIS',
+    side:'BUY',marketBias:'BULLISH',
+    entryBrokerOrderId:'PH99-ENTRY',
+    entryTimestamp:'2026-11-21T08:00:00Z',entryPrice:100,
+    quantity:100,lotSize:50,currentPrice:100,unrealizedPnl:0,
+    stopLoss:80,targetPrice:150,status:'EXIT_PENDING',
+    exitBrokerOrderId:childId,exitFilledQuantity:0,
+    grossPnl:0,brokerage:40,netPnl:0,
+    createdAt:'2026-11-21T08:00:00Z',
+    updatedAt:'2026-11-21T08:00:00Z'
+  });
+  it('SQLite migration020 persists a child + trade once; replay is idempotent and cannot change position',async()=>{
+    await dbEngine.initialize();
+    const p=position('PH99-SQLITE-ONE');
+    dbEngine.saveEmaLivePosition(p);
+    const prepared={...valid(),positionId:p.id};
+    const one=dbEngine.appendEmaExitChildTradeEvidence(prepared);
+    assert.equal(one.state,'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT');
+    assert.equal(one.newlyObservedTrades,1);
+    assert.equal(one.recordedChildObservations,1);
+    const replayed=dbEngine.appendEmaExitChildTradeEvidence(prepared);
+    assert.equal(replayed.state,'REPLAY_NO_NEW_EVIDENCE');
+    assert.equal(replayed.newlyObservedTrades,0);
+    assert.equal(replayed.recordedChildObservations,1);
+    const changed=dbEngine.appendEmaExitChildTradeEvidence({
+      ...prepared,trades:[{...prepared.trades[0],price:121}]
+    });
+    assert.equal(changed.state,'EVIDENCE_CONFLICT');
+    assert.equal(changed.reason,'REPLAYED_TRADE_ID_CHANGED_EXECUTION_EVIDENCE');
+    const still=dbEngine.appendEmaExitChildTradeEvidence(prepared);
+    assert.equal(still.state,'REPLAY_NO_NEW_EVIDENCE');
+    assert.equal(still.recordedChildObservations,1);
+    const posAfter=dbEngine.getOpenEmaLivePositions().find(x=>x.id===p.id);
+    assert.equal(posAfter?.status,'EXIT_PENDING');
+    assert.equal(posAfter?.exitFilledQuantity,0);
+    assert.equal(posAfter?.grossPnl,0);
+    assert.equal(posAfter?.netPnl,0);
+    assert.equal(one.automaticClosureAuthorized,false);
+    assert.equal(one.realisedPnlAuthorized,false);
+    assert.equal(one.brokerWrites,0);
+  });
+  it('SQLite observations progress 50 -> 100 fills without duplicating prior trade IDs',async()=>{
+    await dbEngine.initialize();
+    const p=position('PH99-SQLITE-TWO');
+    dbEngine.saveEmaLivePosition(p);
+    const base=valid();
+    const first={
+      ...base,positionId:p.id,filledQuantity:50,
+      pendingQuantity:50,currentNetQuantity:50,
+      brokerStatus:'PARTIALLY FILLED',
+      trades:[{...base.trades[0],quantity:50}]
+    };
+    const a=dbEngine.appendEmaExitChildTradeEvidence(first);
+    assert.equal(a.state,'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT');
+    assert.equal(a.newlyObservedTrades,1);
+    const later={
+      ...base,positionId:p.id,
+      trades:[{...base.trades[0],quantity:50},
+        {...base.trades[0],tradeId:'TRADE-2',quantity:50}]
+    };
+    const b=dbEngine.appendEmaExitChildTradeEvidence(later);
+    assert.equal(b.state,'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT');
+    assert.equal(b.newlyObservedTrades,1);
+    assert.equal(b.recordedChildObservations,2);
+    const stale=dbEngine.appendEmaExitChildTradeEvidence(first);
+    assert.equal(stale.state,'EVIDENCE_CONFLICT');
+    assert.equal(stale.reason,'BROKER_CHILD_CUMULATIVE_FILL_REGRESSED');
+    const missing=dbEngine.appendEmaExitChildTradeEvidence({
+      ...later,trades:[{...base.trades[0],tradeId:'TRADE-2',quantity:50}]
+    });
+    assert.equal(missing.state,'EVIDENCE_CONFLICT');
+    const repeat=dbEngine.appendEmaExitChildTradeEvidence(later);
+    assert.equal(repeat.state,'REPLAY_NO_NEW_EVIDENCE');
+    assert.equal(repeat.recordedChildObservations,2);
+    const posAfter=dbEngine.getOpenEmaLivePositions().find(x=>x.id===p.id);
+    assert.equal(posAfter?.status,'EXIT_PENDING');
+    assert.equal(posAfter?.exitFilledQuantity,0);
+    assert.equal(posAfter?.netPnl,0);
+  });
+  it('SQLite atomic capture rejects wrong account, alternate child, or nonpending durable position',async()=>{
+    await dbEngine.initialize();
+    const p=position('PH99-SQLITE-THREE');
+    dbEngine.saveEmaLivePosition(p);
+    const c={...valid(),positionId:p.id};
+    for(const mismatch of [
+      {...c,accountId:'PH99-OTHER-ACCOUNT'},
+      {...c,orderId:'PH99-OTHER-ORDER'},
+      {...c,product:'NRML' as const},
+      {...c,requestedQuantity:50},
+      {...c,positionId:'PH99-NO-LOCAL-POSITION'}
+    ]){
+      const x=dbEngine.appendEmaExitChildTradeEvidence(mismatch);
+      assert.equal(x.state,'EVIDENCE_CONFLICT');
+      assert.equal(x.brokerWrites,0);
+      assert.equal(x.automaticClosureAuthorized,false);
+    }
+    const validRecord=dbEngine.appendEmaExitChildTradeEvidence(c);
+    assert.equal(validRecord.state,'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT');
+    assert.equal(validRecord.recordedChildObservations,1);
   });
 });
