@@ -75,6 +75,7 @@ export interface Phase80Report{
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
   entryPairsWithUnresolvedOvernightCalendarTransition:number;
+  entryPairsWithFirstBoundedNextOpenIlliquidBid:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   originalPairsWithPotentialUndeclaredWeekdays:number;
@@ -92,6 +93,7 @@ export interface Phase80Report{
     entryCandidateStaleLateQuoteObservationsIgnored:number;
     entryClaimedPairsWithUnderTargetQuotedGiveback:number;
     entryClaimedPairsWithUnresolvedOvernightCalendarTransition:number;
+    entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid:number;
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
     originalPairsCensoredByMissingSessionCloseBid:number;
     originalPairsWithPotentialUndeclaredWeekdays:number;
@@ -127,6 +129,7 @@ function base():Phase80Report{
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
     entryPairsWithUnresolvedOvernightCalendarTransition:0,
+    entryPairsWithFirstBoundedNextOpenIlliquidBid:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     originalPairsWithPotentialUndeclaredWeekdays:0,
@@ -217,6 +220,8 @@ export function auditPhase80PrivateOriginalL1(
       c.entryClaimedPairsWithUnderTargetQuotedGiveback,
     entryClaimedPairsWithUnresolvedOvernightCalendarTransition:
       c.entryClaimedPairsWithUnresolvedOvernightCalendarTransition,
+    entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid:
+      c.entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid,
     entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:
       c.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak,
     originalPairsCensoredByMissingSessionCloseBid:
@@ -255,6 +260,8 @@ export function auditPhase80PrivateOriginalL1(
     quotedNextOpenGapThroughTrailPairs:p79.quotedNextOpenGapThroughTrailPairs,
     entryPairsWithUnresolvedOvernightCalendarTransition:
       p79.entryPairsWithUnresolvedOvernightCalendarTransition,
+    entryPairsWithFirstBoundedNextOpenIlliquidBid:
+      p79.entryPairsWithFirstBoundedNextOpenIlliquidBid,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:
       p79.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,
     listedPairsWithMissingDeclaredSessionCloseBid:

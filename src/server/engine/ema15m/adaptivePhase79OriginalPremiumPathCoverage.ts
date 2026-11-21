@@ -67,6 +67,7 @@ export interface Phase79Cell{
   entryClaimedPairsWithUnderTargetQuotedGiveback:number;
   entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:number;
   entryClaimedPairsWithUnresolvedOvernightCalendarTransition:number;
+  entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid:number;
   entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   originalPairsCensoredByMissingSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
@@ -98,6 +99,7 @@ export interface Phase79Report{
   quotedUnderTargetPremiumGivebackPairs:number;
   quotedNextOpenGapThroughTrailPairs:number;
   entryPairsWithUnresolvedOvernightCalendarTransition:number;
+  entryPairsWithFirstBoundedNextOpenIlliquidBid:number;
   entryPairsMissingBoundedNextOpenAfterNewArmedPeak:number;
   listedPairsWithMissingDeclaredSessionCloseBid:number;
   missingDeclaredSessionCloseBidObservations:number;
@@ -188,6 +190,7 @@ function blank():Phase79Report{
     quotedUnderTargetPremiumGivebackPairs:0,
     quotedNextOpenGapThroughTrailPairs:0,
     entryPairsWithUnresolvedOvernightCalendarTransition:0,
+    entryPairsWithFirstBoundedNextOpenIlliquidBid:0,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
     listedPairsWithMissingDeclaredSessionCloseBid:0,
     missingDeclaredSessionCloseBidObservations:0,
@@ -404,7 +407,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
     illiquidBidPairs=0,unmarketableEntryBids=0,wideDecisionSpreads=0,
     staleQuoteObservations=0,censored=0,missingCloses=0,
     weekdayGapPairs=0,weekdayGapObservations=0,
-    unresolvedOvernightTransitions=0;
+    unresolvedOvernightTransitions=0,firstOpenIlliquidPairs=0;
   const sessionDates=[...sessions.keys()].sort();
   const weekdaySessionDates=sessionDates.filter(isCalendarWeekday);
   const adjacent=new Map<string,string>();
@@ -476,6 +479,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
           entryClaimedPairsWithUnderTargetQuotedGiveback:0,
           entryClaimedPairsWithFirstNextOpenQuotedGapThroughTrail:0,
           entryClaimedPairsWithUnresolvedOvernightCalendarTransition:0,
+          entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid:0,
           entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak:0,
           originalPairsCensoredByMissingSessionCloseBid:0,
           missingDeclaredSessionCloseBidObservations:0,
@@ -536,6 +540,10 @@ export function auditPhase79OriginalPremiumPathCoverage(
           // +70-to-+20 reversal. A zero-depth/newer quote supersedes
           // the previous usable quote instead of being filtered away.
           const after:Quote[]=[];
+          // First CAUSALLY RECEIVED bounded opening BOOK STATE, including
+          // zero-BID and sub-lot updates. Do not cherry-pick a later
+          // marketable quote as if it were the FIRST opening quote.
+          const firstBoundedOpen=new Map<string,Quote>();
           let latestAppliedEvent=-Infinity,latestAppliedSeq=-Infinity;
           let sawIlliquidBid=false,ignoredStale=0;
           for(const x of afterAll){
@@ -546,6 +554,12 @@ export function auditPhase79OriginalPremiumPathCoverage(
               continue;
             }
             latestAppliedEvent=x.event;latestAppliedSeq=x.sequence;
+            const openDay=istDay(x.event),session=sessions.get(openDay)!;
+            if(!firstBoundedOpen.has(openDay)&&
+               x.event>=session.open&&
+               x.event<=session.open+p.nextOpenBidWindowMinutes*MIN&&
+               x.available<=session.open+p.nextOpenBidWindowMinutes*MIN)
+              firstBoundedOpen.set(openDay,x);
             if(x.bid<=0||x.bidQty<p.minBestBidAndAskDepthLots*c.lotSize){
               sawIlliquidBid=true;
               continue;
@@ -562,17 +576,15 @@ export function auditPhase79OriginalPremiumPathCoverage(
           }
           let peak=entry.ask, peakSession=d.sessionDate,seenGiveback=false,seenGap=false;
           let unresolvedArmedCalendar=false;
-          const firstBidSession=new Set<string>();
           const newArmedPeakNextOpens=new Set<string>();
           for(const x of after){
             const gain=peak-entry.ask;
             const next=istDay(x.event);
-            // Compare the first usable best BID at the next DECLARED open
-            // only with a peak from a strictly earlier session.
+            // Compare the actual FIRST causally observable opening book
+            // state only. A zero-BID/sublot first snapshot cannot be
+            // overwritten by the second, tradable quote of that morning.
             const ses=sessions.get(next);
-            const firstBidForSession=!firstBidSession.has(next);
-            firstBidSession.add(next);
-            if(!seenGap&&firstBidForSession&&
+            if(!seenGap&&firstBoundedOpen.get(next)===x&&
                next===nextDeclaredSession(peakSession)&&ses&&
                x.event>=ses.open&&x.available>=ses.open&&
                x.event<=ses.open+p.nextOpenBidWindowMinutes*MIN&&
@@ -605,27 +617,25 @@ export function auditPhase79OriginalPremiumPathCoverage(
             unresolvedOvernightTransitions++;
             cell.entryClaimedPairsWithUnresolvedOvernightCalendarTransition++;
           }
-          // Observed NEW peaks that armed a theoretical trail require a
-          // depth-positive, receipt-time-valid FIRST BID at next declared
-          // session OPEN. Without one, absence of an observed gap is NOT
-          // evidence that overnight exposure was safe. This is a lower
-          // bound on missing opens, not a complete continuous tick tape.
-          // Use one pass for first eligible opening receipt per session.
-          // Each later armed peak can then check coverage in O(1), instead
-          // of rescanning the full option quote path for every new peak.
-          const boundedOpenSessions=new Set<string>();
-          for(const x of after){
-            const day=istDay(x.event),session=sessions.get(day)!;
-            if(x.event>=session.open&&
-               x.event<=session.open+p.nextOpenBidWindowMinutes*MIN&&
-               x.available<=session.open+p.nextOpenBidWindowMinutes*MIN)
-              boundedOpenSessions.add(day);
+          // First bounded opening book is a receipt-ordered state, NOT the
+          // first conveniently tradable BID after a zero/sublot snapshot.
+          // Later liquidity recovery does not erase opening blackout risk.
+          let missingBoundedOpen=false,firstOpenIlliquid=false;
+          for(const day of newArmedPeakNextOpens){
+            const first=firstBoundedOpen.get(day);
+            const illiquid=!!first&&
+              (first.bid<=0||
+               first.bidQty<p.minBestBidAndAskDepthLots*c.lotSize);
+            if(illiquid)firstOpenIlliquid=true;
+            if(!first||illiquid)missingBoundedOpen=true;
           }
-          const missingBoundedOpen=[...newArmedPeakNextOpens]
-            .some(day=>!boundedOpenSessions.has(day));
           if(missingBoundedOpen){
             missingNextOpen++;
             cell.entryClaimedPairsMissingBoundedNextOpenAfterNewArmedPeak++;
+          }
+          if(firstOpenIlliquid){
+            firstOpenIlliquidPairs++;
+            cell.entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid++;
           }
         }
       }
@@ -705,9 +715,11 @@ export function auditPhase79OriginalPremiumPathCoverage(
   if(unresolvedOvernightTransitions>0)
     reasons.push('ARMED_OVERNIGHT_NEXT_OPEN_UNRESOLVED_BY_POTENTIAL_MISSING_SESSION');
   if(missingNextOpen>0)reasons.push('MISSING_FIRST_BOUNDED_NEXT_OPEN_BID_CENSORS_OVERNIGHT_GAP_INFERENCE');
+  if(firstOpenIlliquidPairs>0)
+    reasons.push('FIRST_CAUSALLY_OBSERVED_NEXT_OPEN_BID_ZERO_OR_SUBLOT_DEPTH');
   if(input.datasetKind==='SYNTHETIC_FIXTURE')reasons.push('SYNTHETIC_FIXTURE_NOT_REAL_MARKET_TAPE');
   return {...blank(),status:missingAsk||censored||missingNextOpen||
-      weekdayGapPairs||unresolvedOvernightTransitions||
+      weekdayGapPairs||unresolvedOvernightTransitions||firstOpenIlliquidPairs||
       unmarketableEntryBids||wideDecisionSpreads||
       illiquidBidPairs||staleQuoteObservations?
       'DESCRIPTIVE_CENSORED_ORIGINAL_L1_NOT_TRADING':
@@ -724,6 +736,7 @@ export function auditPhase79OriginalPremiumPathCoverage(
     quotedUnderTargetPremiumGivebackPairs:giveback,
     quotedNextOpenGapThroughTrailPairs:gap,
     entryPairsWithUnresolvedOvernightCalendarTransition:unresolvedOvernightTransitions,
+    entryPairsWithFirstBoundedNextOpenIlliquidBid:firstOpenIlliquidPairs,
     entryPairsMissingBoundedNextOpenAfterNewArmedPeak:missingNextOpen,
     listedPairsWithMissingDeclaredSessionCloseBid:censored,
     missingDeclaredSessionCloseBidObservations:missingCloses,

@@ -89,6 +89,7 @@ on:
       - 'research/adaptive-v2-phase86-entry-bid-spread-risk-census'
       - 'research/adaptive-v2-phase87-undeclared-weekday-coverage'
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
+      - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
   pull_request:
     branches:
       - main
@@ -179,6 +180,7 @@ on:
       - 'research/adaptive-v2-phase86-entry-bid-spread-risk-census'
       - 'research/adaptive-v2-phase87-undeclared-weekday-coverage'
       - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
+      - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
   workflow_dispatch:
 
 permissions:
