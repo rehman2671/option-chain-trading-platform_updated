@@ -262,6 +262,12 @@ describe('Phase99 real SQLite WAL child-trade evidence persistence (never broker
     });
     assert.equal(changed.state,'EVIDENCE_CONFLICT');
     assert.equal(changed.reason,'REPLAYED_TRADE_ID_CHANGED_EXECUTION_EVIDENCE');
+    const staleLifecycle=dbEngine.appendEmaExitChildTradeEvidence({
+      ...prepared,brokerStatus:'OPEN'
+    });
+    assert.equal(staleLifecycle.state,'EVIDENCE_CONFLICT');
+    assert.equal(staleLifecycle.reason,
+      'BROKER_CHILD_TERMINAL_LIFECYCLE_REGRESSED_OR_CHANGED');
     const still=dbEngine.appendEmaExitChildTradeEvidence(prepared);
     assert.equal(still.state,'REPLAY_NO_NEW_EVIDENCE');
     assert.equal(still.recordedChildObservations,1);
