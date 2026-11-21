@@ -1,0 +1,34 @@
+# Phase98 — A broker SELL placement ACK is not a filled exit or realised P&L
+
+**Stacked DRAFT on Phase97 PR #102. No merge/deploy, no live NRML BUY activation, no real broker orders or credentials accessed during development/tests.** The user requires future LIVE positional NRML CE/PE trading for 1W/2W/4W/8W, without an MIS-style 15:15 forced exit. Phase90's fail-closed NRML BUY interlock stays unchanged.
+
+## Critical pre-existing live execution defect
+
+In `LiveExecutionService.requestLiveExit()` the result of Upstox `placeOrder({transactionType:'SELL'})` was inspected for `status:'COMPLETE'|'FILLED'`, `filled_quantity` and an `average_price`. If those fields appeared coherent in the immediate **order placement response**, the service immediately updated local position to `status:'CLOSED'`, computed and recorded gross/net realised P&L, logged `LIVE_EXIT_FILLED`, and returned **"Live position closed on broker"**. Those response fields are **not** independently verified venue execution receipts. A network response or backend implementation can be malformed, stale, contradictory, synthetic, partially filled or returned before the portfolio/trade book catches up. An ACK may contain a valid order ID even though the SELL remains pending.
+
+It is especially dangerous if a broker-child STOPLOSS, a second SELL, a partial prior exit or an overnight gap changes account exposure while the order is being processed. Phase95's remaining-quantity sizing and Phase97's post-claim rechecks reduce some risk but cannot certify a subsequent fill.
+
+## Phase98 fail-closed behaviour — actual broker SELL call unchanged
+
+- New pure `assessExitPlacementAck()`: validates broker order ID only. Any returned `status`, `filled_quantity`, average price or nominal profit in `placeOrder` is explicitly **NOT a fill or realised P&L**.
+- **Actual `requestLiveExit()` live path** now always records `EXIT_PENDING` after a valid child order ID, plus a `LIVE_EXIT_SUBMITTED` **PENDING** event; it no longer marks `CLOSED`, emits `LIVE_EXIT_FILLED`, or calculates gross/net realised P&L at that point. Return messaging clearly says **"Broker SELL acknowledged, fill unverified"**. `EXIT_PENDING` and persisted broker child ID block a second SELL via existing durable CAS/exit guards.
+- If the response has no validated order ID, the existing catch path preserves `EXIT_REQUESTED` (UNKNOWN) and requires broker reconciliation; it must never automatically retry another SELL, or treat missing order-book visibility as a definitive reject.
+- Existing Phase97 local-post-CAS + broker order/GTT/net recheck, Phase96 unique broker native position row, Phase95 remaining whole-lot SELL sizing and MIS-only 15:15 behaviour are preserved. **No new broker order or stop placement action** is added. Real NRML BUY remains hard-blocked.
+
+## Phase98 read-only, non-atomic settlement diagnostic
+
+Pure `auditBrokerExitFillEvidence()` examines an exact child broker-reported `order_id`, side SELL, exact option instrument key and MIS/NRML native product I/D, original SELL request lot-multiple quantity, `filled_quantity`, `pending_quantity` and status. It checks a **unique** matching ordinary order-book row, reported `exchange_order_id`, individual unique trade IDs, SELL side, contract, broker-reported exchange order ID, strictly positive numeric average execution price and cumulative trade quantity against reported child filled quantity. It checks current broker net equals *original requested SELL remainder minus that child SELL's fills*, while rejecting other current same-option order/product exposure and previous external SELL fills not in the child ledger.
+
+The order-book and trades do **not** constitute an atomic exchange snapshot. Child GETs are read-only; the broker portfolio GET runs **after** those requests to reduce a stale net observation. Missing or erroneous GETs, duplicate trades, extra pending BUY/SELL, conflicting product, unknown current net, unknown sibling SELL fill count and contradictory terminal/partial quantities fail closed.
+
+Even for an apparently matching completed child, the output is only `BROKER_REPORTED_EXIT_LIFECYCLE_OBSERVATION_NOT_CERTIFIED`, with `brokerFillIndependentlyCertified:false`, `automaticClosureAuthorized:false`, `realisedPnlAuthorized:false`, `duplicateSellRetryAuthorized:false`, `liveNrmlBuyAuthorized:false`, `sourceEndpointsAtomic:false` and `brokerWrites:0`. There is **no automatic reconciliation-to-CLOSED workflow** in this phase. Correct P&L and state reconciliation require a separately reviewed, durable multiple-child/trade/account-wide lifecycle process; a matching price in a single broker packet is not enough.
+
+**SUPERADMIN-only** `POST /api/ema15m/live-exit-fill-review` accepts `positionId` and `expectedAccountId`, verifies one local `EXIT_PENDING` journal, matching broker connected account and persisted child ID, and uses only the read-only Upstox order details, child trades, ordinary orderbook and exact unique broker-net query. It refuses a position with already-recorded partial SELL fills because the original submitted child quantity may have changed in the local cumulative ledger; it does not reconstruct quantity from a mutable number. Responses expose only fixed redacted reason codes, bounded counts and flags. No account ID, instrument key, original quote, exchange/order/trade ID, access token or raw vendor packet is returned.
+
+## Validation and release
+
+Thirty-one new offline synthetic Phase98 tests cover false COMPLETE/FILLED placement ACK, unknown/malformed response, static live-path non-closure invariant, partial/zero/full child fills, mismatched orders, duplicate trade IDs, wrong contract/side/product/venue reference, terminal status contradictions, stale net, other outstanding SELL/BUY, missing historical sibling fill quantities, bad execution price, unavailable GET and zero broker writes. Prior Phase79–97 focused suite expected **291** cases; Phase98 dedicated total expects **322 tests**, subject to exact CI confirmation. Dedicated Node22 TypeScript/test gate, Phase50–98 focused research, EMA15M invariant-safety/full regression and production build must pass independently before any merge consideration.
+
+Release blockers #17–22 remain unresolved, especially issue #20: genuine broker-native protective SELL/GTT **child exchange ACK with covered quantity and time-ordered lifecycle**, partial/cancel/unknown-ACK/restart/overnight gap nonfills, licensed original native 1W–8W option BID/ASK/depth with client receipts, official exchange expiry/session master, untouched multi-regime option OOS, operational account-wide capital/risk controls, regulatory and manual human release review. This phase does **not** prove profitability, automatic closure safety or real stop execution.
+
+**Keep the PR DRAFT and unmerged. Live NRML BUY order routing remains blocked; positional NRML never receives an automatic 15:15 square-off.**
