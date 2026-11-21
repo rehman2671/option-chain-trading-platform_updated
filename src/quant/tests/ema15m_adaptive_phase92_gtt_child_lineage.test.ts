@@ -160,7 +160,12 @@ describe('Phase92 GTT STOPLOSS to exchange child order lineage (read-only)',()=>
     e.trades=[{order_id:'CHILD-ORDER-1',order_ref_id:req.gttOrderId,
       exchange_order_id:'EXCHANGE-ORDER-1',instrument_token:req.instrumentKey,
       product:'D',transaction_type:'SELL',trade_id:'TRADE-1',quantity:50}];
+    // Phase93: 50 units executed from the original 100 long; present
+    // broker net must be 50, NOT the original opening 100.
+    e.positions=[{...position(),net_quantity:'50'}];
+    e.orderBook=[{...order(),filled_quantity:50,pending_quantity:50}];
     const r=review(e);neverRelease(r);
+    assert.equal(r.brokerReportedNetPositionMatchesExecutedSellRemainder,true);
     assert.equal(r.status,'OBSERVED_BROKER_CHILD_EXCHANGE_REFERENCE_NOT_RELEASE');
     assert.equal(r.brokerReportedChildFilledQuantity,50);
   });

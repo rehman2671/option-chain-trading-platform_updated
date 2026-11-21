@@ -46,6 +46,9 @@ export interface GttChildReviewReport{
   brokerReportedExchangeOrderIdObserved:boolean;
   brokerReportedChildFilledQuantity:number;
   brokerReportedNetLongQuantityMatches:boolean;
+  /** Broker-reported remaining net quantity equals original long minus
+   * uniquely reconciled SELL fills; NOT independently atomic/verified. */
+  brokerReportedNetPositionMatchesExecutedSellRemainder:boolean;
   exactGttToChildReferenceMatched:boolean;
   independentExchangeChildAckCertified:false;
   stopFillGuaranteed:false;
@@ -65,6 +68,8 @@ const result=(status:Status,reasons:string[],
   brokerReportedChildFilledQuantity:typeof data.brokerReportedChildFilledQuantity==='number'?
     data.brokerReportedChildFilledQuantity:0,
   brokerReportedNetLongQuantityMatches:data.brokerReportedNetLongQuantityMatches===true,
+  brokerReportedNetPositionMatchesExecutedSellRemainder:
+    data.brokerReportedNetPositionMatchesExecutedSellRemainder===true,
   exactGttToChildReferenceMatched:data.exactGttToChildReferenceMatched===true,
   independentExchangeChildAckCertified:false,
   stopFillGuaranteed:false,fullAccountRiskReconciled:false,
@@ -108,17 +113,43 @@ export function auditNrmlGttChildLineage(
   const reasons:string[]=[];
   const matching=e.positions.filter((x:unknown)=>
     record(x)&&x.instrument_token===req.instrumentKey&&x.product==='D');
-  if(matching.length!==1||!record(matching[0])||
-     Number(matching[0].net_quantity)!==req.expectedLongQuantity){
-    reasons.push('BROKER_NRML_NET_POSITION_QUANTITY_NOT_MATCHED');
-  }else data.brokerReportedNetLongQuantityMatches=true;
+  const rawNet=matching.length===1&&record(matching[0])
+    ?matching[0].net_quantity:undefined;
+  // Avoid Number(null)==0, Number('')==0, exponents, fractions, NaN
+  // or ambiguous duplicated position rows masquerading as net exposure.
+  const parseNet=(x:unknown):number|null=>{
+    if(typeof x==='number')return Number.isSafeInteger(x)&&x>=0?x:null;
+    if(typeof x==='string'&&/^(?:0|[1-9][0-9]*)$/.test(x)){
+      const n=Number(x);return Number.isSafeInteger(n)?n:null;
+    }
+    return null;
+  };
+  const observedNet=parseNet(rawNet);
   if(e.positions.some((x:unknown)=>record(x)&&
      x.instrument_token===req.instrumentKey&&x.product!=='D'))
     reasons.push('OTHER_PRODUCT_EXPOSURE_ON_SAME_INSTRUMENT');
+  // Evaluate at 0 for an untriggered GTT; after any real SELL,
+  // original-long is NOT the current expected position anymore.
+  const reconcileNetAfterSell=(filled:unknown):void=>{
+    if(!integer(filled)||filled>req.expectedLongQuantity){
+      reasons.push('SELL_FILLED_QUANTITY_OUTSIDE_ORIGINAL_LONG_EXPOSURE');
+      return;
+    }
+    const remaining=req.expectedLongQuantity-filled;
+    if(matching.length!==1||observedNet===null){
+      reasons.push('BROKER_NRML_NET_POSITION_QUANTITY_UNKNOWN_OR_DUPLICATED');
+    }else if(observedNet!==remaining){
+      reasons.push('BROKER_NRML_NET_QUANTITY_DISAGREES_WITH_EXECUTED_SELL_REMAINDER');
+    }else{
+      data.brokerReportedNetLongQuantityMatches=true;
+      data.brokerReportedNetPositionMatchesExecutedSellRemainder=true;
+    }
+  };
   const stopStatus=upper(leg.status),id=leg.order_id;
   const scheduled=new Set(['SCHEDULED','PENDING']);
   const childStates=new Set(['TRIGGERED','OPEN','COMPLETED']);
   if((id===null||id===undefined)&&scheduled.has(stopStatus)){
+    reconcileNetAfterSell(0);
     data.scheduledWithoutGeneratedOrder=true;
     reasons.push('GTT_SCHEDULED_BROKER_SIDE_NO_EXCHANGE_CHILD');
     return result(reasons.length>1?'CHILD_LINEAGE_CONFLICT':
@@ -156,13 +187,29 @@ export function auditNrmlGttChildLineage(
   if(!integer(fill)||!integer(pending)||!integer(qty)||fill>qty||
      pending>qty||fill+pending>qty){
     reasons.push('CHILD_FILLED_PENDING_QUANTITY_INCONSISTENT');
-  }else data.brokerReportedChildFilledQuantity=fill;
+  }else{
+    data.brokerReportedChildFilledQuantity=fill;
+    if(['OPEN','TRIGGER PENDING','PARTIALLY FILLED','COMPLETE',
+        'COMPLETED'].includes(status)&&fill+pending!==qty)
+      reasons.push('NONTERMINAL_CHILD_FILLED_PLUS_PENDING_NOT_EQUAL_TO_ORDER_QUANTITY');
+    if((status==='PARTIALLY FILLED'&&(fill===0||pending===0))||
+       (['COMPLETE','COMPLETED'].includes(status)&&
+        (fill!==qty||pending!==0)))
+      reasons.push('CHILD_ORDER_STATUS_DISAGREES_WITH_EXECUTED_REMAINING_QUANTITY');
+  }
+  reconcileNetAfterSell(fill);
   const book=e.orderBook.filter((x:unknown)=>record(x)&&x.order_id===id);
   if(book.length!==1||!record(book[0])||
      book[0].instrument_token!==req.instrumentKey||
      book[0].product!=='D'||upper(book[0].transaction_type)!=='SELL'||
      book[0].order_ref_id!==req.gttOrderId||
-     !integer(book[0].quantity)||book[0].quantity!==qty){
+     book[0].exchange_order_id!==o.exchange_order_id||
+     !integer(book[0].quantity)||book[0].quantity!==qty||
+     !integer(book[0].filled_quantity)||book[0].filled_quantity!==fill||
+     !integer(book[0].pending_quantity)||book[0].pending_quantity!==pending||
+     upper(book[0].status)!==status){
+    // Order details and order book may be fetched at different instants.
+    // Any contradictory lifecycle is UNKNOWN (not a reconciled fill).
     reasons.push('CHILD_ORDER_DETAILS_CONTRADICT_CURRENT_BROKER_ORDER_BOOK');
   }
   // Trade book is a current-day broker observation, not a signed clearing
@@ -220,9 +267,13 @@ export async function reviewNrmlGttChildReadOnly(
     return result('BROKER_SOURCE_INCOMPLETE',['REQUIRED_BROKER_READ_METHOD_UNAVAILABLE']);
   let gtt:unknown,positions:unknown,orderBook:unknown;
   try{
-    [gtt,positions,orderBook]=await Promise.all([
-      broker.getGttOrderDetails(request.gttOrderId),
-      broker.getVerifiedNrmlPositionRows(),broker.getOrderBook()
+    // First read the parent GTT and broker order book. If it has
+    // generated a child, retrieve the exact child/trades BEFORE asking
+    // for the CURRENT net portfolio quantity. Concurrent position reads
+    // can predate a partial SELL and make stale 100-lot exposure seem
+    // consistent with a just-observed 50-lot fill.
+    [gtt,orderBook]=await Promise.all([
+      broker.getGttOrderDetails(request.gttOrderId),broker.getOrderBook()
     ]);
   }catch{return result('BROKER_SOURCE_INCOMPLETE',['BROKER_READ_ONLY_SOURCE_TRANSPORT_ERROR']);}
   const linked=uniqueGttStop(gtt,request);
@@ -237,6 +288,14 @@ export async function reviewNrmlGttChildReadOnly(
       return result('BROKER_SOURCE_INCOMPLETE',['BROKER_CHILD_DETAILS_OR_TRADES_TRANSPORT_ERROR'],
         {parentGttFound:true,generatedChildOrderIdObserved:true});
     }
+  }
+  try{
+    // Starting this read after child/trades reduces (but cannot eliminate)
+    // non-atomic point-in-time position/order disagreement. Never retry to
+    // manufacture a match.
+    positions=await broker.getVerifiedNrmlPositionRows();
+  }catch{
+    return result('BROKER_SOURCE_INCOMPLETE',['BROKER_LATEST_NET_POSITION_READ_FAILED']);
   }
   return auditNrmlGttChildLineage(request,{
     connected:true,connectedAccountId:auth.userId,
