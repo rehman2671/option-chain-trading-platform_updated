@@ -367,4 +367,32 @@ describe('Phase80 owner-private file-backed original option L1 intake (offline o
     assert.equal(r.actualOptionEntryOrExitFillVerified,false);
     assert.equal(r.productionSafe,false);
   });
+
+  it('Phase89 private original L1 review reports first bounded opening zero-BID blackout after later recovery, without leaking source bytes',()=>{
+    const f=fixture(),friday='2026-11-20',monday='2026-11-23',
+      peakAt=ist(friday,10,0),firstAt=ist(monday,9,15),
+      recoveryAt=ist(monday,9,16);
+    f.input.phase79.declaredSessions.push({sessionDate:monday,
+      openAt:ist(monday,9,15),closeAt:ist(monday,15,30)});
+    const extra=[
+      ['RAW-P89-PEAK','2','OPT1H0CE',peakAt,peakAt,'170','171','100','100'],
+      ['RAW-P89-FIRST-ZERO','1','OPT1H0CE',firstAt,firstAt,'0','121','0','100'],
+      ['RAW-P89-RECOVERY','2','OPT1H0CE',recoveryAt,recoveryAt,'120','121','100','100']
+    ];
+    f.input.phase79.originalNativeL1Csv=Buffer.concat([
+      f.input.phase79.originalNativeL1Csv,
+      Buffer.from(extra.map(row=>row.join(',')).join('\n')+'\n')
+    ]);
+    f.repin();
+    const r=audit(f);neverTrading(r);
+    assert.equal(r.entryPairsWithFirstBoundedNextOpenIlliquidBid,1);
+    assert.equal(r.entryPairsMissingBoundedNextOpenAfterNewArmedPeak,1);
+    assert.equal(r.claimedRegimeCells.reduce((n,c)=>
+      n+c.entryClaimedPairsWithFirstBoundedNextOpenIlliquidBid,0),1);
+    assert.ok(!JSON.stringify(r).includes('OPT1H0CE'));
+    assert.ok(!JSON.stringify(r).includes('RAW-P89-FIRST-ZERO'));
+    assert.ok(!JSON.stringify(r).includes('2026-11-23'));
+    assert.equal(r.actualOptionEntryOrExitFillVerified,false);
+    assert.equal(r.productionSafe,false);
+  });
 });
