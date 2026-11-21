@@ -14,6 +14,8 @@ import type { EmaLiveOrderAttempt, EmaLivePosition, EmaExecutionEvent } from './
 import {assessDurableSellEvidenceReplay,
   type PreparedSellChild,type PreparedSellTrade
 } from './engine/ema15m/adaptiveDurableSellChildEvidence.js';
+import type {PreparedBuyTradeEvidence} from
+  './engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
 
 export interface MigrationReport {
@@ -2347,6 +2349,42 @@ class DatabaseEngine {
         "INSERT INTO schema_migrations (version, description) VALUES (20, 'Immutable EMA live SELL child observations and unique trade-ID broker evidence')"
       ).run();
       console.log('DatabaseEngine: Applied Migration 020 - Append-only broker SELL evidence; no automatic settlement.');
+    }
+
+    // Migration 021: one original fully-filled BUY receipt per position,
+    // with immutable unique individual broker-reported trade executions.
+    // This never mutates live positions or realised P&L.
+    if(!appliedVersions.has(21)){
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_entry_buy_receipts (
+          position_id TEXT PRIMARY KEY,
+          broker_account_id TEXT NOT NULL,
+          attempt_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          instrument_key TEXT NOT NULL,
+          product_type TEXT NOT NULL CHECK(product_type IN ('MIS','NRML')),
+          exchange_order_id TEXT NOT NULL,
+          original_quantity INTEGER NOT NULL CHECK(original_quantity > 0),
+          reported_average_price REAL NOT NULL CHECK(reported_average_price > 0),
+          trade_count INTEGER NOT NULL CHECK(trade_count > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(broker_account_id,broker_order_id)
+        );
+        CREATE TABLE IF NOT EXISTS ema_entry_buy_trade_receipts (
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_trade_id TEXT NOT NULL,
+          exchange_order_id TEXT NOT NULL,
+          reported_quantity INTEGER NOT NULL CHECK(reported_quantity > 0),
+          reported_price REAL NOT NULL CHECK(reported_price > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(position_id,broker_order_id,broker_trade_id)
+        );
+      `);
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version,description) VALUES (21,'Immutable original EMA BUY child and per-trade broker receipts')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 021 - Immutable original BUY receipts only, no settlement.');
     }
 
     // Safeguard: Ensure all modern columns exist on ema_notification_settings
