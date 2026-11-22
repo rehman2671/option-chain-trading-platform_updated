@@ -23,6 +23,33 @@ const price=(x:unknown):x is number=>
   Number.isSafeInteger(Math.round(x*100))&&
   Math.abs(x*100-Math.round(x*100))<0.00001;
 const upper=(x:unknown)=>typeof x==='string'?x.trim().toUpperCase():'';
+/** Upstox order-trades may expose an older numeric instrument_token.
+ * Never derive its F&O instrument key from numeric suffixes; only
+ * corroborate a *single exact child order* across independent Upstox
+ * GET surfaces. This is descriptive broker lineage, NOT mapping
+ * certified by an exchange/security master. */
+const legacyTradeToken=(x:unknown):x is string=>
+  typeof x==='string'&&/^[0-9]{1,32}$/.test(x);
+const brokerSymbol=(x:unknown):x is string=>
+  typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
+const legacyTradeCorroborated=(scope:TriggeredSellGttScope,
+  parent:Row,order:Row,trade:Row):boolean=>{
+  if(!legacyTradeToken(trade.instrument_token))return false;
+  const venue=scope.instrumentKey.startsWith('NSE_FO|')?'NFO':'BFO';
+  const gttVenue=venue==='NFO'?'NSE_FO':'BSE_FO';
+  if(parent.exchange!==gttVenue||order.exchange!==venue||
+     trade.exchange!==venue||upper(trade.order_type)!=='LIMIT'||
+     order.order_id!==trade.order_id||
+     order.exchange_order_id!==trade.exchange_order_id||
+     order.order_ref_id!==scope.gttOrderId)return false;
+  const os=order.trading_symbol,ts=trade.trading_symbol;
+  if(!brokerSymbol(os)||!brokerSymbol(ts)||os!==ts)return false;
+  if(order.tradingsymbol!==undefined&&
+     order.tradingsymbol!==os)return false;
+  if(trade.tradingsymbol!==undefined&&
+     trade.tradingsymbol!==ts)return false;
+  return true;
+};
 const net=(x:unknown):number|null=>{
   if(nonnegative(x))return x;
   if(typeof x==='string'&&/^(?:0|[1-9][0-9]*)$/.test(x)){
@@ -68,6 +95,8 @@ export interface TriggeredSellGttReport{
   brokerReportedSellExecutionCount:number;
   brokerReportedGeneratedChildIsLimit:boolean;
   brokerReportedExchangeOrderIdObserved:boolean;
+  brokerReportedLegacyTradeTokenCorroborated:boolean;
+  legacyNumericInstrumentTokenIndependentlyMapped:false;
   brokerReportedFlatAfterGeneratedChild:boolean;
   sameBrokerSessionAcrossPasses:boolean;
   quantityWithoutIndependentProtectiveAck:number|null;
@@ -95,6 +124,7 @@ type Data=Partial<Pick<TriggeredSellGttReport,
   'brokerReportedChildPendingSellQuantity'|'brokerReportedSellExecutionCount'|
   'brokerReportedGeneratedChildIsLimit'|
   'brokerReportedExchangeOrderIdObserved'|
+  'brokerReportedLegacyTradeTokenCorroborated'|
   'brokerReportedFlatAfterGeneratedChild'|
   'sameBrokerSessionAcrossPasses'|
   'quantityWithoutIndependentProtectiveAck'>>;
@@ -114,6 +144,9 @@ const report=(state:TriggeredSellGttState,reasons:string[],
     d.brokerReportedGeneratedChildIsLimit===true,
   brokerReportedExchangeOrderIdObserved:
     d.brokerReportedExchangeOrderIdObserved===true,
+  brokerReportedLegacyTradeTokenCorroborated:
+    d.brokerReportedLegacyTradeTokenCorroborated===true,
+  legacyNumericInstrumentTokenIndependentlyMapped:false,
   brokerReportedFlatAfterGeneratedChild:
     d.brokerReportedFlatAfterGeneratedChild===true,
   sameBrokerSessionAcrossPasses:d.sameBrokerSessionAcrossPasses===true,
@@ -239,17 +272,21 @@ export function auditTriggeredSingleSellGttChild(
     return report('GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT',
       ['GENERATED_SELL_TRADE_HISTORY_POSSIBLY_TRUNCATED'],base);
   const seen=new Set<string>();let filled=0;
+  let observedLegacyTradeToken=false;
   for(const t of s.childTrades){
     if(!obj(t)||!ident(t.trade_id)||seen.has(t.trade_id)||
        t.order_id!==p.childId||
        t.exchange_order_id!==o.exchange_order_id||
-       t.instrument_token!==scope.instrumentKey||
+       (t.instrument_token!==scope.instrumentKey&&
+        !legacyTradeCorroborated(scope,p.parent,o,t))||
        t.product!=='D'||upper(t.transaction_type)!=='SELL'||
        !positive(t.quantity)||!price(t.average_price)||
        (t.order_ref_id!==undefined&&t.order_ref_id!==null&&
         t.order_ref_id!==scope.gttOrderId))
       return report('GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT',
         ['BROKER_GENERATED_SELL_TRADE_ID_EXCHANGE_SCOPE_OR_PRICE_CONFLICT'],base);
+    if(legacyTradeToken(t.instrument_token))
+      observedLegacyTradeToken=true;
     seen.add(t.trade_id);filled+=t.quantity;
     if(!nonnegative(filled))
       return report('GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT',
@@ -305,7 +342,8 @@ export function auditTriggeredSingleSellGttChild(
   return report('BROKER_REPORTED_GTT_SELL_CHILD_NOT_PROTECTIVE_STOP',[
     'BROKER_GENERATED_LIMIT_SELL_CHILD_IS_NOT_NATIVE_PROTECTIVE_STOP',
     'GTT_CHILD_BROKER_REPORTED_EXCHANGE_REF_NOT_INDEPENDENT_VENUE_ACK',
-    'CURRENT_DAY_EXECUTIONS_CANNOT_CERTIFY_MULTIWEEK_ACCOUNT_HISTORY'
+    'CURRENT_DAY_EXECUTIONS_CANNOT_CERTIFY_MULTIWEEK_ACCOUNT_HISTORY',
+    'LEGACY_NUMERIC_TRADE_TOKEN_CORROBORATION_IS_NOT_CONTRACT_MAPPING'
   ],{
     ...base,brokerReportedSellFilledQuantity:filled,
     brokerReportedRemainingLongQuantity:current,
@@ -313,6 +351,7 @@ export function auditTriggeredSingleSellGttChild(
     brokerReportedSellExecutionCount:seen.size,
     brokerReportedGeneratedChildIsLimit:true,
     brokerReportedExchangeOrderIdObserved:true,
+    brokerReportedLegacyTradeTokenCorroborated:observedLegacyTradeToken,
     brokerReportedFlatAfterGeneratedChild:current===0,
     quantityWithoutIndependentProtectiveAck:current
   });
