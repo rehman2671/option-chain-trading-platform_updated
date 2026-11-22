@@ -1,0 +1,37 @@
+name: Adaptive Phase110 existing NRML DAY SL/SL-M broker observation read-only
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  existing-day-stop-no-overnight-ack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Static TypeScript
+        run: npm run lint
+      - name: Phase110 DAY SL direct existing SELL and prior NRML safety regressions
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase110_existing_nrml_day_stop.test.ts \
+            src/quant/tests/ema15m_adaptive_phase109_gtt_entry_buy_provenance.test.ts \
+            src/quant/tests/ema15m_adaptive_phase108_gtt_two_pass_drift.test.ts \
+            src/quant/tests/ema15m_adaptive_phase107_gtt_broker_auth_epoch.test.ts \
+            src/quant/tests/ema15m_adaptive_phase94_nrml_competing_orders.test.ts \
+            src/quant/tests/ema15m_adaptive_phase93_nrml_stop_fill_position_conservation.test.ts \
+            src/quant/tests/ema15m_adaptive_phase92_gtt_child_lineage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase101_original_buy_trade_receipts.test.ts
