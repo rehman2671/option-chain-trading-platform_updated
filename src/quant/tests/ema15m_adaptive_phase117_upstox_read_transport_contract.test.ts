@@ -265,7 +265,7 @@ describe('Phase117 real Upstox provider native GET transport fail-closed contrac
         const r=auditSingleSellGttRestartQuarantine({
           expectedAccountId:account,instrumentKey:option,
           originalBuyOrderId:'PH117-ORIGINAL-BUY',
-          gttOrderId,originalLongQuantity:100,lotSize:50
+          gttOrderId:gttId,originalLongQuantity:100,lotSize:50
         },snapshot);
         assert.equal(r.state,'BROKER_NATIVE_GET_SOURCE_INCOMPLETE');
         assert.equal(r.duplicateSellRetryAuthorized,false);
