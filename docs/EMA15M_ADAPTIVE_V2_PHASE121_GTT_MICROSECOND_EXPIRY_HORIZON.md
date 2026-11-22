@@ -27,7 +27,9 @@ sample test should claim actual F&O expiry eligibility.
 
 `adaptiveNrmlGttExpiryHorizonReadOnlyAudit.ts` accepts a
 single original NRML `NSE_FO|`/`BSE_FO|` option, exact
-SINGLE `ENTRY SELL BELOW` GTT, externally supplied
+SINGLE `ENTRY SELL BELOW` GTT with **broker exchange matching
+the option-key segment** and a **finite, positive trigger price**,
+externally supplied
 contract-expiry UTC, explicit evaluated-at UTC and selected
 1/2/4/8W calendar horizon. Strict canonical ISO milliseconds
 UTC input: `YYYY-MM-DDTHH:mm:ss.sssZ`; impossible or
@@ -37,8 +39,10 @@ require safe Unix microseconds in 2000..2100 and
 
 It records only **broker-reported temporal comparisons**,
 never a release authority:
-- Missing/wrong contract/GTT or missing/reversed/millisecond/
-  seconds/nanosecond timestamps -> unknown/reject.
+- Missing/wrong contract/GTT, exchange inconsistent with the exact
+  option-key segment, absent/nonfinite/nonpositive trigger price,
+  or missing/reversed/millisecond/seconds/nanosecond timestamps
+  -> unknown/reject.
 - Broker created after evaluation clock, or GTT already
   expired at review -> expired/inconsistent.
 - Even with future expiry, only an exact `SCHEDULED` ENTRY SELL
