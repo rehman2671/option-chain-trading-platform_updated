@@ -273,6 +273,18 @@ export function auditTriggeredSingleSellGttChild(
       ['GENERATED_SELL_TRADE_HISTORY_POSSIBLY_TRUNCATED'],base);
   const seen=new Set<string>();let filled=0;
   let observedLegacyTradeToken=false;
+  const expectedTradeVenue=scope.instrumentKey.startsWith('NSE_FO|')?
+    'NFO':'BFO';
+  const expectedGttVenue=expectedTradeVenue==='NFO'?'NSE_FO':'BSE_FO';
+  // Optional native exchange/symbol fields must never contradict the
+  // exact GTT option's broker-reported F&O venue, even when trade has
+  // a modern exact instrument key. Absence is handled by the existing
+  // exact modern-token requirement or strict numeric legacy branch.
+  if((p.parent.exchange!==undefined&&
+      p.parent.exchange!==expectedGttVenue)||
+     (o.exchange!==undefined&&o.exchange!==expectedTradeVenue))
+    return report('GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT',
+      ['GTT_CHILD_BROKER_EXCHANGE_SEGMENT_CONTRADICTS_OPTION'],base);
   for(const t of s.childTrades){
     if(!obj(t)||!ident(t.trade_id)||seen.has(t.trade_id)||
        t.order_id!==p.childId||
@@ -280,6 +292,12 @@ export function auditTriggeredSingleSellGttChild(
        (t.instrument_token!==scope.instrumentKey&&
         !legacyTradeCorroborated(scope,p.parent,o,t))||
        t.product!=='D'||upper(t.transaction_type)!=='SELL'||
+       (t.exchange!==undefined&&t.exchange!==expectedTradeVenue)||
+       (t.order_type!==undefined&&upper(t.order_type)!=='LIMIT')||
+       (o.trading_symbol!==undefined&&t.trading_symbol!==undefined&&
+        o.trading_symbol!==t.trading_symbol)||
+       (o.tradingsymbol!==undefined&&t.tradingsymbol!==undefined&&
+        o.tradingsymbol!==t.tradingsymbol)||
        !positive(t.quantity)||!price(t.average_price)||
        (t.order_ref_id!==undefined&&t.order_ref_id!==null&&
         t.order_ref_id!==scope.gttOrderId))
