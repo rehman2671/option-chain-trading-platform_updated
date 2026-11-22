@@ -712,7 +712,7 @@ export class UpstoxProvider implements IMarketDataProvider {
   public async getHistoricalFoTradesPage(
     startDate:string,endDate:string,pageNumber:number,pageSize:number
   ):Promise<unknown|null>{
-    const date=/^\\d{4}-\\d{2}-\\d{2}$/;
+    const date=/^\d{4}-\d{2}-\d{2}$/;
     if(!this.isConnected||!this.accessToken||
        !date.test(startDate)||!date.test(endDate)||
        !Number.isSafeInteger(pageNumber)||pageNumber<1||pageNumber>20||
