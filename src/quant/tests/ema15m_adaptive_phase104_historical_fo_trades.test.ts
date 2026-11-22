@@ -305,6 +305,9 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
     assert.ok(begin>0&&end>begin);
     const fn=provider.slice(begin,end);
     assert.ok(fn.includes('v2/charges/historical-trades'));
+    // Prevent accidental double-escaping: every real YYYY-MM-DD query
+    // would otherwise be rejected before the Upstox read-only GET.
+    assert.ok(fn.includes(String.raw`const date=/^\d{4}-\d{2}-\d{2}$/;`));
     assert.ok(fn.includes("segment:'FO'"));
     assert.ok(!fn.includes('POST'));
     const server=readFileSync('serverApp.ts','utf8');
