@@ -74,6 +74,9 @@ receipt, actual broker quantity or fill.
 
 The endpoint gets the original BUY receipt and premium server-side
 from the durable ledger, verifies it matches the NRML position/entry,
+recomputes every original immutable BUY trade ID, exchange reference,
+whole quantity and paise-weighted BUY price against that receipt (bad
+or duplicate trades cannot understate the indicative risk), then
 pins the authenticated Upstox account and local auth epoch, performs
 two independent read-only position/orderbook/GTT censuses, optionally
 runs Phase110's two-pass existing DAY SL/SL-M review, and rejects
