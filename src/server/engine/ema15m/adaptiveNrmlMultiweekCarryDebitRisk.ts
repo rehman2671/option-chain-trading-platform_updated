@@ -162,6 +162,39 @@ const valid=(s:MultiweekNrmlCarryScope)=>!!s&&
     (id(s.inspectedDayStopOrderId)&&
      s.inspectedDayStopOrderId!==s.originalBuyOrderId));
 
+/**
+ * Confirm that the immutable local BUY receipt supports the indicative
+ * opening debit. The persisted journal is not an independent clearing
+ * receipt; bad/missing/duplicate trades cannot be used to size risk.
+ */
+export function immutableOriginalDebitMatchesReceipt(input:{
+  originalQuantity:unknown;
+  entryUnitPremiumINR:unknown;
+  exchangeOrderId:unknown;
+  tradeCount:unknown;
+  trades:unknown;
+}):boolean{
+  if(!input||!positive(input.originalQuantity)||
+     !id(input.exchangeOrderId)||
+     !positive(input.tradeCount)||input.tradeCount>5000||
+     !Array.isArray(input.trades)||
+     input.trades.length!==input.tradeCount||
+     paise(input.entryUnitPremiumINR)===null)return false;
+  const observed=new Set<string>();let sum=0,totalPaise=0;
+  for(const t of input.trades){
+    if(!row(t)||!id(t.tradeId)||observed.has(t.tradeId)||
+       t.exchangeOrderId!==input.exchangeOrderId||
+       !positive(t.quantity)||paise(t.price)===null)return false;
+    observed.add(t.tradeId);
+    sum+=t.quantity;
+    totalPaise+=t.quantity*paise(t.price)!;
+    if(!Number.isSafeInteger(sum)||!Number.isSafeInteger(totalPaise))
+      return false;
+  }
+  return sum===input.originalQuantity&&
+    Math.abs(Math.round(totalPaise/sum)-
+      paise(input.entryUnitPremiumINR)!)<=1;
+}
 const inactive=new Set(['COMPLETE','COMPLETED','CANCELLED',
   'CANCELED','REJECTED','EXPIRED','FAILED']);
 export function reviewMultiweekNrmlCarryDebitRisk(
