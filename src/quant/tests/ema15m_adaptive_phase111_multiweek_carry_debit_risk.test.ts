@@ -1,7 +1,7 @@
 import {describe,it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {reviewMultiweekNrmlCarryDebitRisk,
+import {immutableOriginalDebitMatchesReceipt,reviewMultiweekNrmlCarryDebitRisk,
   type MultiweekNrmlCarryScope,
   type MultiweekNrmlCarryEvidence,
   type MultiweekNrmlCarryReport
@@ -290,5 +290,54 @@ describe('Phase111 read-only NRML 1W–8W calendar carry and debit-at-risk',()=>
       'modifyOrder(','placeGttOrder(','saveEmaLivePosition(',
       'updateEmaLivePosition(','squareOff('])
       assert.equal(block.includes(forbidden),false,forbidden);
+  });
+});
+
+describe('Phase111 original BUY receipt weighted-debit integrity',()=>{
+  const witness=()=>({
+    originalQuantity:100,entryUnitPremiumINR:120.25,
+    exchangeOrderId:'PH111-BUY-EXCHANGE',tradeCount:2,
+    trades:[
+      {tradeId:'PH111-ENTRY-T1',exchangeOrderId:'PH111-BUY-EXCHANGE',
+        quantity:50,price:100},
+      {tradeId:'PH111-ENTRY-T2',exchangeOrderId:'PH111-BUY-EXCHANGE',
+        quantity:50,price:140.5}
+    ]
+  });
+  it('two unique whole BUY trade receipts reconcile exactly to opening premium',()=>{
+    assert.equal(immutableOriginalDebitMatchesReceipt(witness()),true);
+  });
+  it('duplicate immutable trade ID, replay and missing trade reject debit math',()=>{
+    const a=witness();a.trades[1].tradeId=a.trades[0].tradeId;
+    assert.equal(immutableOriginalDebitMatchesReceipt(a),false);
+    const b=witness();b.trades.pop();
+    assert.equal(immutableOriginalDebitMatchesReceipt(b),false);
+    const c=witness();c.trades[1].quantity=49;
+    assert.equal(immutableOriginalDebitMatchesReceipt(c),false);
+  });
+  it('wrong exchange-order reference or price disagreement cannot reduce reported risk',()=>{
+    for(const edit of [
+      {exchangeOrderId:'PH111-OTHER-EXCHANGE'},
+      {price:130},
+      {price:140.505},
+      {quantity:0}
+    ]){
+      const a=witness();
+      a.trades[1]={...a.trades[1],...edit};
+      assert.equal(immutableOriginalDebitMatchesReceipt(a),false);
+    }
+  });
+  it('untrusted source/overflow/invalid price/broker receipts reject risk',()=>{
+    for(const x of [
+      {...witness(),tradeCount:3},
+      {...witness(),tradeCount:0},
+      {...witness(),entryUnitPremiumINR:0},
+      {...witness(),entryUnitPremiumINR:120.255},
+      {...witness(),exchangeOrderId:''},
+      {...witness(),trades:null},
+      {...witness(),originalQuantity:9007199254740000}
+    ]){
+      assert.equal(immutableOriginalDebitMatchesReceipt(x),false);
+    }
   });
 });
