@@ -461,6 +461,8 @@ export async function reviewTriggeredSingleSellGttTwoPassReadOnly(
     brokerReportedSellExecutionCount:b.brokerReportedSellExecutionCount,
     brokerReportedGeneratedChildIsLimit:true,
     brokerReportedExchangeOrderIdObserved:true,
+    brokerReportedLegacyTradeTokenCorroborated:
+      b.brokerReportedLegacyTradeTokenCorroborated,
     brokerReportedFlatAfterGeneratedChild:
       b.brokerReportedFlatAfterGeneratedChild,
     sameBrokerSessionAcrossPasses:true,
