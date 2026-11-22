@@ -38,6 +38,8 @@ import {
 } from './src/server/engine/ema15m/adaptiveNrmlBrokerSnapshotAudit.js';
 import {reviewNrmlGttChildReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttChildLineageAudit.js';
+import {reviewNrmlStopLifecycleTwoPassReadOnly} from
+  './src/server/engine/ema15m/adaptiveNrmlStopLifecycleTwoPassReview.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1544,6 +1546,43 @@ async function startServer() {
       expectedAccountId,instrumentKey,gttOrderId,expectedLongQuantity,lotSize
     });
     return res.json(report);
+  });
+
+  // Phase108: SUPERADMIN read-only two-pass NRML GTT/child/position drift.
+  // Multiple GETs are non-atomic; NEVER release live order or settle P&L.
+  app.post('/api/ema15m/nrml-stop-lifecycle-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {expectedAccountId,instrumentKey,gttOrderId,
+      expectedLongQuantity,lotSize}=req.body||{};
+    if(typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128||
+       typeof instrumentKey!=='string'||instrumentKey.length<1||
+       instrumentKey.length>256||
+       typeof gttOrderId!=='string'||
+       !/^GTT-[A-Za-z0-9-]{1,240}$/.test(gttOrderId)||
+       !Number.isSafeInteger(expectedLongQuantity)||expectedLongQuantity<=0||
+       !Number.isSafeInteger(lotSize)||lotSize<=0||
+       expectedLongQuantity%lotSize!==0)
+      return res.status(400).json({
+        error:'Exact broker account, NRML option, GTT and lot-multiple quantity are required.'
+      });
+    try{
+      const report=await reviewNrmlStopLifecycleTwoPassReadOnly(
+        activeProvider as any,{
+          expectedAccountId,instrumentKey,gttOrderId,
+          expectedLongQuantity,lotSize
+        });
+      return res.json(report);
+    }catch{
+      // Do not expose broker token, order identifiers or network errors.
+      return res.status(503).json({
+        state:'GTT_OR_CHILD_BROKER_SOURCE_INCOMPLETE',
+        reasonCodes:['TWO_PASS_BROKER_OBSERVATIONS_UNAVAILABLE'],
+        independentExchangeChildAckCertified:false,
+        liveNrmlBuyAuthorized:false,brokerWrites:0,localWrites:0
+      });
+    }
   });
 
   // Phase95: durable local NRML position/entry journal against read-only
