@@ -204,6 +204,41 @@ describe('Phase119 exact Upstox native GET cardinality and duplicate-ID quaranti
       await failsIfMalformed('net',rows);
     }
   });
+  it('official Upstox position quantity field maps to read-only net alias',async()=>{
+    const nativeRow={
+      instrument_token:instrument,product:'D',quantity:50
+    };
+    await withOfflineNativeGet(body([nativeRow]),async(p)=>{
+      assert.deepEqual(await p.getVerifiedNrmlPositionRows(),[
+        {...nativeRow,net_quantity:50}
+      ]);
+      assert.equal(await p.getVerifiedLivePositionQuantity(instrument,'NRML'),50);
+      safety();
+    });
+  });
+  it('conflicting quantity vs net_quantity fields are never treated as a long',async()=>{
+    for(const bad of [
+      {...position(),quantity:100},
+      {...position(),quantity:'49'},
+      {...position(),quantity:null},
+      {...position(),quantity:-5},
+      {instrument_token:instrument,product:'D',quantity:'5e1'},
+      {instrument_token:instrument,product:'D'},
+    ]){
+      await failsIfMalformed('positions',[bad]);
+      await failsIfMalformed('net',[bad]);
+    }
+  });
+  it('valid native numeric legacy trade token is unlinked to exact option until independently mapped',async()=>{
+    const legacy={...trade(),instrument_token:'151064324'};
+    await withOfflineNativeGet(body([legacy]),async(p)=>{
+      assert.deepEqual(await p.getOrderTrades(childId),[legacy]);
+      assert.equal(assessEmaLiveProductGate('NRML').allowed,false);
+    });
+    // The Phase113 original F&O key must not be silently inferred from
+    // broker legacy numeric tokens; the diagnostic remains read-only.
+    assert.notEqual(legacy.instrument_token,instrument);
+  });
   it('valid unrelated shorts are allowed in raw rows; target net remains unique',async()=>{
     const other={
       instrument_token:'NSE_FO|PH119-OTHER-PE',
