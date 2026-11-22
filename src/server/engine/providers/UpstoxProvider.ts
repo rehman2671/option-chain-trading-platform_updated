@@ -760,9 +760,13 @@ export class UpstoxProvider implements IMarketDataProvider {
     }catch{return null;}
   }
 
-  /** Individual exchange executions for an order; unavailable is null, not []. */
+  /** Individual broker-reported current-day order executions.
+   * Refuse malformed IDs and unavailable sources; NEVER coerce to [].
+   * A broker trade ID/order ID is sensitive and must not enter logs.
+   */
   public async getOrderTrades(orderId: string): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken || !orderId) return null;
+    if (!this.isConnected || !this.accessToken ||
+        !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
     try {
       const res = await fetch(
         'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
@@ -771,8 +775,9 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
-    } catch (err: any) {
-      console.warn('[UPSTOX] Order trades unavailable for ' + orderId + ':', err?.message || err);
+    } catch {
+      // No order IDs, bearer token, user details or raw broker error in logs.
+      console.warn('[UPSTOX] Read-only order trades unavailable');
       return null;
     }
   }
