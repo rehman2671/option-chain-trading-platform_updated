@@ -44,8 +44,9 @@ import {reviewGttEntryOriginalNrmlBuyReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttEntryBuyProvenance.js';
 import {reviewExistingNrmlDayStopReadOnly} from
   './src/server/engine/ema15m/adaptiveExistingNrmlDayStopReadOnly.js';
-import {reviewMultiweekNrmlCarryDebitRisk} from
-  './src/server/engine/ema15m/adaptiveNrmlMultiweekCarryDebitRisk.js';
+import {
+  reviewMultiweekNrmlCarryDebitRisk,immutableOriginalDebitMatchesReceipt
+} from './src/server/engine/ema15m/adaptiveNrmlMultiweekCarryDebitRisk.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1802,6 +1803,12 @@ async function startServer() {
          receipt.originalQuantity!==p.quantity||
          receipt.product!=='NRML'||
          receipt.tradeCount!==original.originalBuyTrades.length||
+         !immutableOriginalDebitMatchesReceipt({
+           originalQuantity:p.quantity,entryUnitPremiumINR:p.entryPrice,
+           exchangeOrderId:receipt.exchangeOrderId,
+           tradeCount:receipt.tradeCount,
+           trades:original.originalBuyTrades
+         })||
          typeof receipt.brokerReportedAveragePrice!=='number'||
          !Number.isFinite(receipt.brokerReportedAveragePrice)||
          Math.abs(receipt.brokerReportedAveragePrice-p.entryPrice)>0.011)
