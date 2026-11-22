@@ -108,6 +108,7 @@ on:
       - 'research/adaptive-v2-phase105-fo-session-continuity'
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
+      - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
   pull_request:
     branches:
       - main
@@ -217,6 +218,7 @@ on:
       - 'research/adaptive-v2-phase105-fo-session-continuity'
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
+      - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
   workflow_dispatch:
 
 permissions:
