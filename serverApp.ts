@@ -1998,9 +1998,15 @@ async function startServer() {
         ?broker.getLiveConnectionStatus():null;
       if(auth?.isConnected!==true||auth?.userId!==expectedAccountId||
          typeof broker?.getHistoricalFoTradesPage!=='function'||
-         typeof broker?.getVerifiedLivePositionQuantity!=='function')
+         typeof broker?.getVerifiedLivePositionQuantity!=='function'||
+         typeof broker?.getHistoricalFoAuthEpoch!=='function')
         return res.status(503).json({
           error:'Authenticated broker historical FO and native net GETs unavailable.'
+        });
+      const authEpochStart=broker.getHistoricalFoAuthEpoch();
+      if(!Number.isSafeInteger(authEpochStart)||authEpochStart<1)
+        return res.status(503).json({
+          error:'Authenticated broker epoch evidence not available.'
         });
       const before=dbEngine.readEmaJointBuySellEvidence(positionId);
       if(!before.originalBuyReceipt||before.originalBuyTrades.length===0||
@@ -2050,6 +2056,15 @@ async function startServer() {
         exchange,originalBuyQuantity:p.quantity,
         exitedSellQuantity:last.filledQuantity
       },before.originalBuyTrades,before.trades);
+      // Preserve a single local credential generation from history through
+      // the independent native net GET, not just an unchanged account ID.
+      if(broker.getHistoricalFoAuthEpoch()!==authEpochStart)
+        return res.status(409).json({
+          state:'BROKER_AUTH_EPOCH_CHANGED_DURING_READ_ONLY_REVIEW',
+          automaticPositionClosureAuthorized:false,
+          realisedPnlWriteAuthorized:false,liveNrmlBuyAuthorized:false,
+          brokerWrites:0,localWrites:0
+        });
       // Fresh portfolio read follows all historical pagination, never
       // replace a missing exact net with fabricated zero.
       const freshBrokerNetQuantity=await broker.getVerifiedLivePositionQuantity(
@@ -2059,6 +2074,7 @@ async function startServer() {
       const after=dbEngine.readEmaJointBuySellEvidence(positionId);
       if(authAfter?.isConnected!==true||
          authAfter?.userId!==expectedAccountId||
+         broker.getHistoricalFoAuthEpoch()!==authEpochStart||
          JSON.stringify(before)!==JSON.stringify(after))
         return res.status(409).json({
           state:'BROKER_ACCOUNT_OR_DURABLE_LEDGER_CHANGED_DURING_REVIEW',

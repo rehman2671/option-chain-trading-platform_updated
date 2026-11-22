@@ -252,6 +252,7 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
     const calls:string[]=[];
     const all=records();
     const broker={
+      getHistoricalFoAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>{
         calls.push('auth');return {isConnected:true,userId:acct};
       },
@@ -264,11 +265,12 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
     };
     const r=await reviewHistoricalFoTradeHistoryReadOnly(broker,scope,buys,sells);
     locked(r);assert.equal(r.state,'BROKER_REPORTED_MULTIDAY_TRADES_MATCH_NOT_CERTIFIED');
-    assert.deepEqual(calls,['auth','page1','auth','page2','auth']);
+    assert.deepEqual(calls,['auth','auth','auth','page1','auth','auth','page2','auth']);
   });
   it('async adapter denies account mismatch before requesting page one',async()=>{
     let calls=0;
     const broker={
+      getHistoricalFoAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:'PH104-OTHER'}),
       getHistoricalFoTradesPage:async()=>{calls++;return page(records());}
     };
@@ -281,6 +283,7 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
       ...page(records().slice(2),2,3,4)
     }]){
       const broker={
+        getHistoricalFoAuthEpoch:()=>1,
         getLiveConnectionStatus:()=>({isConnected:true,userId:acct}),
         getHistoricalFoTradesPage:async(_:string,__:string,n:number)=>
           n===1?page(records().slice(0,2),1,2,4):second
@@ -291,6 +294,7 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
   });
   it('failed broker GET error never leaks secrets into fixed reason codes',async()=>{
     const broker={
+      getHistoricalFoAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:acct}),
       getHistoricalFoTradesPage:async()=>{
         throw Error('PH104_BEARER_ACCESS_SECRET');
