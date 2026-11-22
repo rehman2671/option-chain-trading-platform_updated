@@ -53,6 +53,8 @@ import {reviewTriggeredSingleSellGttTwoPassReadOnly} from
   './src/server/engine/ema15m/adaptiveExistingNrmlSingleSellGttChildFillReview.js';
 import {reviewSingleSellGttRestartTwoPassReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlMissingGttRestartQuarantine.js';
+import {auditMissingGttHistoricalExitJoin} from
+  './src/server/engine/ema15m/adaptiveNrmlMissingGttHistoricalExitJoin.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -2190,6 +2192,180 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only NRML GTT restart broker census unavailable.'
+      });
+    }
+  });
+
+  // Phase115: only when an existing SINGLE SELL GTT disappeared:
+  // Phase114 current GTT + Phase104 complete historical FO BUY/SELL IDs
+  // + fresh NRML net. No GTT/order writes, CLOSED or P&L.
+  app.post('/api/ema15m/nrml-missing-gtt-historical-sell-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId,gttOrderId}=req.body||{};
+    const idOk=(x:unknown)=>typeof x==='string'&&
+      /^[A-Za-z0-9_-]{1,128}$/.test(x);
+    if(!idOk(positionId)||!idOk(expectedAccountId)||
+       typeof gttOrderId!=='string'||
+       !/^GTT-[A-Za-z0-9-]{1,124}$/.test(gttOrderId))
+      return res.status(400).json({
+        error:'Exact durable NRML position, broker account and missing GTT id required.'
+      });
+    try{
+      const positions=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(positions.length!==1||positions[0].status!=='EXIT_PENDING'||
+         positions[0].productType!=='NRML'||
+         positions[0].brokerAccountId!==expectedAccountId||
+         typeof positions[0].brokerInstrumentKey!=='string'||
+         !['NSE_FO|','BSE_FO|'].some(pre=>
+           positions[0].brokerInstrumentKey!.startsWith(pre))||
+         !idOk(positions[0].entryBrokerOrderId)||
+         !idOk(positions[0].exitBrokerOrderId)||
+         !Number.isSafeInteger(positions[0].quantity)||
+         !Number.isSafeInteger(positions[0].lotSize)||
+         positions[0].quantity<=0||positions[0].lotSize<=0||
+         positions[0].quantity%positions[0].lotSize!==0||
+         !positions[0].entryTimestamp)
+        return res.status(409).json({
+          error:'Unique EXIT_PENDING original NRML option and durable SELL attempt required.'
+        });
+      const p=positions[0],before=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const receipt=before.originalBuyReceipt;
+      if(!receipt||!before.position||!before.entryAttempt||
+         before.position.id!==p.id||
+         before.position.brokerAccountId!==expectedAccountId||
+         before.position.exitFilledQuantity!==0||
+         before.entryAttempt.id!==p.attemptId||
+         before.entryAttempt.orderStatus!=='FILLED'||
+         before.entryAttempt.brokerOrderId!==p.entryBrokerOrderId||
+         receipt.positionId!==p.id||
+         receipt.accountId!==expectedAccountId||
+         receipt.attemptId!==p.attemptId||
+         receipt.orderId!==p.entryBrokerOrderId||
+         receipt.instrumentKey!==p.brokerInstrumentKey||
+         receipt.product!=='NRML'||receipt.originalQuantity!==p.quantity||
+         !immutableOriginalDebitMatchesReceipt({
+           originalQuantity:p.quantity,entryUnitPremiumINR:p.entryPrice,
+           exchangeOrderId:receipt.exchangeOrderId,
+           tradeCount:receipt.tradeCount,
+           trades:before.originalBuyTrades
+         })||
+         !Array.isArray(before.trades)||before.trades.length===0||
+         !Array.isArray(before.observations)||
+         before.observations.length===0)
+        return res.status(409).json({
+          error:'Immutable original BUY and same-position SELL child receipts incomplete.'
+        });
+      const last=before.observations[before.observations.length-1];
+      if(last.brokerOrderId!==p.exitBrokerOrderId||
+         last.requestedQuantity!==p.quantity||
+         !Number.isSafeInteger(last.filledQuantity)||
+         last.filledQuantity<=0||last.filledQuantity>p.quantity)
+        return res.status(409).json({
+          error:'Durable original exit SELL observation not fully attributable.'
+        });
+      const broker=activeProvider as any;
+      const startAuth=broker?.getLiveConnectionStatus?.();
+      const localEpoch=broker?.getBrokerAuthEpoch?.();
+      const historyEpoch=broker?.getHistoricalFoAuthEpoch?.();
+      if(startAuth?.isConnected!==true||
+         startAuth.userId!==expectedAccountId||
+         !Number.isSafeInteger(localEpoch)||localEpoch<1||
+         !Number.isSafeInteger(historyEpoch)||historyEpoch<1||
+         typeof broker.getVerifiedLivePositionQuantity!=='function'||
+         typeof broker.getHistoricalFoTradesPage!=='function')
+        return res.status(503).json({
+          error:'Authenticated Upstox GTT, historical FO, account epoch or net unavailable.'
+        });
+      const same=()=>{
+        const a=broker.getLiveConnectionStatus();
+        return a?.isConnected===true&&a.userId===expectedAccountId&&
+          broker.getBrokerAuthEpoch()===localEpoch&&
+          broker.getHistoricalFoAuthEpoch()===historyEpoch;
+      };
+      const gttScope={
+        expectedAccountId,
+        instrumentKey:p.brokerInstrumentKey!,
+        originalBuyOrderId:p.entryBrokerOrderId!,
+        gttOrderId,originalLongQuantity:p.quantity,lotSize:p.lotSize
+      };
+      const initial=await reviewSingleSellGttRestartTwoPassReadOnly(
+        broker,gttScope
+      );
+      if(!same())return res.status(409).json({
+        error:'Broker account/session changed after missing GTT restart review.'
+      });
+      if(!['MISSING_GTT_PARENT_REQUIRES_BROKER_HISTORY_MANUAL_REVIEW',
+            'MISSING_GTT_ORPHAN_SELL_CHILD_MANUAL_REVIEW']
+          .includes(initial.state)||initial.brokerReadPasses!==2)
+        return res.status(409).json({
+          state:'ORIGINAL_GTT_PARENT_NOT_STABLY_MISSING_FOR_HISTORICAL_JOIN',
+          liveNrmlBuyAuthorized:false,
+          automaticPositionClosureAuthorized:false,
+          realisedPnlWriteAuthorized:false,brokerWrites:0,localWrites:0
+        });
+      const indianDay=(d:Date):string=>{
+        const parts=new Intl.DateTimeFormat('en-GB',{
+          timeZone:'Asia/Kolkata',
+          year:'numeric',month:'2-digit',day:'2-digit'
+        }).formatToParts(d);
+        const f=(t:string)=>parts.find(x=>x.type===t)?.value||'';
+        return f('year')+'-'+f('month')+'-'+f('day');
+      };
+      const entryTimestamp=new Date(p.entryTimestamp);
+      if(!Number.isFinite(entryTimestamp.getTime()))
+        return res.status(409).json({
+          error:'Original broker option entry date is invalid.'
+        });
+      const entryDate=indianDay(entryTimestamp),now=indianDay(new Date());
+      const exchange=p.brokerInstrumentKey!.startsWith('NSE_FO|')?
+        'NFO' as const:'BFO' as const;
+      const history=await reviewHistoricalFoTradeHistoryReadOnly(broker,{
+        expectedAccountId,startDate:entryDate,endDate:now,
+        entryTradeDate:entryDate,asOfDate:now,
+        underlyingSymbol:p.instrument,optionType:p.optionType,
+        strikePrice:p.strikePrice,expiryDate:p.expiryDate,
+        exchange,originalBuyQuantity:p.quantity,
+        exitedSellQuantity:last.filledQuantity
+      },before.originalBuyTrades,before.trades);
+      if(!same())return res.status(409).json({
+        error:'Broker authentication epoch changed during historical FO GET.'
+      });
+      const freshNet=await broker.getVerifiedLivePositionQuantity(
+        p.brokerInstrumentKey!,'NRML'
+      );
+      if(!same())return res.status(409).json({
+        error:'Broker account switched during NRML net GET.'
+      });
+      const repeated=await reviewSingleSellGttRestartTwoPassReadOnly(
+        broker,gttScope
+      );
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const final=dbEngine.getOpenEmaLivePositions()
+        .filter(x=>x.id===positionId);
+      if(!same()||repeated.brokerReadPasses!==2||
+         repeated.state!==initial.state||
+         JSON.stringify(initial)!==JSON.stringify(repeated)||
+         final.length!==1||
+         JSON.stringify(p)!==JSON.stringify(final[0])||
+         JSON.stringify(before)!==JSON.stringify(after))
+        return res.status(409).json({
+          state:'BROKER_GTT_OR_DURABLE_BUY_SELL_RECEIPT_DRIFT_DURING_HISTORICAL_JOIN',
+          duplicateSellRetryAuthorized:false,
+          automaticPositionClosureAuthorized:false,
+          realisedPnlWriteAuthorized:false,liveNrmlBuyAuthorized:false,
+          brokerWrites:0,localWrites:0
+        });
+      return res.json(auditMissingGttHistoricalExitJoin({
+        originalLongQuantity:p.quantity,lotSize:p.lotSize,
+        immutableBuyTradeCount:before.originalBuyTrades.length,
+        immutableSellTradeCount:before.trades.length,
+        immutableSellFilledQuantity:last.filledQuantity
+      },{restart:repeated,history,freshBrokerNet:freshNet}));
+    }catch{
+      return res.status(503).json({
+        error:'Read-only missing GTT and historical F&O trade provenance unavailable.'
       });
     }
   });
