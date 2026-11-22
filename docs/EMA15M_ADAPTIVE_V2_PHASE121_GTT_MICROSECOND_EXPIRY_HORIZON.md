@@ -41,6 +41,13 @@ never a release authority:
   seconds/nanosecond timestamps -> unknown/reject.
 - Broker created after evaluation clock, or GTT already
   expired at review -> expired/inconsistent.
+- Even with future expiry, only an exact `SCHEDULED` ENTRY SELL
+  rule with `order_id:null` may pass the temporal *scheduled*
+  overlap check. `FAILED/CANCELLED/EXPIRED/PENDING/TRIGGERED/OPEN/
+  COMPLETED`, unknown status or an already generated child ID
+  gets `BROKER_GTT_RULE_NOT_SCHEDULED_OR_ALREADY_GENERATED`.
+  A generated LIMIT SELL child is reviewed separately under
+  Phase113/114 and NEVER proves ongoing overnight STOP coverage.
 - Asserted contract expiry before nominal holding end ->
   contract does not meet selected week horizon.
 - Broker GTT expiry before selected nominal holding end ->
