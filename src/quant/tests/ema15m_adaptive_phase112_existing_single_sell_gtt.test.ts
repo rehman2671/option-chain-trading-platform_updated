@@ -58,7 +58,8 @@ const broker=(overrides:Partial<ExistingSingleSellGttBroker>={},
 });
 function blocked(r:SingleSellGttReport){
   assert.equal(r.brokerReportedGttSellConditionNotNativeExchangeStop,true);
-  assert.equal(r.noGeneratedChildWhileScheduled,true);
+  assert.equal(r.brokerGeneratedChildAbsentWhileScheduled,
+    r.brokerReportedScheduledSingleSellCondition);
   assert.equal(r.noNewBuyCreatedByThisReadOnlyReview,true);
   assert.equal(r.originalBuyAndGttSellAreIndependentOrders,true);
   for(const flag of [
