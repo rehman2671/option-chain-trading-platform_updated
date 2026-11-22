@@ -68,6 +68,28 @@ export class UpstoxProvider implements IMarketDataProvider {
     return this.historicalFoAuthEpoch;
   }
 
+  /**
+   * Native NRML/GTT read-only HTTP identity fence.
+   * Captured bearer token is never logged. Any account, credential or
+   * local generation change while a GET is in flight invalidates it.
+   * The generation is local and NOT independent broker authentication.
+   */
+  private captureRiskReadIdentity():
+    {authEpoch:number;accountId:string;bearerToken:string}|null{
+    if(!this.isConnected||!this.accessToken||!this.userId||
+       !Number.isSafeInteger(this.historicalFoAuthEpoch)||
+       this.historicalFoAuthEpoch<1)return null;
+    return {authEpoch:this.historicalFoAuthEpoch,accountId:this.userId,
+      bearerToken:this.accessToken};
+  }
+  private currentRiskReadIdentity(
+    s:{authEpoch:number;accountId:string;bearerToken:string}
+  ):boolean{
+    return this.isConnected&&!!this.accessToken&&
+      this.historicalFoAuthEpoch===s.authEpoch&&
+      this.userId===s.accountId&&this.accessToken===s.bearerToken;
+  }
+
   public getProviderMode(): DataProviderMode {
     return 'LIVE';
   }
@@ -455,13 +477,15 @@ export class UpstoxProvider implements IMarketDataProvider {
   public async getVerifiedLivePositionQuantity(
     instrumentKey: string, product: 'MIS' | 'NRML'
   ): Promise<number | null> {
-    if (!this.isConnected || !this.accessToken || !instrumentKey) return null;
+    const session=this.captureRiskReadIdentity();
+    if(!session||!instrumentKey)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
-        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       if (json?.status !== 'success' || !Array.isArray(json?.data)) return null;
       // Phase96: never SUM duplicate position rows or treat a missing
       // contract in a successfully returned portfolio as zero exposure.
@@ -481,16 +505,18 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Read-only: no broker order or GTT modifications.
    */
   public async getVerifiedNrmlPositionRows(): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken) return null;
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
         headers: {
-          'Authorization': 'Bearer ' + this.accessToken,
+          'Authorization': 'Bearer ' + session.bearerToken,
           'Accept': 'application/json'
         }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       return json?.status === 'success' && Array.isArray(json?.data)
         ? json.data : null;
     } catch {
@@ -655,13 +681,15 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Null means unavailable/ambiguous: real MARKET SELL must fail closed.
    */
   public async getGttOrders(): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken) return null;
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v3/order/gtt', {
-        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
       console.warn('[UPSTOX] Read-only GTT order state unavailable');
@@ -673,16 +701,18 @@ export class UpstoxProvider implements IMarketDataProvider {
    * This API cannot retrieve completed GTTs. Null is UNKNOWN, not absent.
    */
   public async getGttOrderDetails(gttId: string): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken ||
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
         !/^GTT-[A-Za-z0-9-]{1,240}$/.test(gttId)) return null;
     try {
       const url = 'https://api.upstox.com/v3/order/gtt?gtt_order_id=' +
         encodeURIComponent(gttId);
       const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       return json?.status === 'success' && Array.isArray(json?.data)
         ? json.data : null;
     } catch { return null; }
@@ -692,16 +722,18 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Null on API error or missing order; never fabricate an ACK or fill.
    */
   public async getOrderDetails(orderId: string): Promise<any | null> {
-    if (!this.isConnected || !this.accessToken ||
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
         !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
     try {
       const url = 'https://api.upstox.com/v2/order/details?order_id=' +
         encodeURIComponent(orderId);
       const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       // A syntactically valid HTTP 200 with data:{} is NOT a native
       // order ACK. Validate the exact requested order before exposing
       // the record to read-only GTT child/SELL reconciliation.
@@ -726,13 +758,15 @@ export class UpstoxProvider implements IMarketDataProvider {
   }
 
   public async getOrderBook(): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken) return null;
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/order/retrieve-all', {
-        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' }
+        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
       console.warn('[UPSTOX] Read-only order book unavailable');
@@ -750,8 +784,9 @@ export class UpstoxProvider implements IMarketDataProvider {
   public async getHistoricalFoTradesPage(
     startDate:string,endDate:string,pageNumber:number,pageSize:number
   ):Promise<unknown|null>{
+    const session=this.captureRiskReadIdentity();
     const date=/^\d{4}-\d{2}-\d{2}$/;
-    if(!this.isConnected||!this.accessToken||
+    if(!session||
        !date.test(startDate)||!date.test(endDate)||
        !Number.isSafeInteger(pageNumber)||pageNumber<1||pageNumber>20||
        !Number.isSafeInteger(pageSize)||pageSize!==1000)
@@ -763,11 +798,12 @@ export class UpstoxProvider implements IMarketDataProvider {
       });
       const res=await fetch(
         'https://api.upstox.com/v2/charges/historical-trades?'+params.toString(),
-        {headers:{Authorization:'Bearer '+this.accessToken,
+        {headers:{Authorization:'Bearer '+session.bearerToken,
           Accept:'application/json'}}
       );
       if(!res.ok)return null;
       const payload:unknown=await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       if(!payload||typeof payload!=='object'||Array.isArray(payload))
         return null;
       const reply=payload as Record<string,unknown>;
@@ -782,15 +818,17 @@ export class UpstoxProvider implements IMarketDataProvider {
    * A broker trade ID/order ID is sensitive and must not enter logs.
    */
   public async getOrderTrades(orderId: string): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken ||
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
         !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
     try {
       const res = await fetch(
         'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
-        { headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' } }
+        { headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' } }
       );
       if (!res.ok) return null;
       const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch {
       // No order IDs, bearer token, user details or raw broker error in logs.
