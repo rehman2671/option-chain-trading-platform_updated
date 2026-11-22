@@ -160,6 +160,8 @@ describe('Phase121 microsecond broker GTT vs nominal 1/2/4/8W option horizon',()
     for(const change of [
       {gtt_order_id:'GTT-PH121-OTHER'},
       {instrument_token:'NSE_FO|PH121-OTHER'},
+      {exchange:'BSE_FO'}, {exchange:'NSE_EQ'},
+      {exchange:''}, {exchange:undefined},
       {product:'I'}, {type:'MULTIPLE'}, {quantity:0},
       {rules:[]},{rules:[{
         strategy:'ENTRY',transaction_type:'BUY',trigger_type:'BELOW'
@@ -169,7 +171,33 @@ describe('Phase121 microsecond broker GTT vs nominal 1/2/4/8W option horizon',()
       }]},
       {rules:[{
         strategy:'ENTRY',transaction_type:'SELL',trigger_type:'ABOVE'
-      }]}
+      }]},
+      ...[null,undefined,0,-1,NaN,Infinity,'90'].map(trigger_price=>({
+        rules:[{strategy:'ENTRY',status:'SCHEDULED',
+          transaction_type:'SELL',trigger_type:'BELOW',
+          trigger_price,order_id:null}]
+      }))
+    ]){
+      const r=audit(parent(change));safe(r);
+      assert.equal(r.state,'GTT_PARENT_ABSENT_OR_WRONG_IDENTITY');
+    }
+  });
+  it('exact BSE_FO option and same broker exchange remains descriptive only',()=>{
+    const bseKey='BSE_FO|PH121-OPTION-CONTRACT';
+    const r=audit(parent({instrument_token:bseKey,exchange:'BSE_FO'}),{
+      ...scope(),instrumentKey:bseKey
+    });safe(r);
+    assert.equal(r.state,expected);
+  });
+  it('GTT exchange and trigger cannot be spoofed into horizon overlap',()=>{
+    for(const change of [
+      {exchange:'BSE_FO'}, {exchange:'NSE_EQ'}, {exchange:null},
+      {rules:[{strategy:'ENTRY',status:'SCHEDULED',
+        transaction_type:'SELL',trigger_type:'BELOW',
+        trigger_price:NaN,order_id:null}]},
+      {rules:[{strategy:'ENTRY',status:'SCHEDULED',
+        transaction_type:'SELL',trigger_type:'BELOW',
+        trigger_price:-0.01,order_id:null}]}
     ]){
       const r=audit(parent(change));safe(r);
       assert.equal(r.state,'GTT_PARENT_ABSENT_OR_WRONG_IDENTITY');
