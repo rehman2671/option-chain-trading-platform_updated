@@ -1634,7 +1634,8 @@ async function startServer() {
          receipt.orderId!==p.entryBrokerOrderId||
          receipt.product!=='NRML'||
          receipt.originalQuantity!==p.quantity||
-         !receipt.exchangeOrderId||
+         typeof receipt.exchangeOrderId!=='string'||
+         !/^[A-Za-z0-9_-]{1,128}$/.test(receipt.exchangeOrderId)||
          receipt.tradeCount!==before.originalBuyTrades.length||
          before.entryAttempt.brokerOrderId!==receipt.orderId||
          before.entryAttempt.orderStatus!=='FILLED')
