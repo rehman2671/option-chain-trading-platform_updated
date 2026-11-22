@@ -114,6 +114,7 @@ on:
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
       - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
+      - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
   pull_request:
     branches:
       - main
@@ -229,6 +230,7 @@ on:
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
       - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
+      - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
   workflow_dispatch:
 
 permissions:
