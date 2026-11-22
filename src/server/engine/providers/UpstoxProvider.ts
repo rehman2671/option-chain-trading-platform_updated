@@ -24,6 +24,10 @@ export class UpstoxProvider implements IMarketDataProvider {
   private statusMessage: string = 'Initializing Upstox API v2...';
   private userName: string = '';
   private userId: string = '';
+  // Monotonic local credential lifecycle marker for read-only F&O history.
+  // Never expose a credential or token hash. Starts/finishes of connect()
+  // invalidate any in-flight historical page sequence.
+  private historicalFoAuthEpoch: number = 0;
   private practiceFallback: PracticeModeProvider = new PracticeModeProvider();
 
   private symbolInstrumentKeyMap: Record<string, string> = {
@@ -54,11 +58,17 @@ export class UpstoxProvider implements IMarketDataProvider {
     };
   }
 
+  public getHistoricalFoAuthEpoch(): number {
+    return this.historicalFoAuthEpoch;
+  }
+
   public getProviderMode(): DataProviderMode {
     return 'LIVE';
   }
 
   public async connect(): Promise<ProviderHealthStatus> {
+    // Invalidate a pinned historical session BEFORE changing credentials.
+    this.historicalFoAuthEpoch++;
     this.apiKey = process.env.UPSTOX_API_KEY || '';
     this.accessToken = process.env.UPSTOX_ACCESS_TOKEN || process.env.UPSTOX_TOKEN || '';
 
@@ -67,6 +77,7 @@ export class UpstoxProvider implements IMarketDataProvider {
 
     if (!this.accessToken) {
       this.isConnected = false;
+      this.historicalFoAuthEpoch++;
       this.statusMessage = 'Upstox Token not set in .env. Real-time calibrated NSE/MCX Practice Mode active.';
       return {
         mode: 'LIVE',
@@ -89,6 +100,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) {
         if (res.status === 401) {
           this.isConnected = false;
+          this.historicalFoAuthEpoch++;
           this.statusMessage = 'Upstox session expired or invalid (HTTP 401). Real-time calibrated market feed active.';
           console.warn(`[UPSTOX PROVIDER] ${this.statusMessage}`);
           return {
@@ -122,6 +134,9 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.warn('[UPSTOX PROVIDER] Notice:', this.statusMessage);
     }
 
+    // The async authentication result also invalidates a historical
+    // snapshot that began while profile verification was pending.
+    this.historicalFoAuthEpoch++;
     return {
       mode: 'LIVE',
       connected: this.isConnected,
