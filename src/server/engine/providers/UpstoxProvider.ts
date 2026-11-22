@@ -481,7 +481,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     if(!session||!instrumentKey)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
-        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
@@ -509,7 +509,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
-        headers: {
+        signal:AbortSignal.timeout(12_000), headers: {
           'Authorization': 'Bearer ' + session.bearerToken,
           'Accept': 'application/json'
         }
@@ -685,7 +685,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v3/order/gtt', {
-        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
@@ -708,7 +708,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const url = 'https://api.upstox.com/v3/order/gtt?gtt_order_id=' +
         encodeURIComponent(gttId);
       const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
@@ -729,7 +729,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const url = 'https://api.upstox.com/v2/order/details?order_id=' +
         encodeURIComponent(orderId);
       const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
@@ -762,7 +762,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     if(!session)return null;
     try {
       const res = await fetch('https://api.upstox.com/v2/order/retrieve-all', {
-        headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
       });
       if (!res.ok) return null;
       const json: any = await res.json();
@@ -798,7 +798,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       });
       const res=await fetch(
         'https://api.upstox.com/v2/charges/historical-trades?'+params.toString(),
-        {headers:{Authorization:'Bearer '+session.bearerToken,
+        {signal:AbortSignal.timeout(12_000), headers:{Authorization:'Bearer '+session.bearerToken,
           Accept:'application/json'}}
       );
       if(!res.ok)return null;
@@ -824,7 +824,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     try {
       const res = await fetch(
         'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
-        { headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' } }
+        { signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' } }
       );
       if (!res.ok) return null;
       const json: any = await res.json();
