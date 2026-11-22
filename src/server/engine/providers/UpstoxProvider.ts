@@ -491,12 +491,12 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      if (json?.status !== 'success' ||
-          !guardFullBrokerPositionRows(json?.data)) return null;
-      // Phase96: never SUM duplicate position rows or treat a missing
-      // contract in a successfully returned portfolio as zero exposure.
-      // Cross-product exposure or malformed rows require manual review.
-      const result = resolveUniqueBrokerNetPosition(json.data,instrumentKey,product);
+      const positions=guardFullBrokerPositionRows(json?.data);
+      if (json?.status !== 'success' || !positions) return null;
+      // Phase119: consume the same validated/normalized native rows,
+      // including the official Upstox 'quantity' -> net_quantity alias.
+      // Never fall back to the original unvalidated JSON account list.
+      const result = resolveUniqueBrokerNetPosition(positions,instrumentKey,product);
       return result.verified ? result.netQuantity : null;
     } catch (err: any) {
       console.warn('[EMA BROKER] Read-only verified position lookup unavailable');
