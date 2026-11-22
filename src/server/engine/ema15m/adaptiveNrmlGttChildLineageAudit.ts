@@ -272,6 +272,8 @@ export function auditNrmlGttChildLineage(
 }
 export interface ReadOnlyNrmlGttBroker{
   getLiveConnectionStatus():{isConnected:boolean;userId?:string};
+  /** Local monotonic provider reconnect generation; not a signed broker ACK. */
+  getBrokerAuthEpoch():number;
   getGttOrderDetails(id:string):Promise<unknown>;
   getVerifiedNrmlPositionRows():Promise<unknown>;
   getOrderBook():Promise<unknown>;
@@ -292,10 +294,30 @@ export async function reviewNrmlGttChildReadOnly(
   }
   if(auth?.isConnected!==true||auth.userId!==request.expectedAccountId)
     return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_AUTHENTICATED_ACCOUNT_MISMATCH']);
-  if(['getGttOrderDetails','getVerifiedNrmlPositionRows','getOrderBook',
+  if(['getBrokerAuthEpoch','getGttOrderDetails','getVerifiedNrmlPositionRows','getOrderBook',
       'getGttOrders','getOrderDetails','getOrderTrades'].some(k=>
        typeof broker[k as keyof ReadOnlyNrmlGttBroker]!=='function'))
     return result('BROKER_SOURCE_INCOMPLETE',['REQUIRED_BROKER_READ_METHOD_UNAVAILABLE']);
+  let pinnedEpoch:number;
+  try{pinnedEpoch=broker.getBrokerAuthEpoch();}catch{
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_GTT_AUTH_EPOCH_UNAVAILABLE']);
+  }
+  if(!Number.isSafeInteger(pinnedEpoch)||pinnedEpoch<1)
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_GTT_AUTH_EPOCH_UNAVAILABLE']);
+  // A broker-account ID alone is not stable credential-session evidence.
+  // These checks only pin the local provider lifecycle, not remote atomicity.
+  const sameSession=():boolean=>{
+    try{
+      const current=broker.getLiveConnectionStatus();
+      const epoch=broker.getBrokerAuthEpoch();
+      return current?.isConnected===true&&
+        current.userId===request.expectedAccountId&&
+        Number.isSafeInteger(epoch)&&epoch===pinnedEpoch;
+    }catch{return false;}
+  };
+  const changedSession=()=>result('BROKER_ACCOUNT_UNVERIFIED',
+    ['BROKER_GTT_ACCOUNT_OR_AUTH_EPOCH_CHANGED_DURING_READ']);
+  if(!sameSession())return changedSession();
   let gtt:unknown,positions:unknown,orderBook:unknown,gttOrders:unknown;
   try{
     // First read the parent GTT and broker order book. If it has
@@ -308,10 +330,12 @@ export async function reviewNrmlGttChildReadOnly(
       broker.getOrderBook(),broker.getGttOrders()
     ]);
   }catch{return result('BROKER_SOURCE_INCOMPLETE',['BROKER_READ_ONLY_SOURCE_TRANSPORT_ERROR']);}
+  if(!sameSession())return changedSession();
   const linked=uniqueGttStop(gtt,request);
   const childId=linked?.leg.order_id;
   let order:unknown=null,trades:unknown=null;
   if(nonEmpty(childId)){
+    if(!sameSession())return changedSession();
     try{
       [order,trades]=await Promise.all([
         broker.getOrderDetails(childId),broker.getOrderTrades(childId)
@@ -320,7 +344,9 @@ export async function reviewNrmlGttChildReadOnly(
       return result('BROKER_SOURCE_INCOMPLETE',['BROKER_CHILD_DETAILS_OR_TRADES_TRANSPORT_ERROR'],
         {parentGttFound:true,generatedChildOrderIdObserved:true});
     }
+    if(!sameSession())return changedSession();
   }
+  if(!sameSession())return changedSession();
   try{
     // Starting this read after child/trades reduces (but cannot eliminate)
     // non-atomic point-in-time position/order disagreement. Never retry to
@@ -329,6 +355,7 @@ export async function reviewNrmlGttChildReadOnly(
   }catch{
     return result('BROKER_SOURCE_INCOMPLETE',['BROKER_LATEST_NET_POSITION_READ_FAILED']);
   }
+  if(!sameSession())return changedSession();
   return auditNrmlGttChildLineage(request,{
     connected:true,connectedAccountId:auth.userId,
     gtt,positions,orderBook,gttOrders,order,trades
