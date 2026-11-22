@@ -40,6 +40,8 @@ import {reviewNrmlGttChildReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttChildLineageAudit.js';
 import {reviewNrmlStopLifecycleTwoPassReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlStopLifecycleTwoPassReview.js';
+import {reviewGttEntryOriginalNrmlBuyReadOnly} from
+  './src/server/engine/ema15m/adaptiveNrmlGttEntryBuyProvenance.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1581,6 +1583,89 @@ async function startServer() {
         reasonCodes:['TWO_PASS_BROKER_OBSERVATIONS_UNAVAILABLE'],
         independentExchangeChildAckCertified:false,
         liveNrmlBuyAuthorized:false,brokerWrites:0,localWrites:0
+      });
+    }
+  });
+
+  // Phase109: Upstox v3 MULTIPLE GTT ENTRY -> original immutable BUY
+  // provenance, STOPLOSS leg and no independent exchange ACK. GET-only.
+  app.post('/api/ema15m/nrml-gtt-entry-provenance-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId,gttOrderId}=req.body||{};
+    if(typeof positionId!=='string'||!(/^[A-Za-z0-9_-]{1,128}$/).test(positionId)||
+       typeof expectedAccountId!=='string'||
+       !(/^[A-Za-z0-9_-]{1,128}$/).test(expectedAccountId)||
+       typeof gttOrderId!=='string'||
+       !(/^GTT-[A-Za-z0-9_-]{1,124}$/).test(gttOrderId))
+      return res.status(400).json({
+        error:'Unique durable NRML position, matching account and GTT id required.'
+      });
+    try{
+      const matches=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(matches.length!==1||matches[0].productType!=='NRML'||
+         matches[0].brokerAccountId!==expectedAccountId||
+         !matches[0].brokerInstrumentKey||
+         !['NSE_FO|','BSE_FO|'].some(prefix=>
+           matches[0].brokerInstrumentKey!.startsWith(prefix))||
+         !matches[0].entryBrokerOrderId||
+         !Number.isSafeInteger(matches[0].quantity)||
+         matches[0].quantity<=0||
+         !Number.isSafeInteger(matches[0].lotSize)||
+         matches[0].lotSize<=0||
+         matches[0].quantity%matches[0].lotSize!==0)
+        return res.status(409).json({
+          error:'Original unique durable NRML option/lot/account evidence required.'
+        });
+      const p=matches[0],before=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const receipt=before.originalBuyReceipt;
+      if(!receipt||!before.position||!before.entryAttempt||
+         !Array.isArray(before.originalBuyTrades)||
+         before.originalBuyTrades.length===0||
+         receipt.positionId!==p.id||
+         receipt.accountId!==expectedAccountId||
+         receipt.attemptId!==p.attemptId||
+         receipt.instrumentKey!==p.brokerInstrumentKey||
+         receipt.orderId!==p.entryBrokerOrderId||
+         receipt.product!=='NRML'||
+         receipt.originalQuantity!==p.quantity||
+         !receipt.exchangeOrderId||
+         receipt.tradeCount!==before.originalBuyTrades.length||
+         before.entryAttempt.brokerOrderId!==receipt.orderId||
+         before.entryAttempt.orderStatus!=='FILLED')
+        return res.status(409).json({
+          error:'Immutable original BUY receipt and entry trade IDs missing or inconsistent.'
+        });
+      const broker=activeProvider as any;
+      const started=broker?.getBrokerAuthEpoch?.();
+      if(!Number.isSafeInteger(started)||started<1)
+        return res.status(503).json({
+          error:'Native broker session generation unavailable.'
+        });
+      const report=await reviewGttEntryOriginalNrmlBuyReadOnly(broker,{
+        positionId,expectedAccountId,gttOrderId,
+        instrumentKey:p.brokerInstrumentKey,
+        originalBuyOrderId:receipt.orderId,
+        originalBuyExchangeOrderId:receipt.exchangeOrderId,
+        originalQuantity:p.quantity,lotSize:p.lotSize
+      },before.originalBuyTrades);
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const authAfter=broker.getLiveConnectionStatus?.();
+      if(broker.getBrokerAuthEpoch()!==started||
+         authAfter?.isConnected!==true||
+         authAfter?.userId!==expectedAccountId||
+         JSON.stringify(before)!==JSON.stringify(after))
+        return res.status(409).json({
+          state:'BROKER_ACCOUNT_OR_DURABLE_BUY_LEDGER_CHANGED_DURING_READ',
+          nativeStopOrderExchangeAckCertified:false,
+          liveNrmlBuyAuthorized:false,brokerWrites:0,localWrites:0
+        });
+      // Return no raw GTT/child IDs, tokens, accounts or trade receipts.
+      return res.json(report);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only GTT/immutable BUY provenance evidence unavailable.'
       });
     }
   });
