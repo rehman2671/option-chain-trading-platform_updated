@@ -41,6 +41,13 @@ Applied to the actual upstream GET methods:
 7. Bounded paginated historical F&O trade report
 8. Per-order generated trade executions
 
+Every one of the eight upstream GETs now has a
+`AbortSignal.timeout(12_000)` deadline. A hung broker HTTP response
+returns unavailable/null after abort instead of blocking the diagnostic
+indefinitely. Tests require all eight GETs to carry the signal and
+verify an AbortError returns null. This does not certify broker
+order execution, independent venue ACK or account-wide atomicity.
+
 GET endpoints remain GET-only and return `null` on HTTP failures,
 invalid JSON or stale-account responses; genuine successful array
 sources may be empty, but must not be confused with unavailable.
