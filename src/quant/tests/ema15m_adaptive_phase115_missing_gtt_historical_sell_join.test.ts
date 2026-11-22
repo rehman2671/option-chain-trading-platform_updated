@@ -177,7 +177,7 @@ describe('Phase115 missing completed SELL GTT + full historical FO trade IDs no 
   });
   it('one-pass, absent or fake restart report cannot join completed GTT',()=>{
     for(const rst of [
-      null,{...restart(0),brokerReadPasses:1},
+      null,{...restart(0),brokerReadPasses:1 as const},
       {...restart(0),brokerReportedGttPresent:true},
       {...restart(0),state:'SCHEDULED_GTT_NO_GENERATED_CHILD_RESTART_UNPROTECTED' as const}
     ]){
@@ -220,7 +220,7 @@ describe('Phase115 missing completed SELL GTT + full historical FO trade IDs no 
       {transaction_type:'BUY'}
     ];
     for(const edit of changes){
-      const rows0=rows();
+      const rows0:Record<string,unknown>[]=rows();
       rows0[2]={...rows0[2],...edit};
       const r=audit(scope,{
         restart:restart(0),history:hist(rows0),
