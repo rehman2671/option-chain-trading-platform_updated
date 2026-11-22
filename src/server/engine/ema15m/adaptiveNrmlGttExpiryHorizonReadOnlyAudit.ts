@@ -43,6 +43,7 @@ export type GttHorizonAuditState=
   'MICROSECOND_GTT_CREATED_EXPIRES_EVIDENCE_MISSING_OR_INVALID'|
   'CONTRACT_EXPIRY_CALENDAR_INPUT_MISSING_OR_INVALID'|
   'REVIEW_CLOCK_INVALID_OR_BEFORE_BROKER_CREATION'|
+  'BROKER_GTT_RULE_NOT_SCHEDULED_OR_ALREADY_GENERATED'|
   'BROKER_GTT_ALREADY_EXPIRED_AT_REVIEW'|
   'ASSERTED_FO_CONTRACT_EXPIRES_BEFORE_HOLD_END'|
   'BROKER_GTT_EXPIRES_BEFORE_HOLD_END'|
@@ -169,6 +170,15 @@ export function auditGttNrmlSelectedHorizonExpiry(
   if(now>=expires)
     return result('BROKER_GTT_ALREADY_EXPIRED_AT_REVIEW',
       ['BROKER_REPORTED_GTT_EXPIRED_NO_CURRENT_TRIGGER_PROTECTION'],fields);
+  // Never call an already triggered, cancelled, rejected or failed
+  // broker GTT a currently scheduled multiweek conditional order merely
+  // because its originally configured expires_at is in the future.
+  // A generated child is separately quarantined by Phase113/114;
+  // its LIMIT SELL is NOT a persistent exchange-native stop.
+  const rule=brokerGtt.rules[0];
+  if(rule.status!=='SCHEDULED'||rule.order_id!==null)
+    return result('BROKER_GTT_RULE_NOT_SCHEDULED_OR_ALREADY_GENERATED',
+      ['RULE_NOT_SCHEDULED_OR_EXCHANGE_CHILD_ALREADY_GENERATED'],fields);
   if(contract<=now||contract<horizonEnd)
     return result('ASSERTED_FO_CONTRACT_EXPIRES_BEFORE_HOLD_END',
       ['SELECTED_WEEKS_OUTRUN_ASSERTED_OPTION_EXPIRY'],fields);
