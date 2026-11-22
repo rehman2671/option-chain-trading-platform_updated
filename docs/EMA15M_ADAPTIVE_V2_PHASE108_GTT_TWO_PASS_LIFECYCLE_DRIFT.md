@@ -21,6 +21,21 @@ Official API documentation:
 - [Get Order Status](https://upstox.com/developer/api-documentation/get-order-details/) returns order state, filled/pending quantities and broker-reported exchange order ID.
 - [Get Order Book](https://upstox.com/developer/api-documentation/get-order-book/) exposes current-day order lifecycle, not an independent historical exchange-signed stop ACK.
 
+## Official v3 GTT structure caveat (live release BLOCKER)
+
+The official [Place GTT Order](https://upstox.com/developer/api-documentation/place-gtt-order/)
+API is more constrained than many **synthetic** Phase92–108 fixtures:
+a SINGLE GTT must contain an ENTRY rule, while STOPLOSS follows an ENTRY
+on a MULTIPLE GTT. The current v3 request docs state TARGET/STOPLOSS
+`trigger_type: IMMEDIATE`, a strictly positive trigger price, and SELL
+leg authorization requirements including EDIS for applicable delivery
+sales. Real F&O eligibility, valid native schema and required broker
+authorization **have not been demonstrated** by the fixtures. The
+read-only drift review does not place or certify a standalone live
+STOPLOSS rule, nor does it verify that a multi-leg GTT ENTRY maps to
+the immutable original NRML BUY trade. This is an additional hard
+research/release blocker, not permission to enable NRML orders.
+
 ## Implementation
 
 `reviewNrmlStopLifecycleTwoPassReadOnly` runs only through authorized
