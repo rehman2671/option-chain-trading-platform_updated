@@ -159,6 +159,9 @@ function fullBrokerOriginalBuy(s:GttEntryProvenanceScope,e:GttEntryProvenanceSou
     return {ok:false,count:0};
   const o=e.originalBuyOrder;
   if(o.order_id!==s.originalBuyOrderId||
+     // Upstox v2 order_ref_id links a generated GTT child to its
+     // parent. Matching order ID alone is not sufficient lineage.
+     o.order_ref_id!==s.gttOrderId||
      o.exchange_order_id!==s.originalBuyExchangeOrderId||
      o.instrument_token!==s.instrumentKey||o.product!=='D'||
      up(o.transaction_type)!=='BUY'||o.quantity!==s.originalQuantity||
