@@ -215,6 +215,26 @@ describe('Phase117 real Upstox provider native GET transport fail-closed contrac
       assert.equal(seen.length,0);
     });
   });
+  it('HTTP 200 wrong-order or incomplete native order data fails before child audit',async()=>{
+    for(const row of [
+      {},{...child(),order_id:'PH117-OTHER-SELL'},
+      {...child(),instrument_token:''},
+      {...child(),product:'UNKNOWN'},
+      {...child(),transaction_type:'SHORT'},
+      {...child(),order_type:'GTT'},
+      {...child(),status:''},
+      {...child(),quantity:0},
+      {...child(),filled_quantity:100,pending_quantity:100},
+      {...child(),filled_quantity:-1},
+      {...child(),pending_quantity:'100'}
+    ]){
+      await withStub((r)=>r.url.includes('/v2/order/details')?
+        ok(row):handlers(r),async(p,seen)=>{
+          assert.equal(await p.getOrderDetails(orderId),null);
+          assert.equal(seen.length,1);
+        });
+    }
+  });
   it('unique NRML net getter refuses absent, duplicate, other product, short and malformed',async()=>{
     for(const rows of [
       [],[long(),long()],
