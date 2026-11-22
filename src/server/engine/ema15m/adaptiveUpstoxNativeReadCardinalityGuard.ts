@@ -17,6 +17,12 @@ const gtt=(x:unknown):x is string=>
 const instrument=(x:unknown):x is string=>
   typeof x==='string'&&x.length>0&&x.length<=256&&
   /^[A-Za-z0-9_]+\|[^\s]{1,240}$/.test(x);
+// Upstox v2 per-order trades documentation shows a numeric legacy
+// instrument_token (e.g. "151064324") even where the native position
+// catalog uses segment|instrument. Accept source shape ONLY; Phase113
+// requires independently resolved exact F&O contract identity.
+const tradeInstrument=(x:unknown):x is string=>
+  instrument(x)||(typeof x==='string'&&/^[0-9]{1,32}$/.test(x));
 const positive=(x:unknown):x is number=>
   typeof x==='number'&&Number.isSafeInteger(x)&&x>0;
 const nonnegative=(x:unknown):x is number=>
@@ -94,7 +100,7 @@ export function guardExactBrokerOrderTrades(
   const seen=new Set<string>();
   for(const p of raw){
     if(!id(p.trade_id)||seen.has(p.trade_id)||
-       p.order_id!==expectedOrderId||!instrument(p.instrument_token)||
+       p.order_id!==expectedOrderId||!tradeInstrument(p.instrument_token)||
        !products.has(String(p.product))||
        !sides.has(String(p.transaction_type))||
        !positive(p.quantity)||
@@ -111,13 +117,24 @@ export function guardExactBrokerOrderTrades(
  * solely responsible for that exact-contract validation. */
 export function guardFullBrokerPositionRows(raw:unknown):Row[]|null{
   if(!bounded(raw,10_000))return null;
-  const seen=new Set<string>();
+  const seen=new Set<string>(),normalized:Row[]=[];
   for(const p of raw){
-    if(!instrument(p.instrument_token)||!products.has(String(p.product))||
-       !safeNet(p.net_quantity))return null;
+    if(!instrument(p.instrument_token)||!products.has(String(p.product)))
+      return null;
+    const hasNet=Object.prototype.hasOwnProperty.call(p,'net_quantity');
+    const hasQuantity=Object.prototype.hasOwnProperty.call(p,'quantity');
+    // Upstox GET /v2/portfolio/short-term-positions documents
+    // 'quantity' as remaining net, not 'net_quantity'. Preserve an
+    // explicit legacy net_quantity only when BOTH fields agree.
+    if(!hasNet&&!hasQuantity)return null;
+    if(hasNet&&!safeNet(p.net_quantity))return null;
+    if(hasQuantity&&!safeNet(p.quantity))return null;
+    if(hasNet&&hasQuantity&&
+       Number(p.net_quantity)!==Number(p.quantity))return null;
     const key=p.instrument_token+'|'+p.product;
     if(seen.has(key))return null;
     seen.add(key);
+    normalized.push(hasNet?p:{...p,net_quantity:p.quantity});
   }
-  return raw;
+  return normalized;
 }
