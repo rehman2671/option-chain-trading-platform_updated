@@ -233,6 +233,12 @@ on:
       - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
   workflow_dispatch:
 
+# Superseded commits must not monopolize runners; PR and push checks
+# remain separate and the latest SHA still runs independently.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
