@@ -106,6 +106,7 @@ on:
       - 'research/adaptive-v2-phase103-account-wide-order-gtt-exposure-review'
       - 'research/adaptive-v2-phase104-multiday-fo-trade-history-corroboration'
       - 'research/adaptive-v2-phase105-fo-session-continuity'
+      - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
   pull_request:
     branches:
       - main
@@ -213,6 +214,7 @@ on:
       - 'research/adaptive-v2-phase103-account-wide-order-gtt-exposure-review'
       - 'research/adaptive-v2-phase104-multiday-fo-trade-history-corroboration'
       - 'research/adaptive-v2-phase105-fo-session-continuity'
+      - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
   workflow_dispatch:
 
 permissions:
