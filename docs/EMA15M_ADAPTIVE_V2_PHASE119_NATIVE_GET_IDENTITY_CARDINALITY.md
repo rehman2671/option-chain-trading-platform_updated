@@ -38,9 +38,21 @@ read-only validation at the actual UpstoxProvider boundary:
   venue reference or duplicate trade ID → `null`.
 - **Full broker positions**: under 10,000 rows, valid contract,
   product, integer net and unique instrument/product combination.
+  Official Upstox `/v2/portfolio/short-term-positions` returns the
+  remaining net under `quantity`, not necessarily `net_quantity`.
+  This adapter creates a **read-only `net_quantity` alias** only when
+  the native `quantity` is a safe integer; if both are provided,
+  they **must agree exactly**, otherwise return unknown/null.
   A valid negative short in an *unrelated instrument* is allowed
-  as a structural row; the existing Phase96 exact instrument/product
+  as a structural row; existing Phase96 exact instrument/product
   resolver still rejects target short, duplicate or missing rows.
+- **Native per-order trade token formats**: official Upstox example
+  shows a legacy numeric `instrument_token` even though current
+  position and contract catalogs use `SEGMENT|token`. The source
+  validator may retain this *unresolved* numeric token, but **NEVER**
+  silently equates it to the original NSE_FO/BSE_FO contract.
+  Phase113 independent child-trade/exact-option matching must fail
+  closed absent independently authenticated mapping.
 
 A genuinely successful `[]` from an array endpoint remains `[]`,
 but does NOT certify a completed GTT, absence of earlier trading
