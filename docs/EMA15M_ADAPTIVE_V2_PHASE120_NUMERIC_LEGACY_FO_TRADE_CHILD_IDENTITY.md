@@ -40,6 +40,14 @@ corroboration**, if ALL of the following are already established:
   agree across **two authenticated read passes** with a pinned
   same-account auth epoch
 
+Additionally, **even modern exact-key trades** must not contradict
+a supplied parent GTT exchange `NSE_FO/BSE_FO`, child/trade
+`NFO/BFO`, per-trade `LIMIT` order type, or shared
+`trading_symbol`/`tradingsymbol` aliases. Missing optional
+metadata on a modern exact token remains evaluated through the
+existing exact order ID, exchange order ID and instrument-key
+conservation; a conflicting supplied value always quarantines.
+
 If a legacy token is present and corroborated, the redacted
 `brokerReportedLegacyTradeTokenCorroborated` field is true.
 `legacyNumericInstrumentTokenIndependentlyMapped` is ALWAYS
