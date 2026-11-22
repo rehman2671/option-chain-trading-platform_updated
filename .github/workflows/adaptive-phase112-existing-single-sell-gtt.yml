@@ -1,0 +1,37 @@
+name: Adaptive Phase112 existing NRML option SINGLE GTT SELL ENTRY research
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  existing-single-sell-conditional-exit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase112 SINGLE SELL ENTRY plus Phase90/101/107-111 NRML non-release tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase112_existing_single_sell_gtt.test.ts \
+            src/quant/tests/ema15m_adaptive_phase111_multiweek_carry_debit_risk.test.ts \
+            src/quant/tests/ema15m_adaptive_phase110_existing_nrml_day_stop.test.ts \
+            src/quant/tests/ema15m_adaptive_phase109_gtt_entry_buy_provenance.test.ts \
+            src/quant/tests/ema15m_adaptive_phase108_gtt_two_pass_drift.test.ts \
+            src/quant/tests/ema15m_adaptive_phase107_gtt_broker_auth_epoch.test.ts \
+            src/quant/tests/ema15m_adaptive_phase101_original_buy_trade_receipts.test.ts \
+            src/quant/tests/ema15m_adaptive_phase90_nrml_live_release_interlock.test.ts
