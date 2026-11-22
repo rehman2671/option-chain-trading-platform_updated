@@ -62,6 +62,12 @@ export class UpstoxProvider implements IMarketDataProvider {
     return this.historicalFoAuthEpoch;
   }
 
+  /** Local authentication lifecycle generation shared by read-only FO/GTT
+   * audits. A changing value invalidates cross-endpoint evidence. */
+  public getBrokerAuthEpoch(): number {
+    return this.historicalFoAuthEpoch;
+  }
+
   public getProviderMode(): DataProviderMode {
     return 'LIVE';
   }
