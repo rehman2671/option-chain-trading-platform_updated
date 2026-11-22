@@ -291,12 +291,25 @@ export async function reviewHistoricalFoTradeHistoryReadOnly(
   if(auth?.isConnected!==true||auth.userId!==s.expectedAccountId)
     return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
       ['BROKER_ACCOUNT_NOT_VERIFIED']);
+  // A multi-page GET is non-atomic. Never combine pages across a
+  // disconnected or switched account session, even if trade IDs match.
+  const accountStillBound=():boolean=>{
+    try{
+      const current=broker.getLiveConnectionStatus();
+      return current?.isConnected===true&&current.userId===s.expectedAccountId;
+    }catch{return false;}
+  };
   const pages:unknown[]=[];let totalPages:number|null=null;
   try{
     for(let n=1;n<=20;n++){
       const raw=await broker.getHistoricalFoTradesPage(
         s.startDate,s.endDate,n,1000
       );
+      // Bind the asynchronous response to the same expected broker
+      // identity before consuming it or requesting another page.
+      if(!accountStillBound())
+        return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
+          ['BROKER_ACCOUNT_CHANGED_DURING_HISTORICAL_FO_GET']);
       if(!obj(raw)||!obj(raw.meta_data)||!obj(raw.meta_data.page)||
          !pos(raw.meta_data.page.total_pages)||
          raw.meta_data.page.total_pages>20)
