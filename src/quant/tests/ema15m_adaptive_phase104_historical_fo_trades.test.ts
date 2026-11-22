@@ -219,9 +219,11 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
     const r=check(scope,evidence([page(records())],
       [buys[0],buys[0]],sells));locked(r);
     assert.equal(r.state,'HISTORICAL_FO_SOURCE_INCOMPLETE');
-    const invalid={...scope,originalBuyQuantity:75};
-    const n=check(invalid,evidence());locked(n);
-    assert.equal(n.state,'HISTORICAL_FO_TRADE_CONFLICT');
+    const impossible={...scope,originalBuyQuantity:75};
+    const n=check(impossible,evidence());locked(n);
+    // The scope itself is impossible (SELL 100 > original BUY 75),
+    // so the strongest fail-closed result occurs before history review.
+    assert.equal(n.state,'INVALID_HISTORICAL_FO_SCOPE');
   });
   it('BUY and SELL immutable trade ID collision cannot corroborate two separate directions',()=>{
     const collision=[{...sells[0],tradeId:buys[0].tradeId},sells[1]];
