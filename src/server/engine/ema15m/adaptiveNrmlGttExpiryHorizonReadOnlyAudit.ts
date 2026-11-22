@@ -31,7 +31,8 @@ const validOption=(x:unknown):x is string=>
   (x.startsWith('NSE_FO|')||x.startsWith('BSE_FO|'));
 export function validUpstoxGttTimeFieldsIfPresent(p:unknown):boolean{
   if(!obj(p))return false;
-  const c=Object.hasOwn(p,'created_at'),e=Object.hasOwn(p,'expires_at');
+  const c=Object.prototype.hasOwnProperty.call(p,'created_at');
+  const e=Object.prototype.hasOwnProperty.call(p,'expires_at');
   if(!c&&!e)return true; // old broker fixture: source is NOT certified
   return c&&e&&microseconds(p.created_at)&&
     microseconds(p.expires_at)&&p.created_at<p.expires_at;
