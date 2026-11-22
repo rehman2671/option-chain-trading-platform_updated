@@ -120,6 +120,7 @@ on:
       - 'research/adaptive-v2-phase117-upstox-read-transport-contract'
       - 'research/adaptive-v2-phase118-native-get-session-fence'
       - 'research/adaptive-v2-phase119-native-get-cardinality'
+      - 'research/adaptive-v2-phase120-legacy-fo-child-trade-identity'
   pull_request:
     branches:
       - main
@@ -241,6 +242,7 @@ on:
       - 'research/adaptive-v2-phase117-upstox-read-transport-contract'
       - 'research/adaptive-v2-phase118-native-get-session-fence'
       - 'research/adaptive-v2-phase119-native-get-cardinality'
+      - 'research/adaptive-v2-phase120-legacy-fo-child-trade-identity'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks
