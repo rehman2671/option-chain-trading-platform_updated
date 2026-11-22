@@ -78,7 +78,7 @@ export interface SingleSellGttReport{
   completedReadPasses:0|1|2;
   /** This is an order that MAY be placed if broker condition fires. */
   brokerReportedGttSellConditionNotNativeExchangeStop:true;
-  noGeneratedChildWhileScheduled:true;
+  brokerGeneratedChildAbsentWhileScheduled:boolean;
   noNewBuyCreatedByThisReadOnlyReview:true;
   originalBuyAndGttSellAreIndependentOrders:true;
   specificFnoContractGttEligibleIndependentlyVerified:false;
@@ -122,7 +122,7 @@ const make=(state:SingleSellGttState,reasons:string[],
     data.sameBrokerAccountAndAuthEpochAcrossReads===true,
   completedReadPasses:data.completedReadPasses??0,
   brokerReportedGttSellConditionNotNativeExchangeStop:true,
-  noGeneratedChildWhileScheduled:true,
+  brokerGeneratedChildAbsentWhileScheduled:\n    data.brokerReportedScheduledSingleSellCondition===true,
   noNewBuyCreatedByThisReadOnlyReview:true,
   originalBuyAndGttSellAreIndependentOrders:true,
   specificFnoContractGttEligibleIndependentlyVerified:false,
