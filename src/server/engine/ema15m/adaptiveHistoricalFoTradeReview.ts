@@ -163,11 +163,14 @@ const receipts=(raw:unknown,side:'BUY'|'SELL'):
     return {map:found,reason:'DURABLE_'+side+'_TRADE_RECEIPTS_MISSING'};
   for(const t of raw){
     if(!obj(t)||!id(t.tradeId)||found.has(t.tradeId)||
-       !id(t.exchangeOrderId)||!pos(t.quantity)||paise(t.price)===null)
+       !id(t.exchangeOrderId)||!pos(t.quantity))
+      return {map:found,reason:'DURABLE_'+side+'_TRADE_RECEIPT_INVALID'};
+    const pricePaise=paise(t.price);
+    if(pricePaise===null)
       return {map:found,reason:'DURABLE_'+side+'_TRADE_RECEIPT_INVALID'};
     found.set(t.tradeId,{
       tradeId:t.tradeId,exchangeOrderId:t.exchangeOrderId,
-      quantity:t.quantity,price:t.price
+      quantity:t.quantity,price:pricePaise/100
     });
   }
   return {map:found,reason:null};
