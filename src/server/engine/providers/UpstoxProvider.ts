@@ -14,6 +14,11 @@ import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import {resolveUniqueBrokerNetPosition}
   from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
+import {
+  guardExactBrokerGttGet,guardFullBrokerGttList,
+  guardFullBrokerOrderBook,guardExactBrokerOrderTrades,
+  guardFullBrokerPositionRows
+} from '../ema15m/adaptiveUpstoxNativeReadCardinalityGuard.js';
 
 export const COMMODITY_SYMBOLS = new Set(['GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER']);
 
@@ -486,7 +491,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      if (json?.status !== 'success' || !Array.isArray(json?.data)) return null;
+      if (json?.status !== 'success' ||
+          !guardFullBrokerPositionRows(json?.data)) return null;
       // Phase96: never SUM duplicate position rows or treat a missing
       // contract in a successfully returned portfolio as zero exposure.
       // Cross-product exposure or malformed rows require manual review.
@@ -517,8 +523,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      return json?.status === 'success' && Array.isArray(json?.data)
-        ? json.data : null;
+      return json?.status === 'success'
+        ? guardFullBrokerPositionRows(json?.data) : null;
     } catch {
       return null;
     }
@@ -690,7 +696,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+      return json?.status === 'success'
+        ? guardFullBrokerGttList(json?.data) : null;
     } catch (err: any) {
       console.warn('[UPSTOX] Read-only GTT order state unavailable');
       return null;
@@ -713,8 +720,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      return json?.status === 'success' && Array.isArray(json?.data)
-        ? json.data : null;
+      return json?.status === 'success'
+        ? guardExactBrokerGttGet(json?.data,gttId) : null;
     } catch { return null; }
   }
 
@@ -767,7 +774,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+      return json?.status === 'success'
+        ? guardFullBrokerOrderBook(json?.data) : null;
     } catch (err: any) {
       console.warn('[UPSTOX] Read-only order book unavailable');
       return null;
@@ -829,7 +837,8 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       if(!this.currentRiskReadIdentity(session))return null;
-      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+      return json?.status === 'success'
+        ? guardExactBrokerOrderTrades(json?.data,orderId) : null;
     } catch {
       // No order IDs, bearer token, user details or raw broker error in logs.
       console.warn('[UPSTOX] Read-only order trades unavailable');
