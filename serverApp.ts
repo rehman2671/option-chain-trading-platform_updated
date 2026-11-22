@@ -44,6 +44,9 @@ import {reviewGttEntryOriginalNrmlBuyReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttEntryBuyProvenance.js';
 import {reviewExistingNrmlDayStopReadOnly} from
   './src/server/engine/ema15m/adaptiveExistingNrmlDayStopReadOnly.js';
+import {
+  reviewMultiweekNrmlCarryDebitRisk,immutableOriginalDebitMatchesReceipt
+} from './src/server/engine/ema15m/adaptiveNrmlMultiweekCarryDebitRisk.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1736,6 +1739,152 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only native DAY stop order or local position unavailable.'
+      });
+    }
+  });
+
+  // Phase111: multi-week long-option premium debit risk & uncovered
+  // overnight transitions. SUPERADMIN, broker GETs only, NO LIVE release.
+  app.post('/api/ema15m/nrml-multiweek-carry-risk-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId,side,declaredExpiryDate,
+      horizonWeeks,declaredDebitBudgetINR,stopOrderId}=req.body||{};
+    const safeId=(v:unknown)=>typeof v==='string'&&
+      /^[A-Za-z0-9_-]{1,128}$/.test(v);
+    if(!safeId(positionId)||!safeId(expectedAccountId)||
+       !['LONG_CALL','LONG_PUT'].includes(side)||
+       ![1,2,4,8].includes(horizonWeeks)||
+       typeof declaredExpiryDate!=='string'||
+       !/^\d{4}-\d\d-\d\d$/.test(declaredExpiryDate)||
+       typeof declaredDebitBudgetINR!=='number'||
+       !Number.isFinite(declaredDebitBudgetINR)||
+       declaredDebitBudgetINR<=0||
+       (stopOrderId!==undefined&&!safeId(stopOrderId)))
+      return res.status(400).json({
+        error:'Exact NRML position/account, declared CALL/PUT, expiry, 1/2/4/8 weeks and positive debit risk budget required.'
+      });
+    try{
+      const current=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(current.length!==1||current[0].productType!=='NRML'||
+         current[0].brokerAccountId!==expectedAccountId||
+         typeof current[0].brokerInstrumentKey!=='string'||
+         !['NSE_FO|','BSE_FO|'].some(prefix=>
+           current[0].brokerInstrumentKey!.startsWith(prefix))||
+         !safeId(current[0].entryBrokerOrderId)||
+         !Number.isSafeInteger(current[0].quantity)||
+         current[0].quantity<=0||
+         !Number.isSafeInteger(current[0].lotSize)||
+         current[0].lotSize<=0||
+         current[0].quantity%current[0].lotSize!==0||
+         typeof current[0].entryPrice!=='number'||
+         !Number.isFinite(current[0].entryPrice)||
+         current[0].entryPrice<=0||
+         (stopOrderId!==undefined&&
+           stopOrderId===current[0].entryBrokerOrderId))
+        return res.status(409).json({
+          error:'Original unique durable fully-paid NRML long and whole lot evidence required.'
+        });
+      const p=current[0];
+      const original=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const receipt=original.originalBuyReceipt;
+      if(!receipt||!original.position||!original.entryAttempt||
+         !Array.isArray(original.originalBuyTrades)||
+         original.originalBuyTrades.length===0||
+         original.position.id!==p.id||
+         original.position.brokerAccountId!==expectedAccountId||
+         original.entryAttempt.id!==p.attemptId||
+         original.entryAttempt.orderStatus!=='FILLED'||
+         original.entryAttempt.brokerOrderId!==p.entryBrokerOrderId||
+         receipt.positionId!==p.id||
+         receipt.accountId!==expectedAccountId||
+         receipt.orderId!==p.entryBrokerOrderId||
+         receipt.originalQuantity!==p.quantity||
+         receipt.product!=='NRML'||
+         receipt.tradeCount!==original.originalBuyTrades.length||
+         !immutableOriginalDebitMatchesReceipt({
+           originalQuantity:p.quantity,entryUnitPremiumINR:p.entryPrice,
+           exchangeOrderId:receipt.exchangeOrderId,
+           tradeCount:receipt.tradeCount,
+           trades:original.originalBuyTrades
+         })||
+         typeof receipt.brokerReportedAveragePrice!=='number'||
+         !Number.isFinite(receipt.brokerReportedAveragePrice)||
+         Math.abs(receipt.brokerReportedAveragePrice-p.entryPrice)>0.011)
+        return res.status(409).json({
+          error:'Original immutable BUY receipt and durable unit premium disagree.'
+        });
+      const broker=activeProvider as any;
+      const auth=broker?.getLiveConnectionStatus?.();
+      const epoch=broker?.getBrokerAuthEpoch?.();
+      if(auth?.isConnected!==true||auth?.userId!==expectedAccountId||
+         !Number.isSafeInteger(epoch)||epoch<1||
+         typeof broker.getVerifiedNrmlPositionRows!=='function'||
+         typeof broker.getOrderBook!=='function'||
+         typeof broker.getGttOrders!=='function')
+        return res.status(503).json({
+          error:'Authenticated broker epoch and current account read-only GETs required.'
+        });
+      const same=()=>{
+        const a=broker.getLiveConnectionStatus();
+        return a?.isConnected===true&&a.userId===expectedAccountId&&
+          broker.getBrokerAuthEpoch()===epoch;
+      };
+      const fetchCensus=async()=>{
+        const [positions,orderBook,gttOrders]=await Promise.all([
+          broker.getVerifiedNrmlPositionRows(),
+          broker.getOrderBook(),broker.getGttOrders()
+        ]);
+        return {positions,orderBook,gttOrders};
+      };
+      const first=await fetchCensus();
+      if(!same())return res.status(409).json({
+        error:'Broker account or authentication epoch changed during carry review.'
+      });
+      const dayStop=stopOrderId!==undefined?
+        await reviewExistingNrmlDayStopReadOnly(broker,{
+          expectedAccountId,
+          instrumentKey:p.brokerInstrumentKey!,
+          originalBuyOrderId:p.entryBrokerOrderId!,
+          stopOrderId,originalLongQuantity:p.quantity,lotSize:p.lotSize
+        }):null;
+      if(!same())return res.status(409).json({
+        error:'Broker session changed during native DAY stop review.'
+      });
+      const last=await fetchCensus();
+      if(!same()||JSON.stringify(first)!==JSON.stringify(last))
+        return res.status(409).json({
+          error:'Broker account/position/order/GTT snapshots changed during carry review.'
+        });
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const afterPosition=dbEngine.getOpenEmaLivePositions()
+        .filter(x=>x.id===positionId);
+      if(afterPosition.length!==1||
+         JSON.stringify(p)!==JSON.stringify(afterPosition[0])||
+         JSON.stringify(original)!==JSON.stringify(after))
+        return res.status(409).json({
+          error:'Durable NRML journal or original BUY receipt changed during review.'
+        });
+      const report=reviewMultiweekNrmlCarryDebitRisk({
+        expectedAccountId,
+        instrumentKey:p.brokerInstrumentKey!,
+        originalBuyOrderId:p.entryBrokerOrderId!,
+        product:'NRML',side,originalQuantity:p.quantity,
+        lotSize:p.lotSize,
+        observedAt:new Date().toISOString(),
+        declaredExpiryDate,horizonWeeks,
+        originalUnitPremiumINR:p.entryPrice,
+        declaredDebitBudgetINR,
+        ...(stopOrderId===undefined?{}:{
+          inspectedDayStopOrderId:stopOrderId
+        })
+      },{...last,existingDayStopReport:dayStop});
+      // Even a valid debit budget has no approval or overnight exchange ACK.
+      return res.json(report);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only NRML multiweek debit/expiry/stop review unavailable.'
       });
     }
   });

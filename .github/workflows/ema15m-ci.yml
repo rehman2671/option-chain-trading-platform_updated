@@ -111,6 +111,7 @@ on:
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
+      - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
   pull_request:
     branches:
       - main
@@ -223,6 +224,7 @@ on:
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
+      - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
   workflow_dispatch:
 
 permissions:
