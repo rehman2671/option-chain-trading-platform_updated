@@ -6,6 +6,9 @@
  * NOT Unix milliseconds or seconds. A 1/2/4/8-week intended holding
  * window never certifies actual exchange sessions, options data,
  * GTT continuity, protective stop ACK or a guaranteed exit.
+ * The exchange field and finite positive trigger must independently
+ * agree with the exact broker-reported option instrument, even for a
+ * descriptive horizon overlap; no trigger tick/venue ACK is certified.
  *
  * No Date.now, broker calls, filesystem, database, writes or order APIs.
  */
@@ -132,6 +135,7 @@ export function auditGttNrmlSelectedHorizonExpiry(
   const fields:Partial<Fields>={selectedWeeks:scope.selectedWeeks};
   if(!obj(brokerGtt)||brokerGtt.gtt_order_id!==scope.gttOrderId||
      brokerGtt.instrument_token!==scope.instrumentKey||
+     brokerGtt.exchange!==scope.instrumentKey.split('|',1)[0]||
      brokerGtt.product!=='D'||brokerGtt.type!=='SINGLE'||
      brokerGtt.quantity===undefined||
      !Number.isSafeInteger(brokerGtt.quantity)||
@@ -140,7 +144,10 @@ export function auditGttNrmlSelectedHorizonExpiry(
      brokerGtt.rules.length!==1||!obj(brokerGtt.rules[0])||
      brokerGtt.rules[0].strategy!=='ENTRY'||
      brokerGtt.rules[0].transaction_type!=='SELL'||
-     brokerGtt.rules[0].trigger_type!=='BELOW')
+     brokerGtt.rules[0].trigger_type!=='BELOW'||
+     typeof brokerGtt.rules[0].trigger_price!=='number'||
+     !Number.isFinite(brokerGtt.rules[0].trigger_price)||
+     brokerGtt.rules[0].trigger_price<=0)
     return result('GTT_PARENT_ABSENT_OR_WRONG_IDENTITY',
       ['EXACT_OPTION_SINGLE_ENTRY_SELL_BELOW_GTT_PARENT_REQUIRED'],fields);
   if(!microseconds(brokerGtt.created_at)||
