@@ -702,9 +702,26 @@ export class UpstoxProvider implements IMarketDataProvider {
       });
       if (!res.ok) return null;
       const json: any = await res.json();
-      return json?.status === 'success' && json?.data &&
-        !Array.isArray(json.data) && typeof json.data === 'object'
-        ? json.data : null;
+      // A syntactically valid HTTP 200 with data:{} is NOT a native
+      // order ACK. Validate the exact requested order before exposing
+      // the record to read-only GTT child/SELL reconciliation.
+      const row: any = json?.data;
+      return json?.status === 'success' && row &&
+        !Array.isArray(row) && typeof row === 'object' &&
+        row.order_id === orderId &&
+        typeof row.instrument_token === 'string' &&
+        row.instrument_token.length > 0 &&
+        ['I', 'D', 'CO', 'MTF'].includes(row.product) &&
+        ['BUY', 'SELL'].includes(row.transaction_type) &&
+        ['MARKET', 'LIMIT', 'SL', 'SL-M'].includes(row.order_type) &&
+        typeof row.status === 'string' && row.status.length > 0 &&
+        Number.isSafeInteger(row.quantity) && row.quantity > 0 &&
+        Number.isSafeInteger(row.filled_quantity) &&
+        row.filled_quantity >= 0 &&
+        Number.isSafeInteger(row.pending_quantity) &&
+        row.pending_quantity >= 0 &&
+        row.filled_quantity + row.pending_quantity <= row.quantity
+        ? row : null;
     } catch { return null; }
   }
 
