@@ -109,6 +109,7 @@ on:
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
+      - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
   pull_request:
     branches:
       - main
@@ -219,6 +220,7 @@ on:
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
+      - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
   workflow_dispatch:
 
 permissions:
