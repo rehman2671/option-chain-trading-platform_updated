@@ -52,6 +52,8 @@ import {previewJointBuySellReceipts} from
   './src/server/engine/ema15m/adaptiveJointTradeReceiptReconciliation.js';
 import {reviewAccountWideExposureBrokerReadOnly} from
   './src/server/engine/ema15m/adaptiveAccountWideExposureReview.js';
+import {reviewHistoricalFoTradeHistoryReadOnly} from
+  './src/server/engine/ema15m/adaptiveHistoricalFoTradeReview.js';
 import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/server/engine/ema15m/adaptiveResearchService.js';
 
 const app = express();
@@ -1957,6 +1959,133 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Account read-only broker census or local receipt review unavailable.'
+      });
+    }
+  });
+
+  // Phase104: FO historical trades over the entire local option lifetime.
+  // A historical FO trade row has no reliable original order_id or option
+  // instrument token, so matches remain broker-reported corroboration ONLY.
+  // Every exchange/account settlement, charge, stop and live gate stays OFF.
+  app.post('/api/ema15m/historical-fo-trade-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId}=req.body||{};
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128||
+       typeof expectedAccountId!=='string'||expectedAccountId.length<1||
+       expectedAccountId.length>128)
+      return res.status(400).json({
+        error:'Exact durable position and expected broker account required.'
+      });
+    try{
+      const positions=dbEngine.getOpenEmaLivePositions()
+        .filter(p=>p.id===positionId);
+      if(positions.length!==1||positions[0].status!=='EXIT_PENDING'||
+         positions[0].brokerAccountId!==expectedAccountId||
+         !positions[0].brokerInstrumentKey||
+         !positions[0].entryTimestamp||
+         !Number.isSafeInteger(positions[0].quantity)||
+         positions[0].quantity<=0||
+         !Number.isSafeInteger(positions[0].lotSize)||
+         positions[0].lotSize<=0||
+         positions[0].quantity%positions[0].lotSize!==0)
+        return res.status(409).json({
+          error:'Unique exact option/account and full original BUY provenance required.'
+        });
+      const p=positions[0],broker=activeProvider as any;
+      const auth=typeof broker?.getLiveConnectionStatus==='function'
+        ?broker.getLiveConnectionStatus():null;
+      if(auth?.isConnected!==true||auth?.userId!==expectedAccountId||
+         typeof broker?.getHistoricalFoTradesPage!=='function'||
+         typeof broker?.getVerifiedLivePositionQuantity!=='function')
+        return res.status(503).json({
+          error:'Authenticated broker historical FO and native net GETs unavailable.'
+        });
+      const before=dbEngine.readEmaJointBuySellEvidence(positionId);
+      if(!before.originalBuyReceipt||before.originalBuyTrades.length===0||
+         before.trades.length===0||
+         !before.position||
+         before.position.exitFilledQuantity!==0||
+         before.observations.length===0)
+        return res.status(409).json({
+          error:'Complete immutable original BUY and current SELL trade receipts are required.'
+        });
+      const last=before.observations[before.observations.length-1];
+      if(last.brokerOrderId!==p.exitBrokerOrderId||
+         last.requestedQuantity!==p.quantity||
+         typeof last.filledQuantity!=='number'||
+         !Number.isSafeInteger(last.filledQuantity)||
+         last.filledQuantity<=0||last.filledQuantity>p.quantity)
+        return res.status(409).json({
+          error:'Exact original SELL child execution total cannot be reconstructed.'
+        });
+      // Use NSE trading-zone calendar dates, not UTC date boundaries,
+      // so a late UTC day never omits an Indian trading-day execution.
+      const indiaDate=(d:Date):string=>{
+        const parts=new Intl.DateTimeFormat('en-GB',{
+          timeZone:'Asia/Kolkata',day:'2-digit',month:'2-digit',
+          year:'numeric'
+        }).formatToParts(d);
+        const part=(type:string)=>parts.find(x=>x.type===type)?.value||'';
+        return part('year')+'-'+part('month')+'-'+part('day');
+      };
+      const entryDateObj=new Date(p.entryTimestamp);
+      if(!Number.isFinite(entryDateObj.getTime()))
+        return res.status(409).json({
+          error:'Original option entry trading date missing or invalid.'
+        });
+      const entryDate=indiaDate(entryDateObj);
+      const asOfDate=indiaDate(new Date());
+      const exchange=p.brokerInstrumentKey.startsWith('NSE_FO|')?'NFO':
+        p.brokerInstrumentKey.startsWith('BSE_FO|')?'BFO':null;
+      if(!exchange)return res.status(409).json({
+        error:'Native NSE/BSE FO exchange contract scope not independently matched.'
+      });
+      const history=await reviewHistoricalFoTradeHistoryReadOnly(broker,{
+        expectedAccountId,startDate:entryDate,endDate:asOfDate,
+        entryTradeDate:entryDate,asOfDate,
+        underlyingSymbol:p.instrument,optionType:p.optionType,
+        strikePrice:p.strikePrice,expiryDate:p.expiryDate,
+        exchange,originalBuyQuantity:p.quantity,
+        exitedSellQuantity:last.filledQuantity
+      },before.originalBuyTrades,before.trades);
+      // Fresh portfolio read follows all historical pagination, never
+      // replace a missing exact net with fabricated zero.
+      const freshBrokerNetQuantity=await broker.getVerifiedLivePositionQuantity(
+        p.brokerInstrumentKey,p.productType
+      );
+      const authAfter=broker.getLiveConnectionStatus();
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      if(authAfter?.isConnected!==true||
+         authAfter?.userId!==expectedAccountId||
+         JSON.stringify(before)!==JSON.stringify(after))
+        return res.status(409).json({
+          state:'BROKER_ACCOUNT_OR_DURABLE_LEDGER_CHANGED_DURING_REVIEW',
+          independentExchangeExecutionCertified:false,
+          automaticPositionClosureAuthorized:false,
+          realisedPnlWriteAuthorized:false,liveNrmlBuyAuthorized:false,
+          brokerWrites:0,localWrites:0
+        });
+      const joint=previewJointBuySellReceipts({
+        positionId,accountId:expectedAccountId
+      },{...after,freshBrokerNetQuantity});
+      if(!['BROKER_REPORTED_BUY_AND_SELL_FLAT_NOT_CERTIFIED',
+         'BROKER_REPORTED_BUY_AND_SELL_PARTIAL_NOT_SETTLED']
+          .includes(joint.state))
+        return res.status(409).json({
+          state:'JOINT_LEDGER_OR_CURRENT_BROKER_NET_NOT_RECONCILED',
+          jointReceiptState:joint.state,
+          independentExchangeExecutionCertified:false,
+          automaticPositionClosureAuthorized:false,
+          realisedPnlWriteAuthorized:false,liveNrmlBuyAuthorized:false,
+          brokerWrites:0,localWrites:0
+        });
+      return res.json({...history,jointReceiptState:joint.state,
+        jointReceiptIndependentExchangeCertified:false});
+    }catch{
+      return res.status(503).json({
+        error:'Read-only historical FO GET or private trade ledger review unavailable.'
       });
     }
   });
