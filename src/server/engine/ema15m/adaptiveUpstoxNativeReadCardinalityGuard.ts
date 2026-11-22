@@ -7,6 +7,8 @@
  * an expiry calendar, or a LIVE NRML release authorization.
  * Guard failures return null (UNKNOWN), never [] (known empty).
  */
+import {validUpstoxGttTimeFieldsIfPresent}
+  from './adaptiveNrmlGttExpiryHorizonReadOnlyAudit.js';
 type Row=Record<string,unknown>;
 const obj=(x:unknown):x is Row=>
   x!==null&&typeof x==='object'&&!Array.isArray(x);
@@ -45,6 +47,7 @@ export function guardExactBrokerGttGet(raw:unknown,expected:string):Row[]|null{
   if(raw.length===0)return [];
   const p=raw[0];
   return p.gtt_order_id===expected&&gtt(p.gtt_order_id)&&
+    validUpstoxGttTimeFieldsIfPresent(p)&&
     instrument(p.instrument_token)&&products.has(String(p.product))&&
     ['SINGLE','MULTIPLE'].includes(String(p.type))&&
     positive(p.quantity)&&Array.isArray(p.rules)&&p.rules.length>0&&
@@ -61,6 +64,7 @@ export function guardFullBrokerGttList(raw:unknown):Row[]|null{
   const seen=new Set<string>();
   for(const p of raw){
     if(!gtt(p.gtt_order_id)||seen.has(p.gtt_order_id)||
+       !validUpstoxGttTimeFieldsIfPresent(p)||
        !instrument(p.instrument_token)||!products.has(String(p.product))||
        !['SINGLE','MULTIPLE'].includes(String(p.type))||
        !positive(p.quantity)||!Array.isArray(p.rules)||
