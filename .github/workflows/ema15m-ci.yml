@@ -110,6 +110,7 @@ on:
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
+      - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
   pull_request:
     branches:
       - main
@@ -221,6 +222,7 @@ on:
       - 'research/adaptive-v2-phase107-gtt-session-epoch'
       - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
+      - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
   workflow_dispatch:
 
 permissions:

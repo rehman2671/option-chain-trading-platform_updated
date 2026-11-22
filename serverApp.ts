@@ -42,6 +42,8 @@ import {reviewNrmlStopLifecycleTwoPassReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlStopLifecycleTwoPassReview.js';
 import {reviewGttEntryOriginalNrmlBuyReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlGttEntryBuyProvenance.js';
+import {reviewExistingNrmlDayStopReadOnly} from
+  './src/server/engine/ema15m/adaptiveExistingNrmlDayStopReadOnly.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1671,6 +1673,69 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only GTT/immutable BUY provenance evidence unavailable.'
+      });
+    }
+  });
+
+  // Phase110: SUPERADMIN existing native SELL DAY SL/SL-M research only.
+  // DAY stop != overnight positional protection; NO BUY, SELL or GTT writes.
+  app.post('/api/ema15m/nrml-existing-day-stop-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId,stopOrderId}=req.body||{};
+    const properId=(v:unknown)=>typeof v==='string'&&
+      /^[A-Za-z0-9_-]{1,128}$/.test(v);
+    if(!properId(positionId)||!properId(expectedAccountId)||
+       !properId(stopOrderId))
+      return res.status(400).json({
+        error:'Exact durable position, broker account and existing SELL stop order ID required.'
+      });
+    try{
+      const records=dbEngine.getOpenEmaLivePositions();
+      const selected=records.filter(p=>p.id===positionId);
+      if(selected.length!==1||selected[0].productType!=='NRML'||
+         selected[0].brokerAccountId!==expectedAccountId||
+         typeof selected[0].brokerInstrumentKey!=='string'||
+         !['NSE_FO|','BSE_FO|'].some(pre=>
+           selected[0].brokerInstrumentKey!.startsWith(pre))||
+         !properId(selected[0].entryBrokerOrderId)||
+         selected[0].entryBrokerOrderId===stopOrderId||
+         !Number.isSafeInteger(selected[0].quantity)||
+         !Number.isSafeInteger(selected[0].lotSize)||
+         selected[0].quantity<=0||selected[0].lotSize<=0||
+         selected[0].quantity%selected[0].lotSize!==0)
+        return res.status(409).json({
+          error:'Unique original NRML long, contract, filled BUY ID and whole lot required.'
+        });
+      const p=selected[0];
+      const broker=activeProvider as any;
+      const epoch=broker?.getBrokerAuthEpoch?.();
+      if(!Number.isSafeInteger(epoch)||epoch<1)
+        return res.status(503).json({
+          error:'Local broker authentication generation unavailable.'
+        });
+      const report=await reviewExistingNrmlDayStopReadOnly(broker,{
+        expectedAccountId,instrumentKey:p.brokerInstrumentKey!,
+        originalBuyOrderId:p.entryBrokerOrderId!,
+        stopOrderId,originalLongQuantity:p.quantity,lotSize:p.lotSize
+      });
+      const after=dbEngine.getOpenEmaLivePositions()
+        .filter(x=>x.id===positionId);
+      const auth=broker.getLiveConnectionStatus?.();
+      if(broker.getBrokerAuthEpoch?.()!==epoch||
+         auth?.isConnected!==true||auth?.userId!==expectedAccountId||
+         after.length!==1||
+         JSON.stringify(p)!==JSON.stringify(after[0]))
+        return res.status(409).json({
+          state:'BROKER_ACCOUNT_OR_DURABLE_NRML_POSITION_CHANGED_DURING_REVIEW',
+          brokerExchangeStopAckIndependentlyCertified:false,
+          overnightOptionGapProtectionCertified:false,
+          liveNrmlBuyAuthorized:false,brokerWrites:0,localWrites:0
+        });
+      return res.json(report);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only native DAY stop order or local position unavailable.'
       });
     }
   });
