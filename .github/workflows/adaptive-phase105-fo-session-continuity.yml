@@ -1,0 +1,33 @@
+name: Adaptive Phase105 FO session continuity (read-only)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase105-fo-session-continuity'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase104-multiday-fo-trade-history-corroboration'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  historical-fo-session-continuity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 26
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript compile gate
+        run: npm run lint
+      - name: Phase105 broker identity continuity and prior historical evidence checks
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase105_fo_account_session_continuity.test.ts \
+            src/quant/tests/ema15m_adaptive_phase104_historical_fo_trades.test.ts \
+            src/quant/tests/ema15m_adaptive_phase103_account_wide_exposure_review.test.ts \
+            src/quant/tests/ema15m_adaptive_phase102_joint_buy_sell_receipts.test.ts
