@@ -469,7 +469,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const result = resolveUniqueBrokerNetPosition(json.data,instrumentKey,product);
       return result.verified ? result.netQuantity : null;
     } catch (err: any) {
-      console.warn('[EMA BROKER] Verified position lookup unavailable:', err?.message || String(err));
+      console.warn('[EMA BROKER] Read-only verified position lookup unavailable');
       return null;
     }
   }
@@ -514,7 +514,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         return json.data || [];
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getPositions error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only positions unavailable');
     }
     return [];
   }
@@ -664,7 +664,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
-      console.warn('[UPSTOX] Current GTT order state unavailable:', err?.message || err);
+      console.warn('[UPSTOX] Read-only GTT order state unavailable');
       return null;
     }
   }
@@ -718,7 +718,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
-      console.warn('[UPSTOX] Order book unavailable:', err?.message || err);
+      console.warn('[UPSTOX] Read-only order book unavailable');
       return null;
     }
   }
@@ -798,7 +798,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         return Array.isArray(json.data) ? json.data : (json.data ? [json.data] : []);
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getOrderHistory error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only order history unavailable');
     }
     return [];
   }
