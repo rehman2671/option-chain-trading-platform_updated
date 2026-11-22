@@ -257,7 +257,7 @@ describe('Phase118 in-flight Upstox native GET account/token/epoch fence',()=>{
     ];
     for(const name of required)assert.ok(source.includes(name),name);
     assert.equal((source.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
-    assert.equal((source.match(/AbortSignal\\.timeout\\(12_000\\)/g)||[]).length,8);
+    assert.equal((source.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,8);
     assert.equal(assessEmaLiveProductGate('NRML').allowed,false);
   });
 });
