@@ -181,10 +181,9 @@ export function auditTriggeredSingleSellGttChild(
 ):TriggeredSellGttReport{
   if(!valid(scope))return report('INVALID_SCOPE',
     ['INVALID_ORIGINAL_NRML_LONG_ACCOUNT_OPTION_GTT_OR_LOTS']);
-  if(!s||!Array.isArray(s.exactGtt)||!Array.isArray(s.allGtts)||
-     !Array.isArray(s.orderBook)||!Array.isArray(s.positions))
+  if(!s||!Array.isArray(s.exactGtt))
     return report('GTT_PARENT_NOT_RETRIEVABLE_OR_BROKER_SOURCE_INCOMPLETE',
-      ['GTT_CURRENT_PARENT_ORDERBOOK_GTT_LIST_OR_NET_UNAVAILABLE']);
+      ['GTT_CURRENT_PARENT_GET_UNAVAILABLE']);
   if(s.exactGtt.length!==1)
     return report('GTT_PARENT_NOT_RETRIEVABLE_OR_BROKER_SOURCE_INCOMPLETE',
       ['COMPLETED_GTT_MAY_NOT_BE_RETURNED_BY_UPSTOX_GET']);
@@ -195,6 +194,12 @@ export function auditTriggeredSingleSellGttChild(
   if(p.status==='SCHEDULED')
     return report('SCHEDULED_GTT_HAS_NO_GENERATED_SELL_CHILD',
       ['SCHEDULED_BROKER_GTT_HAS_NULL_CHILD_NO_EXCHANGE_ORDER']);
+  // No child GET is warranted for a scheduled rule; after a generated
+  // child, full account order/GTT/net source completeness is required.
+  if(!Array.isArray(s.allGtts)||!Array.isArray(s.orderBook)||
+     !Array.isArray(s.positions))
+    return report('GTT_PARENT_NOT_RETRIEVABLE_OR_BROKER_SOURCE_INCOMPLETE',
+      ['GTT_ACCOUNT_ORDERBOOK_OR_BROKER_NRML_NET_GET_MISSING']);
   const base:Data={brokerReportedOriginalLongQuantity:
     scope.originalLongQuantity};
   if(!obj(s.childOrder)||!Array.isArray(s.childTrades))
