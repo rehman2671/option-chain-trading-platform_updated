@@ -264,7 +264,7 @@ describe('Phase104 historical FO full-range trade ID, contract and pagination au
     };
     const r=await reviewHistoricalFoTradeHistoryReadOnly(broker,scope,buys,sells);
     locked(r);assert.equal(r.state,'BROKER_REPORTED_MULTIDAY_TRADES_MATCH_NOT_CERTIFIED');
-    assert.deepEqual(calls,['auth','page1','page2']);
+    assert.deepEqual(calls,['auth','page1','auth','page2','auth']);
   });
   it('async adapter denies account mismatch before requesting page one',async()=>{
     let calls=0;
