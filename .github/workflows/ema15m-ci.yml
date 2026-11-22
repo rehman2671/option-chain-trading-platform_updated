@@ -117,6 +117,7 @@ on:
       - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
       - 'research/adaptive-v2-phase115-missing-gtt-historical-sell-history-join'
       - 'research/adaptive-v2-phase116-portfolio-stream-gtt-replay-quarantine'
+      - 'research/adaptive-v2-phase117-upstox-read-transport-contract'
   pull_request:
     branches:
       - main
@@ -235,6 +236,7 @@ on:
       - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
       - 'research/adaptive-v2-phase115-missing-gtt-historical-sell-history-join'
       - 'research/adaptive-v2-phase116-portfolio-stream-gtt-replay-quarantine'
+      - 'research/adaptive-v2-phase117-upstox-read-transport-contract'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks

@@ -469,7 +469,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const result = resolveUniqueBrokerNetPosition(json.data,instrumentKey,product);
       return result.verified ? result.netQuantity : null;
     } catch (err: any) {
-      console.warn('[EMA BROKER] Verified position lookup unavailable:', err?.message || String(err));
+      console.warn('[EMA BROKER] Read-only verified position lookup unavailable');
       return null;
     }
   }
@@ -514,7 +514,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         return json.data || [];
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getPositions error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only positions unavailable');
     }
     return [];
   }
@@ -664,7 +664,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
-      console.warn('[UPSTOX] Current GTT order state unavailable:', err?.message || err);
+      console.warn('[UPSTOX] Read-only GTT order state unavailable');
       return null;
     }
   }
@@ -702,9 +702,26 @@ export class UpstoxProvider implements IMarketDataProvider {
       });
       if (!res.ok) return null;
       const json: any = await res.json();
-      return json?.status === 'success' && json?.data &&
-        !Array.isArray(json.data) && typeof json.data === 'object'
-        ? json.data : null;
+      // A syntactically valid HTTP 200 with data:{} is NOT a native
+      // order ACK. Validate the exact requested order before exposing
+      // the record to read-only GTT child/SELL reconciliation.
+      const row: any = json?.data;
+      return json?.status === 'success' && row &&
+        !Array.isArray(row) && typeof row === 'object' &&
+        row.order_id === orderId &&
+        typeof row.instrument_token === 'string' &&
+        row.instrument_token.length > 0 &&
+        ['I', 'D', 'CO', 'MTF'].includes(row.product) &&
+        ['BUY', 'SELL'].includes(row.transaction_type) &&
+        ['MARKET', 'LIMIT', 'SL', 'SL-M'].includes(row.order_type) &&
+        typeof row.status === 'string' && row.status.length > 0 &&
+        Number.isSafeInteger(row.quantity) && row.quantity > 0 &&
+        Number.isSafeInteger(row.filled_quantity) &&
+        row.filled_quantity >= 0 &&
+        Number.isSafeInteger(row.pending_quantity) &&
+        row.pending_quantity >= 0 &&
+        row.filled_quantity + row.pending_quantity <= row.quantity
+        ? row : null;
     } catch { return null; }
   }
 
@@ -718,7 +735,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
     } catch (err: any) {
-      console.warn('[UPSTOX] Order book unavailable:', err?.message || err);
+      console.warn('[UPSTOX] Read-only order book unavailable');
       return null;
     }
   }
@@ -760,9 +777,13 @@ export class UpstoxProvider implements IMarketDataProvider {
     }catch{return null;}
   }
 
-  /** Individual exchange executions for an order; unavailable is null, not []. */
+  /** Individual broker-reported current-day order executions.
+   * Refuse malformed IDs and unavailable sources; NEVER coerce to [].
+   * A broker trade ID/order ID is sensitive and must not enter logs.
+   */
   public async getOrderTrades(orderId: string): Promise<any[] | null> {
-    if (!this.isConnected || !this.accessToken || !orderId) return null;
+    if (!this.isConnected || !this.accessToken ||
+        !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
     try {
       const res = await fetch(
         'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
@@ -771,8 +792,9 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) return null;
       const json: any = await res.json();
       return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
-    } catch (err: any) {
-      console.warn('[UPSTOX] Order trades unavailable for ' + orderId + ':', err?.message || err);
+    } catch {
+      // No order IDs, bearer token, user details or raw broker error in logs.
+      console.warn('[UPSTOX] Read-only order trades unavailable');
       return null;
     }
   }
@@ -793,7 +815,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         return Array.isArray(json.data) ? json.data : (json.data ? [json.data] : []);
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getOrderHistory error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only order history unavailable');
     }
     return [];
   }
