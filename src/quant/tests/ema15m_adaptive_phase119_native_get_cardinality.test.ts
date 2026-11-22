@@ -93,8 +93,10 @@ const safety=()=>{
 };
 describe('Phase119 exact Upstox native GET cardinality and duplicate-ID quarantine',()=>{
   it('successful [] is genuinely empty; wrong data or invalid request never equates to []',async()=>{
-    for(const e of (['gtt_details','gtt_list','book','trades','positions']
-      as Endpoint[])){
+    const endpoints:Endpoint[]=[
+      'gtt_details','gtt_list','book','trades','positions'
+    ];
+    for(const e of endpoints){
       await withOfflineNativeGet(body([]),async(p,urls)=>{
         assert.deepEqual(await get[e](p),[],e);
         assert.equal(urls.length,1);
