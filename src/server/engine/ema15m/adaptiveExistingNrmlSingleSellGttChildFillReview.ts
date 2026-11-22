@@ -176,7 +176,6 @@ const dead=new Set(['CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED']);
 const pending=new Set(['CANCEL PENDING','MODIFY PENDING',
   'MODIFY VALIDATION PENDING','PUT ORDER REQ RECEIVED',
   'VALIDATION PENDING','TRIGGER PENDING']);
-type Checked={state:TriggeredSellGttState;result:TriggeredSellGttReport};
 export function auditTriggeredSingleSellGttChild(
   scope:TriggeredSellGttScope,s:TriggeredSellGttSnapshot
 ):TriggeredSellGttReport{
