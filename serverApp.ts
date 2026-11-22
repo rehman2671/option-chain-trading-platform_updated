@@ -49,6 +49,8 @@ import {
 } from './src/server/engine/ema15m/adaptiveNrmlMultiweekCarryDebitRisk.js';
 import {reviewExistingSingleSellGttTwoPassReadOnly} from
   './src/server/engine/ema15m/adaptiveExistingNrmlSingleSellGttReadOnly.js';
+import {reviewTriggeredSingleSellGttTwoPassReadOnly} from
+  './src/server/engine/ema15m/adaptiveExistingNrmlSingleSellGttChildFillReview.js';
 import {reviewNrmlRestartReadOnly} from
   './src/server/engine/ema15m/adaptiveNrmlRestartQuarantine.js';
 import {reviewBrokerExitFillReadOnly} from
@@ -1982,6 +1984,107 @@ async function startServer() {
     }catch{
       return res.status(503).json({
         error:'Read-only existing SINGLE SELL GTT broker audit unavailable.'
+      });
+    }
+  });
+
+  // Phase113: SUPERADMIN read-only GTT ENTRY SELL generated LIMIT child,
+  // trade-ID/fill/net conservation. No native stop or closure approval.
+  app.post('/api/ema15m/nrml-single-sell-gtt-child-fill-review',
+    requireSuperAdmin as any,async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const {positionId,expectedAccountId,gttOrderId}=req.body||{};
+    const properId=(x:unknown)=>typeof x==='string'&&
+      /^[A-Za-z0-9_-]{1,128}$/.test(x);
+    if(!properId(positionId)||!properId(expectedAccountId)||
+       typeof gttOrderId!=='string'||
+       !/^GTT-[A-Za-z0-9-]{1,124}$/.test(gttOrderId))
+      return res.status(400).json({
+        error:'Exact NRML durable position, account and GTT order ID required.'
+      });
+    try{
+      const all=dbEngine.getOpenEmaLivePositions();
+      const selected=all.filter(p=>p.id===positionId);
+      if(selected.length!==1||
+         !['OPEN','EXIT_PENDING'].includes(selected[0].status)||
+         selected[0].productType!=='NRML'||
+         selected[0].brokerAccountId!==expectedAccountId||
+         typeof selected[0].brokerInstrumentKey!=='string'||
+         !['NSE_FO|','BSE_FO|'].some(pre=>
+           selected[0].brokerInstrumentKey!.startsWith(pre))||
+         !properId(selected[0].entryBrokerOrderId)||
+         !Number.isSafeInteger(selected[0].quantity)||
+         !Number.isSafeInteger(selected[0].lotSize)||
+         selected[0].quantity<=0||selected[0].lotSize<=0||
+         selected[0].quantity%selected[0].lotSize!==0||
+         all.filter(p=>p.brokerAccountId===expectedAccountId&&
+           p.productType==='NRML'&&
+           p.brokerInstrumentKey===selected[0].brokerInstrumentKey).length!==1)
+        return res.status(409).json({
+          error:'Unique same-account original NRML option long and whole lot required.'
+        });
+      const p=selected[0],before=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const receipt=before.originalBuyReceipt;
+      if(!receipt||!before.position||!before.entryAttempt||
+         !Array.isArray(before.originalBuyTrades)||
+         before.position.id!==p.id||
+         before.position.brokerAccountId!==expectedAccountId||
+         before.entryAttempt.id!==p.attemptId||
+         before.entryAttempt.brokerAccountId!==expectedAccountId||
+         before.entryAttempt.orderStatus!=='FILLED'||
+         before.entryAttempt.brokerOrderId!==p.entryBrokerOrderId||
+         receipt.positionId!==p.id||receipt.accountId!==expectedAccountId||
+         receipt.attemptId!==p.attemptId||
+         receipt.orderId!==p.entryBrokerOrderId||
+         receipt.product!=='NRML'||
+         receipt.instrumentKey!==p.brokerInstrumentKey||
+         receipt.originalQuantity!==p.quantity||
+         !immutableOriginalDebitMatchesReceipt({
+           originalQuantity:p.quantity,
+           entryUnitPremiumINR:p.entryPrice,
+           exchangeOrderId:receipt.exchangeOrderId,
+           tradeCount:receipt.tradeCount,
+           trades:before.originalBuyTrades
+         }))
+        return res.status(409).json({
+          error:'Original immutable BUY receipt and historical trade IDs inconsistent.'
+        });
+      const broker=activeProvider as any;
+      const auth=broker?.getLiveConnectionStatus?.();
+      const epoch=broker?.getBrokerAuthEpoch?.();
+      if(auth?.isConnected!==true||auth.userId!==expectedAccountId||
+         !Number.isSafeInteger(epoch)||epoch<1)
+        return res.status(503).json({
+          error:'Broker account and local authentication session unavailable.'
+        });
+      const result=await reviewTriggeredSingleSellGttTwoPassReadOnly(broker,{
+        expectedAccountId,instrumentKey:p.brokerInstrumentKey!,
+        originalBuyOrderId:p.entryBrokerOrderId!,
+        gttOrderId,originalLongQuantity:p.quantity,lotSize:p.lotSize
+      });
+      const after=dbEngine.readEmaJointBuySellEvidence(positionId);
+      const afterPositions=dbEngine.getOpenEmaLivePositions();
+      const final=afterPositions.filter(x=>x.id===positionId);
+      const lastAuth=broker.getLiveConnectionStatus?.();
+      if(broker.getBrokerAuthEpoch?.()!==epoch||
+         lastAuth?.isConnected!==true||
+         lastAuth.userId!==expectedAccountId||
+         final.length!==1||
+         afterPositions.filter(x=>x.brokerAccountId===expectedAccountId&&
+           x.productType==='NRML'&&
+           x.brokerInstrumentKey===p.brokerInstrumentKey).length!==1||
+         JSON.stringify(p)!==JSON.stringify(final[0])||
+         JSON.stringify(before)!==JSON.stringify(after))
+        return res.status(409).json({
+          state:'BROKER_ACCOUNT_OR_DURABLE_NRML_RECEIPTS_CHANGED_DURING_REVIEW',
+          brokerExchangeNativeProtectiveStopAckCertified:false,
+          automaticPositionClosureAuthorized:false,
+          liveNrmlBuyAuthorized:false,brokerWrites:0,localWrites:0
+        });
+      return res.json(result);
+    }catch{
+      return res.status(503).json({
+        error:'Read-only GTT child order/SELL fills/NRML net review unavailable.'
       });
     }
   });

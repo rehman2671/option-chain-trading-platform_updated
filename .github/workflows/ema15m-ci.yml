@@ -113,6 +113,7 @@ on:
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
+      - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
   pull_request:
     branches:
       - main
@@ -227,6 +228,7 @@ on:
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
+      - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
   workflow_dispatch:
 
 permissions:
