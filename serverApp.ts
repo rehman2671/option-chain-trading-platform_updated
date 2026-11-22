@@ -2260,6 +2260,7 @@ async function startServer() {
       const last=before.observations[before.observations.length-1];
       if(last.brokerOrderId!==p.exitBrokerOrderId||
          last.requestedQuantity!==p.quantity||
+         typeof last.filledQuantity!=='number'||
          !Number.isSafeInteger(last.filledQuantity)||
          last.filledQuantity<=0||last.filledQuantity>p.quantity)
         return res.status(409).json({
