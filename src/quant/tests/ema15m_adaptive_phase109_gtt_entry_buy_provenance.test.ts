@@ -37,6 +37,7 @@ const parent=(change:Record<string,unknown>={},rules:any[]=[entry(),stop()])=>({
 });
 const buy=()=>({
   order_id:scope.originalBuyOrderId,
+  order_ref_id:scope.gttOrderId,
   exchange_order_id:scope.originalBuyExchangeOrderId,
   instrument_token:scope.instrumentKey,product:'D',
   transaction_type:'BUY',status:'complete',
@@ -185,6 +186,7 @@ describe('Phase109 read-only Upstox v3 ENTRY+STOPLOSS GTT immutable BUY provenan
       {status:'open'},{filled_quantity:50},{quantity:150},
       {pending_quantity:1},{product:'I'},{transaction_type:'SELL'},
       {exchange_order_id:'PH109-EXCHANGE-OTHER'},
+      {order_ref_id:'GTT-NOT-ORIGINAL-PARENT'},
       {instrument_token:'NSE_FO|OTHER'}, {order_id:'PH109-DIFFERENT'}
     ]){
       const d=e();d.originalBuyOrder={...buy(),...edit};
