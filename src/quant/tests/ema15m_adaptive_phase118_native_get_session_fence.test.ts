@@ -86,6 +86,9 @@ async function withTransport<T>(
     assert.equal(init?.method??'GET','GET');
     assert.equal(new Headers(init?.headers).get('Authorization'),
       'Bearer '+token);
+    assert.ok(init?.signal instanceof AbortSignal,
+      'Every native GET must have a bounded timeout signal');
+    assert.equal(init.signal.aborted,false);
     return fn({url,init});
   }) as typeof fetch;
   try{return await task(fake(),urls);}
@@ -204,6 +207,17 @@ describe('Phase118 in-flight Upstox native GET account/token/epoch fence',()=>{
       });
     }
   });
+  it('all eight native GET methods fail closed on abort or timeout exception',async()=>{
+    for(const c of cases){
+      await withTransport(async()=>{
+        throw new DOMException('fake timeout '+token,'AbortError');
+      },async(p,urls)=>{
+        assert.equal(await c.read(p),null,c.name);
+        assert.equal(urls.length,1);
+        safe();
+      });
+    }
+  });
   it('unknown/zero epoch, missing account or disconnected token reject before network',async()=>{
     for(const change of [
       {historicalFoAuthEpoch:0},
@@ -243,6 +257,7 @@ describe('Phase118 in-flight Upstox native GET account/token/epoch fence',()=>{
     ];
     for(const name of required)assert.ok(source.includes(name),name);
     assert.equal((source.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
+    assert.equal((source.match(/AbortSignal\\.timeout\\(12_000\\)/g)||[]).length,8);
     assert.equal(assessEmaLiveProductGate('NRML').allowed,false);
   });
 });
