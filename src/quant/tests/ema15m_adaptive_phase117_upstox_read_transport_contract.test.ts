@@ -248,7 +248,10 @@ describe('Phase117 real Upstox provider native GET transport fail-closed contrac
       await withStub((r)=>r.url.includes('short-term-positions')?
         ok(rows):handlers(r),async(p)=>{
           const raw=await p.getVerifiedNrmlPositionRows();
-          assert.ok(Array.isArray(raw),'Raw array is diagnostic only');
+          // Phase119: a duplicate/malformed broker account list is now
+          // unavailable at ingress; a valid but irrelevant short row
+          // may remain in a structurally sound raw account response.
+          assert.ok(raw===null||Array.isArray(raw));
           assert.equal(await p.getVerifiedLivePositionQuantity(option,'NRML'),null);
         });
     }
