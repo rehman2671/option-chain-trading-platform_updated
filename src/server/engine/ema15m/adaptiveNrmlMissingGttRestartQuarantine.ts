@@ -228,6 +228,11 @@ export function auditSingleSellGttRestartQuarantine(
   const p=e.exactGtt[0] as Row,r=(p.rules as Row[])[0];
   const state=upper(r.status);
   if(state==='SCHEDULED'&&r.order_id===null){
+    // A scheduled SELL for the ORIGINAL amount would oversell if part
+    // of the long was already sold in another session.
+    if(p.quantity!==net)return result(
+      'COMPETING_OPTION_ORDER_OR_GTT_UNRESOLVED',
+      ['SCHEDULED_GTT_SELL_QUANTITY_EXCEEDS_CURRENT_NRML_LONG'],d);
     if(orphan!==0)return result('GTT_PARENT_OR_CURRENT_GTT_LIST_CONFLICT',
       ['SCHEDULED_GTT_HAS_SELL_CHILD_IN_BOOK_WITHOUT_GENERATION'],d);
     return result('SCHEDULED_GTT_NO_GENERATED_CHILD_RESTART_UNPROTECTED',[
