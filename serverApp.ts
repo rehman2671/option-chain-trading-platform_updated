@@ -1621,6 +1621,10 @@ async function startServer() {
       const p=matches[0],before=dbEngine.readEmaJointBuySellEvidence(positionId);
       const receipt=before.originalBuyReceipt;
       if(!receipt||!before.position||!before.entryAttempt||
+         before.position.id!==p.id||
+         before.position.brokerAccountId!==expectedAccountId||
+         before.entryAttempt.id!==p.attemptId||
+         before.entryAttempt.brokerAccountId!==expectedAccountId||
          !Array.isArray(before.originalBuyTrades)||
          before.originalBuyTrades.length===0||
          receipt.positionId!==p.id||
