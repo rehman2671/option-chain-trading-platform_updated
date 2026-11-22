@@ -269,6 +269,8 @@ export function auditHistoricalFoTradeHistory(s:HistoricalFoScope,args:{
 }
 export interface HistoricalFoReadBroker{
   getLiveConnectionStatus():{isConnected:boolean;userId?:string};
+  // Required: increments at auth initiation AND completion.
+  getHistoricalFoAuthEpoch():number;
   getHistoricalFoTradesPage(startDate:string,endDate:string,page:number,
     pageSize:number):Promise<unknown>;
 }
@@ -281,7 +283,8 @@ export async function reviewHistoricalFoTradeHistoryReadOnly(
     return report('INVALID_HISTORICAL_FO_SCOPE',
       ['INVALID_ACCOUNT_DATES_CONTRACT_OR_EXPECTED_QUANTITY']);
   if(!broker||typeof broker.getLiveConnectionStatus!=='function'||
-     typeof broker.getHistoricalFoTradesPage!=='function')
+     typeof broker.getHistoricalFoTradesPage!=='function'||
+     typeof broker.getHistoricalFoAuthEpoch!=='function')
     return report('HISTORICAL_FO_SOURCE_INCOMPLETE',
       ['BROKER_HISTORICAL_FO_GET_METHOD_UNAVAILABLE']);
   let auth:ReturnType<HistoricalFoReadBroker['getLiveConnectionStatus']>;
@@ -291,25 +294,42 @@ export async function reviewHistoricalFoTradeHistoryReadOnly(
   if(auth?.isConnected!==true||auth.userId!==s.expectedAccountId)
     return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
       ['BROKER_ACCOUNT_NOT_VERIFIED']);
+  // Only accept a valid local credential-session generation.
+  let pinnedEpoch:number;
+  try{pinnedEpoch=broker.getHistoricalFoAuthEpoch();}
+  catch{return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
+    ['BROKER_HISTORICAL_FO_AUTH_EPOCH_UNAVAILABLE']);}
+  if(!Number.isSafeInteger(pinnedEpoch)||pinnedEpoch<1)
+    return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
+      ['BROKER_HISTORICAL_FO_AUTH_EPOCH_UNAVAILABLE']);
   // A multi-page GET is non-atomic. Never combine pages across a
   // disconnected or switched account session, even if trade IDs match.
   const accountStillBound=():boolean=>{
     try{
       const current=broker.getLiveConnectionStatus();
-      return current?.isConnected===true&&current.userId===s.expectedAccountId;
+      const epoch=broker.getHistoricalFoAuthEpoch();
+      return current?.isConnected===true&&
+        current.userId===s.expectedAccountId&&
+        Number.isSafeInteger(epoch)&&epoch===pinnedEpoch;
     }catch{return false;}
   };
+  // Concurrent reconnect invalidates even the initial GET request.
+  if(!accountStillBound())
+    return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
+      ['BROKER_AUTH_EPOCH_CHANGED_DURING_HISTORICAL_FO_GET']);
   const pages:unknown[]=[];let totalPages:number|null=null;
   try{
     for(let n=1;n<=20;n++){
+      if(!accountStillBound())
+        return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
+          ['BROKER_AUTH_EPOCH_CHANGED_DURING_HISTORICAL_FO_GET']);
       const raw=await broker.getHistoricalFoTradesPage(
         s.startDate,s.endDate,n,1000
       );
-      // Bind the asynchronous response to the same expected broker
-      // identity before consuming it or requesting another page.
+      // A same-account re-login can still invalidate old page evidence.
       if(!accountStillBound())
         return report('HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH',
-          ['BROKER_ACCOUNT_CHANGED_DURING_HISTORICAL_FO_GET']);
+          ['BROKER_ACCOUNT_OR_AUTH_EPOCH_CHANGED_DURING_HISTORICAL_FO_GET']);
       if(!obj(raw)||!obj(raw.meta_data)||!obj(raw.meta_data.page)||
          !pos(raw.meta_data.page.total_pages)||
          raw.meta_data.page.total_pages>20)
