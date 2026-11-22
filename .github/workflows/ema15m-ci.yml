@@ -114,6 +114,7 @@ on:
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
       - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
+      - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
   pull_request:
     branches:
       - main
@@ -229,7 +230,14 @@ on:
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
       - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
       - 'research/adaptive-v2-phase113-single-sell-gtt-child-fills'
+      - 'research/adaptive-v2-phase114-missing-gtt-restart-quarantine'
   workflow_dispatch:
+
+# Superseded commits must not monopolize runners; PR and push checks
+# remain separate and the latest SHA still runs independently.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
