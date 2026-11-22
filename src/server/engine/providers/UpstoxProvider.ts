@@ -702,6 +702,43 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /**
+   * Phase104: full-account F&O trade HISTORY by date range and page.
+   * Distinct from the current-day order book. F&O history does not give
+   * authenticated order_id/instrument_token linkage for a specific option;
+   * the read-only validator must match trade ID + option contract fields.
+   * No broker order or local DB changes.
+   */
+  public async getHistoricalFoTradesPage(
+    startDate:string,endDate:string,pageNumber:number,pageSize:number
+  ):Promise<unknown|null>{
+    const date=/^\d{4}-\d{2}-\d{2}$/;
+    if(!this.isConnected||!this.accessToken||
+       !date.test(startDate)||!date.test(endDate)||
+       !Number.isSafeInteger(pageNumber)||pageNumber<1||pageNumber>20||
+       !Number.isSafeInteger(pageSize)||pageSize!==1000)
+      return null;
+    try{
+      const params=new URLSearchParams({
+        segment:'FO',start_date:startDate,end_date:endDate,
+        page_number:String(pageNumber),page_size:String(pageSize)
+      });
+      const res=await fetch(
+        'https://api.upstox.com/v2/charges/historical-trades?'+params.toString(),
+        {headers:{Authorization:'Bearer '+this.accessToken,
+          Accept:'application/json'}}
+      );
+      if(!res.ok)return null;
+      const payload:unknown=await res.json();
+      if(!payload||typeof payload!=='object'||Array.isArray(payload))
+        return null;
+      const reply=payload as Record<string,unknown>;
+      return reply.status==='success'&&Array.isArray(reply.data)&&
+        reply.meta_data&&typeof reply.meta_data==='object'
+        ?payload:null;
+    }catch{return null;}
+  }
+
   /** Individual exchange executions for an order; unavailable is null, not []. */
   public async getOrderTrades(orderId: string): Promise<any[] | null> {
     if (!this.isConnected || !this.accessToken || !orderId) return null;
