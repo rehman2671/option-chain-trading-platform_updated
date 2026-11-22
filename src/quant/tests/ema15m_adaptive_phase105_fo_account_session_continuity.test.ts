@@ -62,7 +62,9 @@ const review=(broker:{
   getLiveConnectionStatus:()=>{isConnected:boolean;userId?:string};
   getHistoricalFoTradesPage:(start:string,end:string,n:number,
     size:number)=>Promise<unknown>;
-})=>reviewHistoricalFoTradeHistoryReadOnly(broker,scope,buys,sells);
+})=>reviewHistoricalFoTradeHistoryReadOnly({
+  ...broker,getHistoricalFoAuthEpoch:()=>1
+},scope,buys,sells);
 
 describe('Phase105 historical FO broker session continuity fails closed',()=>{
   it('retains valid broker-reported status with a stable account on every GET',async()=>{
@@ -79,7 +81,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     locked(result);
     assert.equal(result.state,
       'BROKER_REPORTED_MULTIDAY_TRADES_MATCH_NOT_CERTIFIED');
-    assert.deepEqual(calls,['auth','page1','auth','page2','auth']);
+    assert.deepEqual(calls,['auth','auth','auth','page1','auth','auth','page2','auth']);
     assert.equal(result.requestedPageCount,2);
   });
 
@@ -88,7 +90,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     const result=await review({
       getLiveConnectionStatus:()=>{
         calls.push('auth');
-        return {isConnected:true,userId:++checked===1?
+        return {isConnected:true,userId:++checked<=3?
           account:'PH105-OTHER-ACCOUNT'};
       },
       getHistoricalFoTradesPage:async(_s,_e,n)=>{
@@ -99,13 +101,13 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     assert.equal(result.state,'HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH');
     assert.ok(result.reasonCodes.includes(
       'BROKER_ACCOUNT_CHANGED_DURING_HISTORICAL_FO_GET'));
-    assert.deepEqual(calls,['auth','page1','auth']);
+    assert.deepEqual(calls,['auth','auth','auth','page1','auth']);
   });
 
   it('detects disconnect immediately after the only returned page',async()=>{
     let authReads=0,historyReads=0;
     const result=await review({
-      getLiveConnectionStatus:()=>++authReads===1?
+      getLiveConnectionStatus:()=>++authReads<=3?
         {isConnected:true,userId:account}:{isConnected:false},
       getHistoricalFoTradesPage:async()=>{
         historyReads++;return page(1,1);
@@ -113,7 +115,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     });
     locked(result);
     assert.equal(historyReads,1);
-    assert.equal(authReads,2);
+    assert.equal(authReads,4);
     assert.equal(result.state,'HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH');
   });
 
@@ -121,7 +123,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     let authReads=0;
     const result=await review({
       getLiveConnectionStatus:()=>{
-        if(++authReads!==1)throw Error('PH105-BEARER-SECRET');
+        if(++authReads>3)throw Error('PH105-BEARER-SECRET');
         return {isConnected:true,userId:account};
       },
       getHistoricalFoTradesPage:async()=>page(1,1)
@@ -134,7 +136,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
   it('treats missing post-fetch broker identity as mismatch, never zero trades',async()=>{
     let authReads=0;
     const result=await review({
-      getLiveConnectionStatus:()=>++authReads===1?
+      getLiveConnectionStatus:()=>++authReads<=3?
         {isConnected:true,userId:account}:{isConnected:true},
       getHistoricalFoTradesPage:async()=>page(1,1)
     });
