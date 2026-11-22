@@ -37,6 +37,9 @@ schema and **must not** be used as live release evidence.
     positive trigger prices and required exit `IMMEDIATE` trigger type
   - ENTRY's broker-generated `rules[].order_id` MUST equal the
     immutable original BUY order ID, with an executed ENTRY lifecycle
+  - Native original BUY `order_ref_id` must equal the exact GTT parent
+    ID, separately corroborating that broker child order came from
+    this GTT rather than an independently placed pre-existing BUY.
   - Native original BUY details must be filled and match account-scoped
     immutable exchange order ID, instrument, product, side and whole qty
   - Every native original BUY `trade_id`, size, price and exchange
