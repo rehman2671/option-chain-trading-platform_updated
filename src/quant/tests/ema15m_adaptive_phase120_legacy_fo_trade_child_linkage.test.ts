@@ -106,6 +106,37 @@ describe('Phase120 numeric Upstox trade instrument: descriptive same-child corro
     assert.equal(r.state,'BROKER_REPORTED_GTT_SELL_CHILD_NOT_PROTECTIVE_STOP');
     assert.equal(r.brokerReportedLegacyTradeTokenCorroborated,false);
   });
+  it('modern exact option key cannot hide contradictory F&O venue, type or symbol',()=>{
+    for(const change of [
+      {exchange:'BFO'},{exchange:'NSE'},
+      {order_type:'MARKET'},{order_type:'SL'},
+      {trading_symbol:'NIFTY26NOV27000PE'},
+      {tradingsymbol:'NIFTY26NOV27000PE'}
+    ]){
+      const e=snapshot();
+      e.childTrades=[trade(50,{
+        instrument_token:scope.instrumentKey,...change
+      })];
+      const r=audit(e);safe(r);
+      assert.equal(r.state,'GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT');
+      assert.equal(r.automaticPositionClosureAuthorized,false);
+    }
+  });
+  it('modern exact option key with explicitly wrong parent/child venue fails',()=>{
+    for(const venue of [
+      {parentExchange:'BSE_FO',childExchange:'NFO'},
+      {parentExchange:'NSE_FO',childExchange:'BFO'}
+    ]){
+      const e=snapshot();
+      const p=parent({exchange:venue.parentExchange});
+      const c=child(50,{exchange:venue.childExchange});
+      e.exactGtt=[p];e.allGtts=[p];
+      e.childOrder=c;e.orderBook=[original(),c];
+      e.childTrades=[trade(50,{instrument_token:scope.instrumentKey})];
+      const r=audit(e);safe(r);
+      assert.equal(r.state,'GENERATED_SELL_TRADE_BOOK_OR_NET_CONFLICT');
+    }
+  });
   it('two legacy numeric fills add up to full SELL, net flat still never CLOSED',()=>{
     const s=snapshot(100);
     s.childTrades=[trade(50),trade(50,{trade_id:'PH120-TRADE-2'})];
