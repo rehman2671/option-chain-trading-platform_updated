@@ -112,6 +112,7 @@ on:
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
+      - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
   pull_request:
     branches:
       - main
@@ -225,6 +226,7 @@ on:
       - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
       - 'research/adaptive-v2-phase110-existing-nrml-day-stop-observation'
       - 'research/adaptive-v2-phase111-multiweek-carry-debit-cap'
+      - 'research/adaptive-v2-phase112-existing-long-single-sell-gtt'
   workflow_dispatch:
 
 permissions:
