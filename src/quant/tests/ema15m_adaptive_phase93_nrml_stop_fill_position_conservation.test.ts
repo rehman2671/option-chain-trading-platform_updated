@@ -194,6 +194,7 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
     const events:string[]=[];
     let childFetched=false,tradesFetched=false;
     const broker={
+      getBrokerAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>{events.push('gtt');return [gtt()];},
       getOrderBook:async()=>{events.push('book');return [child(50,50)];},
@@ -218,6 +219,7 @@ describe('Phase93 NRML original-long minus SELL fill conservation and read order
   });
   it('post-child portfolio fetch error fails closed even if prior order and trade were coherent',async()=>{
     const broker={
+      getBrokerAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>[gtt()],
       getOrderBook:async()=>[child()],

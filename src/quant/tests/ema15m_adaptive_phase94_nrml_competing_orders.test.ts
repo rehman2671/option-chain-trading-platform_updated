@@ -234,6 +234,7 @@ describe('Phase94 full account source-list census for competing same-option orde
   it('read-only broker checks full GTT list before child details, never sends BUY/SELL/cancel',async()=>{
     const calls:string[]=[];
     const broker={
+      getBrokerAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>{calls.push('parent');return [parent()];},
       getOrderBook:async()=>{calls.push('orders');return [child()];},
@@ -252,6 +253,7 @@ describe('Phase94 full account source-list census for competing same-option orde
   });
   it('full GTT list transport failure is unknown, not evidence no duplicates',async()=>{
     const broker={
+      getBrokerAuthEpoch:()=>1,
       getLiveConnectionStatus:()=>({isConnected:true,userId:req.expectedAccountId}),
       getGttOrderDetails:async(_:string)=>[parent()],
       getOrderBook:async()=>[child()],

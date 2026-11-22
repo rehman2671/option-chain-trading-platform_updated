@@ -107,6 +107,7 @@ on:
       - 'research/adaptive-v2-phase104-multiday-fo-trade-history-corroboration'
       - 'research/adaptive-v2-phase105-fo-session-continuity'
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
+      - 'research/adaptive-v2-phase107-gtt-session-epoch'
   pull_request:
     branches:
       - main
@@ -215,6 +216,7 @@ on:
       - 'research/adaptive-v2-phase104-multiday-fo-trade-history-corroboration'
       - 'research/adaptive-v2-phase105-fo-session-continuity'
       - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
+      - 'research/adaptive-v2-phase107-gtt-session-epoch'
   workflow_dispatch:
 
 permissions:
