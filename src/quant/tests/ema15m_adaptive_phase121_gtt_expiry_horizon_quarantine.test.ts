@@ -83,6 +83,29 @@ describe('Phase121 microsecond broker GTT vs nominal 1/2/4/8W option horizon',()
       assert.equal(r.nominalWeeksAreNotExchangeSessions,true);
     }
   });
+  it('FAILED, EXPIRED, CANCELLED or triggered child cannot look like current scheduled GTT',()=>{
+    for(const change of [
+      {status:'FAILED',order_id:null},
+      {status:'CANCELLED',order_id:null},
+      {status:'EXPIRED',order_id:null},
+      {status:'PENDING',order_id:null},
+      {status:'TRIGGERED',order_id:'PH121-GENERATED-SELL'},
+      {status:'OPEN',order_id:'PH121-GENERATED-SELL'},
+      {status:'COMPLETED',order_id:'PH121-GENERATED-SELL'},
+      {status:'SCHEDULED',order_id:'PH121-GENERATED-SELL'},
+      {status:'',order_id:null}
+    ]){
+      const p=parent({rules:[{
+        strategy:'ENTRY',status:change.status,
+        transaction_type:'SELL',trigger_type:'BELOW',
+        trigger_price:90,order_id:change.order_id
+      }]});
+      const r=audit(p);safe(r);
+      assert.equal(r.state,
+        'BROKER_GTT_RULE_NOT_SCHEDULED_OR_ALREADY_GENERATED');
+      assert.equal(r.persistentOvernightStopCoverageCertified,false);
+    }
+  });
   it('Upstox seconds, milliseconds, nanoseconds and reversed clocks are rejected',()=>{
     for(const p of [
       parent({created_at:Math.floor(micros('2026-11-20T00:00:00.000Z')/1000)}),
