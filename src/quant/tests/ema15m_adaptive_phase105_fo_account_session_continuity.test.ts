@@ -100,7 +100,7 @@ describe('Phase105 historical FO broker session continuity fails closed',()=>{
     locked(result);
     assert.equal(result.state,'HISTORICAL_FO_BROKER_ACCOUNT_MISMATCH');
     assert.ok(result.reasonCodes.includes(
-      'BROKER_ACCOUNT_CHANGED_DURING_HISTORICAL_FO_GET'));
+      'BROKER_ACCOUNT_OR_AUTH_EPOCH_CHANGED_DURING_HISTORICAL_FO_GET'));
     assert.deepEqual(calls,['auth','auth','auth','page1','auth']);
   });
 
