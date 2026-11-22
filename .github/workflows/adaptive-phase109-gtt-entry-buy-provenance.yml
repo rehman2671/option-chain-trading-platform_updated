@@ -1,0 +1,36 @@
+name: Adaptive Phase109 v3 MULTIPLE GTT ENTRY/STOPLOSS immutable BUY provenance
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase109-gtt-entry-buy-provenance'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase108-gtt-two-pass-drift'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gtt-buy-provenance-readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase109 GTT ENTRY+STOPLOSS schema, original BUY, and prior safety invariants
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase109_gtt_entry_buy_provenance.test.ts \
+            src/quant/tests/ema15m_adaptive_phase108_gtt_two_pass_drift.test.ts \
+            src/quant/tests/ema15m_adaptive_phase107_gtt_broker_auth_epoch.test.ts \
+            src/quant/tests/ema15m_adaptive_phase94_nrml_competing_orders.test.ts \
+            src/quant/tests/ema15m_adaptive_phase93_nrml_stop_fill_position_conservation.test.ts \
+            src/quant/tests/ema15m_adaptive_phase92_gtt_child_lineage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase101_durable_buy_trade_evidence.test.ts
