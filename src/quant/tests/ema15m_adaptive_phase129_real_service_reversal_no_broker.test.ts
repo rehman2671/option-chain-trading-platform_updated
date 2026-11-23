@@ -129,8 +129,8 @@ describe('Phase129 actual LiveExecutionService automatic pre-reversal deny tests
     const svc=LiveExecutionService.getInstance();
     let exits=0,claims=0;
     mock.method(dbEngine,'getEmaNotificationSettings',()=>{
-      return {upstoxProductType:next,liveBrokerExecutionEnabled:true}
-        as ReturnType<typeof dbEngine.getEmaNotificationSettings>;
+      return {upstoxProductType:next,liveBrokerExecutionEnabled:true} as
+        ReturnType<typeof dbEngine.getEmaNotificationSettings>;
     });
     mock.method(killSwitchEngine,'isHalted',()=>false);
     mock.method(ContractResolver,'verifyLiveContract',async()=>{
