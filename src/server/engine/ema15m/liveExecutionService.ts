@@ -27,6 +27,7 @@ import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
 import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
 import {
   assessEmaLiveProductGate,assessEmaAutomaticLiveEntryPreflight,
+  assessEmaBrokerExitProductGate,isMisLiveAutoExitCandidate,
   isMisForcedSquareOffEligible
 } from './adaptiveNrmlLiveReleaseInterlock.js';
 import {
@@ -238,6 +239,21 @@ export class LiveExecutionService {
     // 1. Check if an active live position already exists on this instrument
     const existingLivePos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
     if (existingLivePos) {
+      // An older deployed engine or externally managed position may be
+      // NRML despite the current new-BUY interlock. Do NOT reverse it
+      // using the legacy MIS automated market SELL path.
+      const existingExitGate = assessEmaBrokerExitProductGate(existingLivePos.productType);
+      if (!existingExitGate.allowed) {
+        return {
+          enabled: false,
+          status: 'PRE_TRADE_REJECTED',
+          requestedQuantity: quantity,
+          filledQuantity: 0,
+          positionCreated: false,
+          rejectionReason: existingExitGate.reason || 'Existing position not eligible for MIS reversal.',
+          message: existingExitGate.reason || 'Existing NRML position requires broker reconciliation.'
+        };
+      }
       const isOpposite = (signal.signalType === 'BULLISH' && existingLivePos.optionType === 'PE') ||
                          (signal.signalType === 'BEARISH' && existingLivePos.optionType === 'CE');
 
@@ -621,7 +637,7 @@ export class LiveExecutionService {
     const trailDistancePts = settings.trailDistancePoints ?? 30;
 
     for (const pos of openPositions) {
-      if (pos.status !== 'OPEN' || this.pendingExitIds.has(pos.id)) {
+      if (!isMisLiveAutoExitCandidate(pos) || this.pendingExitIds.has(pos.id)) {
         continue; // Only monitor actively open positions; skip EXIT_PENDING, EXIT_FAILED, or in-flight exits
       }
 
@@ -708,6 +724,14 @@ export class LiveExecutionService {
 
     if (!pos) {
       return { success: false, message: `Live position ${positionId} not found or already closed.` };
+    }
+    // Never route a new NRML/ambiguous-product SELL from the legacy EMA
+    // request path, including MANUAL and automatic reversal/SL/TP routes.
+    // A mismatched product cannot silently become MIS via fallback.
+    const exitGate = assessEmaBrokerExitProductGate(pos.productType);
+    if (!exitGate.allowed) {
+      return {success:false,
+        message:exitGate.reason || 'Unreleased broker SELL product.'};
     }
 
     // Partial BUY fills are genuine exposure, but the unfilled remainder could
@@ -907,7 +931,7 @@ export class LiveExecutionService {
         // Original position size can exceed broker remaining long after a
         // partial prior exit. Never issue the original quantity again.
         quantity: remainingQty,
-        product: pos.productType || 'MIS',
+        product: pos.productType,
         validity: 'DAY',
         orderType: 'MARKET',
         transactionType: 'SELL',
