@@ -86,7 +86,7 @@ describe('Phase122 exact original BUY anchored positional horizon quarantine',()
   });
   it('Phase121 planned from review may flag undercoverage, NOT original BUY horizon',()=>{
     const old=auditGttNrmlSelectedHorizonExpiry({
-      instrumentKey:option,gttOrderId,product:'NRML',
+      instrumentKey:option,gttOrderId:gttId,product:'NRML',
       selectedWeeks:4,reviewedAtUtc:reviewAt,
       expectedContractExpiryUtc:expiry
     },parent());
