@@ -6,13 +6,14 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild serverApp.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "start": "node server.ts",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
     "test": "NODE_ENV=test tsx --test --test-concurrency=1 src/quant/tests/*.test.ts src/server/tests/*.test.ts",
     "auth:local": "node scripts/upstox_zero_click.js",
     "smoke:paper-staging": "node scripts/verify_paper_staging_rc.mjs",
-    "smoke:main-compat": "node scripts/verify_main_aistudio_compat_rc.mjs"
+    "smoke:main-compat": "node scripts/verify_main_aistudio_compat_rc.mjs",
+    "start:built": "node dist/server.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
