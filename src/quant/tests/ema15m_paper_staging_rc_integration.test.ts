@@ -16,7 +16,8 @@ import {
 
 const safe={
   PAPER_STAGING_MODE:'1',NODE_ENV:'production',
-  DATA_PROVIDER:'practice',JWT_SECRET:'a'.repeat(64)
+  DATA_PROVIDER:'practice',JWT_SECRET:'a'.repeat(64),
+  PAPER_STAGING_DB_DIR:'/tmp/paper-rc-only-db'
 };
 const expected='PAPER_STAGING_SETTINGS_OK';
 describe('Paper-only staging release-candidate startup and broker denial',()=>{
@@ -44,7 +45,12 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
       [{...safe,DATA_PROVIDER:'live'},'PAPER_STAGING_PRACTICE_PROVIDER_REQUIRED'],
       [{...safe,DATA_PROVIDER:''},'PAPER_STAGING_PRACTICE_PROVIDER_REQUIRED'],
       [{...safe,JWT_SECRET:'weak'},'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED'],
-      [{...safe,JWT_SECRET:undefined},'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED']
+      [{...safe,JWT_SECRET:undefined},'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED'],
+      [{...safe,PAPER_STAGING_DB_DIR:undefined},'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED'],
+      [{...safe,PAPER_STAGING_DB_DIR:''},'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED'],
+      [{...safe,PAPER_STAGING_DB_DIR:'relative/data'},'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED'],
+      [{...safe,PAPER_STAGING_DB_DIR:'/'},'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED'],
+      [{...safe,PAPER_STAGING_DB_DIR:'/data/../'},'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED']
     ] as const;
     for(const [env,reason] of cases){
       const r=checkPaperStagingAdmission(env);
@@ -104,6 +110,9 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     const manual=app.indexOf("app.post('/api/upstox/set-token'",start);
     const autos=app.indexOf("app.post('/api/upstox/auto-login'",start);
     assert.ok(start>=0&&admission>start&&admission<db);
+    const dataDir=app.indexOf('fs.mkdirSync(stagingDbDir',start);
+    assert.ok(dataDir>admission&&dataDir<db,'data path validated and mounted before DB init');
+    assert.match(app,/process\.env\.PORT\?\.trim\(\) \|\| '3000'/);
     // RC is NEVER live capable, including npm start with NODE_ENV unset.
     // Admission must not depend on the current execution environment.
     assert.match(app,/const paperStaging=assertPaperStagingAdmission\(process\.env\);/);
