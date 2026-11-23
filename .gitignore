@@ -11,3 +11,13 @@ coverage/
 
 # Local market evidence: may be licensed or sensitive, never commit capture archives
 research-data/
+
+# Runtime SQLite state must not be committed or shipped in a staging artifact
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
