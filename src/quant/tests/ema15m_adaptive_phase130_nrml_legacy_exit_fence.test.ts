@@ -11,6 +11,10 @@ import {LiveExecutionService} from
   '../../server/engine/ema15m/liveExecutionService.js';
 import {dbEngine} from '../../server/db.js';
 import {activeProvider} from '../../server/engine/providers/index.js';
+import {ContractResolver} from '../../server/engine/ema15m/contractResolver.js';
+import {killSwitchEngine} from '../../quant/risk/killSwitch.js';
+import type {Ema15mSignal} from '../../types.js';
+import type {ResolvedContract} from '../../server/engine/ema15m/contractResolver.js';
 import type {EmaLivePosition} from
   '../../server/engine/ema15m/types.js';
 
@@ -167,6 +171,48 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
       mock.restoreAll();
     }
   });
+  it('actual automatic MIS signal cannot reverse an existing NRML long or submit a replacement BUY',async()=>{
+    const previous=pos('PH130-EXISTING-NRML-PE','NRML');
+    let verified=0,exits=0,claims=0,risk=0;
+    const signal={id:'PH130-OPPOSITE-MIS-SIGNAL',
+      instrument:'NIFTY',signalType:'BULLISH'} as Ema15mSignal;
+    const contract={isValid:true,lotSize:50,
+      brokerInstrumentKey:'NSE_FO|PH130-CE',
+      tradingsymbol:'PH130-NIFTY-CE',
+      optionType:'CE',strikePrice:25000,expiryDate:'2026-12-31'
+    } as ResolvedContract;
+    mock.method(dbEngine,'getEmaNotificationSettings',()=>({
+      upstoxProductType:'MIS',
+      liveBrokerExecutionEnabled:true
+    }) as ReturnType<typeof dbEngine.getEmaNotificationSettings>);
+    mock.method(killSwitchEngine,'isHalted',()=>false);
+    mock.method(ContractResolver,'verifyLiveContract',async()=>{
+      verified++;return contract;
+    });
+    mock.method(dbEngine,'getEmaLiveOrderAttempts',()=>[]);
+    mock.method(dbEngine,'getOpenEmaLivePositionByInstrument',()=>previous);
+    mock.method(dbEngine,'claimEmaLiveEntryAttempt',()=>{
+      claims++;return false;
+    });
+    mock.method(dbEngine,'getEmaLiveOrderAttemptById',()=>{
+      risk++;return null;
+    });
+    mock.method(svc,'requestLiveExit',async()=>{
+      exits++;return {success:true,message:'FORBIDDEN'};
+    });
+    try{
+      const out=await svc.attemptLiveSignal(signal,contract,100,'PH130-USER');
+      assert.equal(out.status,'PRE_TRADE_REJECTED');
+      assert.equal(out.positionCreated,false);
+      assert.equal(out.filledQuantity,0);
+      assert.match(out.rejectionReason||'',/NRML broker SELL blocked/);
+      assert.equal(verified,1);
+      assert.equal(exits,0);
+      assert.equal(claims,0);
+      assert.equal(risk,0);
+    }finally{mock.restoreAll();}
+  });
+
   it('source: reversal existing long product blocks before requestLiveExit; no fallback on SELL',()=>{
     const source=readFileSync(
       'src/server/engine/ema15m/liveExecutionService.ts','utf8');
