@@ -118,8 +118,9 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
     };
     const quoteBefore=provider.getLiveOptionQuote;
     let quotes=0;
-    provider.getLiveOptionQuote=async()=>{
-      quotes++;return {price:150};
+    provider.getLiveOptionQuote=async(key:string)=>{
+      quotes++;return {price:150,exchangeTimestamp:new Date().toISOString(),
+        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
     };
     mock.method(dbEngine,'getOpenEmaLivePositions',()=>positions);
     mock.method(dbEngine,'getEmaNotificationSettings',()=>({
@@ -152,8 +153,9 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
     };
     const previous=provider.getLiveOptionQuote;
     let quotes=0;const exits:string[]=[];
-    provider.getLiveOptionQuote=async()=>{
-      quotes++;return {price:150};
+    provider.getLiveOptionQuote=async(key:string)=>{
+      quotes++;return {price:150,exchangeTimestamp:new Date().toISOString(),
+        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
     };
     mock.method(dbEngine,'getOpenEmaLivePositions',()=>positions);
     mock.method(dbEngine,'getEmaNotificationSettings',()=>({
