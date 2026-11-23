@@ -652,29 +652,44 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
-  /** Live EMA SL/TP must use a fresh quote for the exact broker contract. */
-  public async getLiveOptionQuote(instrumentKey: string): Promise<{ price: number; exchangeTimestamp: string } | null> {
-    if (!this.isConnected || !this.accessToken || !instrumentKey) return null;
+  /** Adapter-declared last executed trade LTP, NOT executable bid/ask. */
+  public async getLiveOptionQuote(instrumentKey: string): Promise<{
+    price:number;exchangeTimestamp:string;instrumentKey:string;
+    source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'
+  } | null> {
+    const session=this.captureRiskReadIdentity();
+    if (!session || !/^(?:NSE_FO|BSE_FO)\|[A-Za-z0-9_-]{1,240}$/.test(instrumentKey))
+      return null;
     try {
       const url = 'https://api.upstox.com/v3/market-quote/quotes?instrument_key=' +
         encodeURIComponent(instrumentKey);
       const res = await fetch(url, {
-        headers: { 'Authorization': 'Bearer ' + this.accessToken, 'Accept': 'application/json' }
+        signal:AbortSignal.timeout(12_000),
+        headers: { 'Authorization': 'Bearer ' + session.bearerToken, 'Accept': 'application/json' }
       });
       if (!res.ok) return null;
       const payload: any = await res.json();
-      if (payload?.status !== 'success' || !payload?.data) return null;
+      if(!this.currentRiskReadIdentity(session))return null;
+      if (payload?.status !== 'success' || !payload?.data ||
+          typeof payload.data!=='object'||Array.isArray(payload.data))
+        return null;
       const quotes: any[] = Object.values(payload.data);
-      const quote = quotes.find(q => q?.instrument_token === instrumentKey);
-      if (!quote) return null;
-      const price = Number(quote.last_price);
-      const timestamp = Number(quote.last_trade_time);
-      if (!Number.isFinite(price) || price <= 0 ||
-          !Number.isFinite(timestamp) || timestamp <= 0 ||
-          timestamp > Date.now() + 5000 || Date.now() - timestamp > 30000) return null;
-      return { price, exchangeTimestamp: new Date(timestamp).toISOString() };
-    } catch (err: any) {
-      console.warn('[UPSTOX] Exact live option quote unavailable:', err?.message || err);
+      // Duplicate matching instrument rows in the response are ambiguous.
+      const matching=quotes.filter(q=>q?.instrument_token===instrumentKey);
+      if(matching.length!==1)return null;
+      const quote=matching[0];
+      const price=quote?.last_price;
+      const timestamp=Number(quote?.last_trade_time);
+      const now=Date.now();
+      if(typeof price!=='number'||!Number.isFinite(price)||price<=0||
+         !Number.isSafeInteger(timestamp)||timestamp<946684800000||
+         timestamp>=4102444800000||
+         timestamp>now+5000||now-timestamp>30000)return null;
+      if(!this.currentRiskReadIdentity(session))return null;
+      return {price,exchangeTimestamp:new Date(timestamp).toISOString(),
+        instrumentKey,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
+    } catch {
+      console.warn('[UPSTOX] Exact live option last-trade quote unavailable');
       return null;
     }
   }

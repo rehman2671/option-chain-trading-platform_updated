@@ -1,0 +1,19 @@
+# Phase131 — Exact option LTP quote identity/time/session fence before automatic MIS live exit
+
+**Stacked research DRAFT on Phase130 PR #135. This phase hardens the existing MIS live stop/target monitor. It does not create an NRML order path, new position, new strategy or executable option bid/ask. No live broker orders have been placed in development.**
+
+## Risk found in actual runtime
+
+Previously `LiveExecutionService.monitorLivePositions()` accepted any provider object with a positive numerically-coercible `price`, without checking the response's option `instrumentKey`, declared source or last-trade timestamp. An old, practice, wrong-contract or timestamp-less quote could evaluate MIS stop/target/trailing rules and request a real Upstox market SELL. The Upstox Full Market Quotes V3 endpoint documents `last_trade_time` as the timestamp of the **last TRADE**, not a guarantee that a contemporaneous executable bid/ask exists: https://upstox.com/developer/api-documentation/get-full-market-quote-v3/ . The current live UI's estimated Black-Scholes price must never authorize SELL.
+
+## Implemented
+
+- Pure `assessExactLiveOptionQuote` requires a true number `price` greater than zero, exact declared `UPSTOX_FULL_MARKET_QUOTE_V3_LTP` source, same exact NSE_FO/BSE_FO option `instrumentKey`, canonical UTC `exchangeTimestamp` and last trade age no older than 30 seconds or more than 5 seconds in the future. Invalid, stale, future, synthetic, missing, wrong-contract and malformed values return `accepted:false` and no usable price. The type declares no broker writes and no independent native-stop, executable bid/ask or live NRML authorization.
+- `UpstoxProvider.getLiveOptionQuote` now uses pinned local broker account/auth epoch/bearer identity across its authenticated GET, with 12-second request timeout, exact F&O instrument key, exactly one matching broker `instrument_token`, strict numeric `last_price`, safe integer last-trade milliseconds and 30-second exchange-time bound. Auth credential, account or epoch rotation mid-GET returns `null`. Returned identity label is **adapter-declared only**, not issuer or exchange signature.
+- `LiveExecutionService.monitorLivePositions` validates the exact quote at the call boundary after its asynchronous read and before calculation, marking or `requestLiveExit()`. Any rejection simply skips this polling tick; it does not cancel/replace broker orders or mark the position CLOSED. Existing verified MIS exit still traverses Phase91–130 broker-side, position and GTT guards. NRML/unknown product is skipped before quote or automatic exit due to Phase130.
+- The live quote is **last traded price**, not current market depth or guaranteed SELL fill. These checks reject bad evidence; they cannot prove a valid LTP is executable or a protective native exchange STOP. Full data provenance and broker close-only session gates remain externally blocked.
+- Dedicated Phase131 tests call the pure guard, a fully mocked Upstox provider response including token-epoch rotation, and the actual live monitoring method for negative stale/mismatched/synthetic cases plus valid MIS control. Prior Phase130 mixed MIS/NRML test now supplies a fresh identified quote fixture.
+
+## Continuing release gates
+
+Draft stacked research PRs remain unmerged/undeployed. Issues #17–#22 remain OPEN: licensed original option Level-1 bid/ask and event/available clocks; official effective-dated NSE/BSE F&O contract/lot/session/expiry revisions; original exchange-confirmed broker BUY and GTT-child SELL completeness; close-only NRML stop/cancel/restart/overnight gap tests; realistic 1/2/4/8-week OOS costs and drawdown; actual operator owned kill switch and independent human release. No LIVE NRML BUY/SELL, no NRML 15:15 force exit. **Green CI is not profitable or production-safe strategy certification.**

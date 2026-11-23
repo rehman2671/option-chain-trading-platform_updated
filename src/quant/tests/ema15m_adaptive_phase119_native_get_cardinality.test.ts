@@ -279,8 +279,18 @@ describe('Phase119 exact Upstox native GET cardinality and duplicate-ID quaranti
       'guardFullBrokerOrderBook','guardExactBrokerOrderTrades',
       'guardFullBrokerPositionRows'
     ])assert.ok(src.includes(name),name);
-    assert.equal((src.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
-    assert.equal((src.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,8);
+    // Phase131 adds one independently fenced full-market quote GET.
+    // Preserve the ORIGINAL 8 account/history GET checks without allowing
+    // the new quote session checks to satisfy them accidentally.
+    const quoteStart=src.indexOf('public async getLiveOptionQuote(');
+    const quoteEnd=src.indexOf('public async getGttOrders(',quoteStart);
+    assert.ok(quoteStart>=0&&quoteEnd>quoteStart);
+    const quoteBody=src.slice(quoteStart,quoteEnd);
+    const legacyBody=src.slice(0,quoteStart)+src.slice(quoteEnd);
+    assert.equal((legacyBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
+    assert.equal((legacyBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,8);
+    assert.equal((quoteBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,2);
+    assert.equal((quoteBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,1);
     safety();
   });
 });
