@@ -51,7 +51,7 @@ const positions=()=>[
 const input=(at:string):NativeOrderTradeTimeInput=>({
   cohortScope:{
     instrumentKey:key,originalBuyOrderId:originalId,
-    expectedExchangeOrderId:exchangeId,gttOrderId,
+    expectedExchangeOrderId:exchangeId,gttOrderId:gttId,
     product:'NRML',selectedWeeks:4,
     originalQuantity:100,lotSize:50,
     assertedCurrentNetLongQuantity:100,
