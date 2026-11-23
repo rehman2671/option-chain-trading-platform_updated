@@ -104,6 +104,8 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     const manual=app.indexOf("app.post('/api/upstox/set-token'",start);
     const autos=app.indexOf("app.post('/api/upstox/auto-login'",start);
     assert.ok(start>=0&&admission>start&&admission<db);
+    assert.match(app,/paperStaging=process\.env\.NODE_ENV==='production'\|\|/);
+    assert.match(app,/process\.env\.PAPER_STAGING_MODE==='1'/);
     assert.ok(routes>db&&routes<login&&routes<manual&&routes<autos);
     assert.match(app,/if\(!paperStaging\)\s*\{\s*initializeUpstoxAutoRefreshCron/);
     assert.match(app,/if \(!paperStaging && process\.env\.UPSTOX_ACCESS_TOKEN\)/);
