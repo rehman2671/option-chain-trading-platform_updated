@@ -124,6 +124,7 @@ on:
       - 'research/adaptive-v2-phase121-gtt-expiry-horizon-quarantine'
       - 'research/adaptive-v2-phase122-original-buy-anchored-gtt-horizon'
       - 'research/adaptive-v2-phase123-multifill-entry-cohort-reconciliation'
+      - 'research/adaptive-v2-phase124-native-trade-exchange-clock-provenance'
   pull_request:
     branches:
       - main
@@ -249,6 +250,7 @@ on:
       - 'research/adaptive-v2-phase121-gtt-expiry-horizon-quarantine'
       - 'research/adaptive-v2-phase122-original-buy-anchored-gtt-horizon'
       - 'research/adaptive-v2-phase123-multifill-entry-cohort-reconciliation'
+      - 'research/adaptive-v2-phase124-native-trade-exchange-clock-provenance'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks
