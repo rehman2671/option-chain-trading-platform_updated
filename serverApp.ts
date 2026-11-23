@@ -33,6 +33,7 @@ import { quantScheduler } from './src/quant/scheduler/quantScheduler.js';
 import { tradeReviewEngine } from './src/quant/learning/tradeReviewEngine.js';
 import { liveExecutionService } from './src/server/engine/ema15m/liveExecutionService.js';
 import { getNrmlLiveStatus } from './src/server/engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
+import {assertPaperStagingAdmission} from './src/server/release/paperStagingAdmission.js';
 import {
   reviewNrmlBrokerReadOnly
 } from './src/server/engine/ema15m/adaptiveNrmlBrokerSnapshotAudit.js';
@@ -295,12 +296,43 @@ setInterval(() => {
 }, 5000);
 
 async function startServer() {
+  // Before any persistent DB open, route registration, WebSocket or cron:
+  // refuse staging startup if an .env or injected Upstox credential can
+  // turn a simulated demo into a broker-connected trading process.
+  const paperStaging=process.env.PAPER_STAGING_MODE==='1'
+    ? assertPaperStagingAdmission(process.env)
+    : null;
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
 
   // -------------------------------------------------------------
   // API ENDPOINTS
   // -------------------------------------------------------------
+
+  // Paper/staging release contract, no account/order/credential details.
+  app.get('/api/release/status',(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    res.json({
+      mode:paperStaging?'PAPER_STAGING_RC':'NOT_CERTIFIED',
+      paperOnly:!!paperStaging,
+      liveBrokerOrdersAuthorized:paperStaging?false:null,
+      nrmlTradingAuthorized:false,
+      externalBrokerAttestationVerified:false,
+      exchangeNativeStopCertified:false,
+      profitabilityCertified:false,
+      requiresHumanReleaseApproval:true
+    });
+  });
+  // Deny ALL Upstox HTTP auth/session/token entrypoints in paper staging.
+  // Even an authenticated operator must not activate broker tokens from
+  // a read-only staging deployment after startup admission.
+  app.use('/api/upstox',(req,res,next)=>{
+    if(paperStaging){
+      res.status(403).json({error:'PAPER_STAGING_BROKER_ACCESS_DISABLED'});
+      return;
+    }
+    next();
+  });
 
   // Health check
   app.get('/api/health', (req, res) => {
@@ -3250,8 +3282,10 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Option Chain Trading Platform Server running on http://0.0.0.0:${PORT}`);
-    initializeUpstoxAutoRefreshCron(process.env.APP_URL || `http://localhost:${PORT}`);
-    if (process.env.UPSTOX_ACCESS_TOKEN) {
+    if(!paperStaging){
+      initializeUpstoxAutoRefreshCron(process.env.APP_URL || `http://localhost:${PORT}`);
+    }
+    if (!paperStaging && process.env.UPSTOX_ACCESS_TOKEN) {
       console.log('[UPSTOX] Starting Upstox V3 Protobuf WebSocket Streamer...');
       globalUpstoxStreamer.connect(process.env.UPSTOX_ACCESS_TOKEN).catch(e => console.warn('[UPSTOX V3 STREAMER] Startup error:', e.message));
     }
