@@ -113,10 +113,18 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     const dataDir=app.indexOf('fs.mkdirSync(stagingDbDir',start);
     assert.ok(dataDir>admission&&dataDir<db,'data path validated and mounted before DB init');
     assert.match(app,/process\.env\.PORT\?\.trim\(\) \|\| '3000'/);
-    // RC is NEVER live capable, including npm start with NODE_ENV unset.
-    // Admission must not depend on the current execution environment.
-    assert.match(app,/const paperStaging=assertPaperStagingAdmission\(process\.env\);/);
-    assert.equal(app.includes("paperStaging=process.env.NODE_ENV==='production'"),false);
+    // Main/Google AI Studio must keep a normal runtime when paper mode
+    // is not explicitly selected. The paper Docker image sets its own
+    // immutable startup lock before requiring server.cjs.
+    assert.match(app,/process\.env\.PAPER_STAGING_MODE === '1'/);
+    assert.match(app,/process\.env\.PAPER_RC_LOCKED === '1'/);
+    assert.match(app,/\? assertPaperStagingAdmission\(process\.env\) : null/);
+    assert.ok(app.includes('if(paperStaging){'));
+    assert.equal(app.includes('const paperStaging=assertPaperStagingAdmission(process.env);'),false);
+    const docker=readFileSync('Dockerfile.paper-staging','utf8');
+    assert.ok(docker.includes("process.env.PAPER_RC_LOCKED='1';require('./dist/server.cjs')"));
+    assert.match(docker,/ENV NODE_ENV=production/);
+    assert.match(docker,/PAPER_STAGING_MODE=1/);
     assert.ok(routes>db&&routes<login&&routes<manual&&routes<autos);
     const paperGuard=app.indexOf("app.use('/api/paper-trading',requireAuth as any)",start);
     const paperRead=app.indexOf("app.get('/api/paper-trading/portfolio'",start);
