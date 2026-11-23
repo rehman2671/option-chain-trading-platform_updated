@@ -87,7 +87,7 @@ jobs:
           export PAPER_RC_RESULT_PATH="$RUNNER_TEMP/paper-rc-container-position-id"
           export PAPER_RC_CONTAINER_URL='http://127.0.0.1:43138'
           run_container() {
-            docker run -d --name "$name" \
+            docker run -d --rm --name "$name" \
               --read-only --cap-drop ALL --security-opt no-new-privileges \
               --tmpfs /tmp:rw,nosuid,nodev,size=64m \
               -v "$volume:/data" -p 127.0.0.1:43138:3000 \
