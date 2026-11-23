@@ -177,6 +177,12 @@ describe('Phase125 offline dual native BUY trade snapshot drift quarantine',()=>
       }}},
       {second:{...x.second,input:{
         ...x.second.input,captureAtUtc:'2026-11-25'
+      }}},
+      {second:{...x.second,input:{
+        ...x.second.input,cohortScope:{
+          ...x.second.input.cohortScope,
+          reviewedAtUtc:'2026-11-25T00:00:06.000Z'
+        }
       }}}
     ];
     for(const c of cases){
@@ -189,8 +195,6 @@ describe('Phase125 offline dual native BUY trade snapshot drift quarantine',()=>
     const variants=[
       {cohortScope:{...x.second.input.cohortScope,
         selectedWeeks:2 as const}},
-      {cohortScope:{...x.second.input.cohortScope,
-        reviewedAtUtc:'2026-11-25T00:00:06.000Z'}},
       {cohortEvidence:{...x.second.input.cohortEvidence,
         positions:[{instrument_token:key,product:'D',net_quantity:50}]}},
       {cohortEvidence:{...x.second.input.cohortEvidence,
