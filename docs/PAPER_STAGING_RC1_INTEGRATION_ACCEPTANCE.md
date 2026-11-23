@@ -11,7 +11,7 @@ The default branch is main, whose reviewed SHA when RC work started was 8ba7b879
 - The new branch release/paper-staging-rc1-integration starts at the existing Phase132 research tip. No default-branch rewrite or automatic merge performed.
 - npm start runs the compiled dist/server.cjs, so npm run build is required first. A Node 22 deployment should not rely on a TypeScript source entrypoint.
 - Four tracked top-level runtime databases (option_platform.sqlite, SQLite WAL/SHM sidecars, quant_trading.db) were untracked ONLY ON THIS RC BRANCH and ignored going forward. Their previous Git history still exists. This is not a secure purge, customer-data backup or security signoff; proper operator custody and any incident response are separate.
-- All launch commands on this RC branch (including npm start and npm run dev) ALWAYS enforce the paper-staging admission before opening SQLite or listening; there is no non-staging fallback. The explicit PAPER_STAGING_MODE=1 and NODE_ENV=production are mandatory along with DATA_PROVIDER=practice, strong JWT signing secret and no Upstox API keys, tokens, TOTP, PIN, user ID or aliases. An accidental credential or wrong provider denies startup before database open or HTTP listening. This is a staging defense, NOT a future live trading release switch.
+- **Main / Google AI Studio compatibility:** the normal application can start without PAPER_STAGING_MODE; this preserves the existing non-staging provider, account and user workflow. In contrast, explicit PAPER_STAGING_MODE=1 invokes the full admission before SQLite/HTTP, and the paper-only Docker CMD sets PAPER_RC_LOCKED=1 before importing the app, so a host override of the staging flag cannot convert that image into a live broker server. Paper staging requires NODE_ENV=production, DATA_PROVIDER=practice, a strong JWT signing secret, an explicit separate persistent DB directory and no Upstox API keys, tokens, TOTP, PIN, user ID or aliases. This is not a new LIVE NRML release switch.
 - GET /api/release/status reports paper-only staging and all broker/NRML/exchange-stop/profitability certification booleans false. All /api/upstox/* auth/token/login/status endpoints return 403 in paper staging. Paper-staging /api/paper-trading/* routes additionally require authenticated users, preventing anonymous guest ledger reads and simulated orders from sharing userId=null state. The direct Upstox placeOrder, TOTP login and token injection helpers separately reject. Broker auth cron and streamer are not started in paper staging.
 - The practice data provider cannot send actual broker orders. Synthetic practice quotes must not be misrepresented as licensed market L1 or executable bid/ask.
 
@@ -22,10 +22,11 @@ In a clean checkout with NO Upstox credentials:
 2. npm run lint
 3. NODE_ENV=production npm run build
 4. npm run smoke:paper-staging
+5. npm run smoke:main-compat
 
 The smoke script starts the compiled backend from a disposable isolated temp working directory with new test-only JWT and supervisor keys and no broker credentials or .env file. It verifies /api/health, /api/release/status, /api/system/health (mode PRACTICE), built React HTML at /, Upstox auth/token routes blocked with 403, and unauthenticated live-account/exit endpoints denied (401/403). It also verifies guest paper portfolio reads and virtual order POSTs return 401; then bootstraps a one-time disposable SUPERADMIN, authenticates over the actual HTTP route, creates a virtual NIFTY option BUY, reads the paper portfolio, closes it with synthetic premium, verifies the closed ledger, and checks that the authenticated admin still cannot inject a broker token. It terminates the test process and cleans only the generated temp working directory. It does not open a pre-existing production operator database.
 
-GitHub Actions workflow paper-staging-rc1-integration.yml checks no tracked SQLite/DB files, TypeScript, direct live broker denial unit tests, production bundle and this exact HTTP smoke under Node 22. The PR targeting main also invokes full EMA15M invariant, npm test and build workflows. A successful smoke does NOT prove all research modules integrated or certify any trading strategy.
+GitHub Actions workflow paper-staging-rc1-integration.yml checks no tracked SQLite/DB files, TypeScript, direct live broker denial unit tests, production bundle, the staging HTTP smoke and an additional normal Google AI Studio/main startup HTTP smoke without a staging flag or broker credentials under Node 22. The PR targeting main also invokes full EMA15M invariant, npm test and build workflows. A successful smoke does NOT prove all research modules integrated or certify any trading strategy.
 
 ## Paper-staging container operations (NOT a LIVE release)
 
@@ -55,6 +56,16 @@ The dedicated GitHub workflow runs the source-level paper admission tests, TypeS
 Before any staging migration or deployment replacement, stop new paper writes and take an operator-approved encrypted backup/snapshot of the mounted SQLite directory using a SQLite-consistent method; do not copy only the main .sqlite file while WAL writes are active. Maintain test-only credentials and account isolation. Retain the previous approved image digest. On rollback, verify schema compatibility with the saved database snapshot before restarting; rolling back code alone after destructive migrations is NOT safe. Never delete a live named volume as part of CI or a routine container replacement. In a failed migration, hold service, preserve evidence and restore only an independently validated snapshot.
 
 **Hosting connection, external deployment, DNS, TLS, human browser acceptance and independent security/release signoff are all still outstanding.**
+
+## Main integration is not a hosting migration
+
+The user's existing deployment workflow is **Google AI Studio agent and its supported Google Cloud deployment**, not Hostinger or Railway. Main-branch source integration does not itself deploy to Google AI Studio or prove that its cloud runtime has durable state. After merging, sync/import the updated main source through the user's existing Google AI Studio GitHub workflow, review the changes in its agent and run preview/build there before consciously deploying from AI Studio.
+
+The normal app uses `npm run dev` for source-mode preview, or `npm run build` followed by `npm start` for compiled production startup, and accepts the host-assigned `PORT`. The main/general startup must not require `PAPER_STAGING_MODE`, `PAPER_STAGING_DB_DIR` or a paper-only Docker image. To test only the broker-disabled Docker sandbox, build `Dockerfile.paper-staging`; do not use that image for main's ordinary Upstox/MIS mode.
+
+**Critical state warning:** the normal app uses SQLite at the working directory unless explicitly configured for paper staging. An AI Studio deployment to Cloud Run may have an ephemeral instance filesystem. Never assume SQLite account, position, trade, audit or auth data survive revisions, instance replacement or multi-instance scaling. An approved durable database/volume and migration/backup strategy are separate prerequisites before relying on any hosted trading state.
+
+**LIVE NRML** automatic orders remain blocked by the separate existing interlocks and independent market, broker, overnight and human risk gates. A merge to main is a source integration, not authorization for real NRML orders or strategy profitability.
 
 ## Manual acceptance STILL pending
 
