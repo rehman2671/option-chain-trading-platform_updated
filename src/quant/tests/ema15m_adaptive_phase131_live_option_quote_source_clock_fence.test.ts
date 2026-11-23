@@ -22,6 +22,18 @@ const quote=(at=now,patch:Record<string,unknown>={})=>({
   instrumentKey:key,
   price:95,
   exchangeTimestamp:asIso(at),
+  bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5',
+  snapshotTimestamp:asIso(at),
+  bestBidPrice:95,bestBidQuantity:100,
+  bestAskPrice:96,bestAskQuantity:100,
+  ...patch
+});
+const native=(patch:Record<string,unknown>={})=>({
+  instrument_token:key,last_price:95,
+  last_trade_time:String(Date.now()),
+  timestamp:new Date().toISOString(),
+  depth:{buy:[{price:95,quantity:100,orders:1}],
+    sell:[{price:96,quantity:100,orders:1}]},
   ...patch
 });
 const accepted=()=>assessExactLiveOptionQuote(quote(),key,now);
@@ -116,8 +128,7 @@ describe('Phase131 exact last-trade MIS live SL/TP quote fail-closed fence',()=>
       const headers=(init as {headers?:Record<string,string>})?.headers;
       assert.equal(headers?.Authorization,'Bearer FAKE-PRIVATE-TOKEN');
       return {ok:true,json:async()=>({status:'success',data:{
-        a:{instrument_token:key,last_price:95,
-          last_trade_time:String(Date.now())}
+        a:native()
       }})} as Response;
     });
     try{
@@ -137,8 +148,7 @@ describe('Phase131 exact last-trade MIS live SL/TP quote fail-closed fence',()=>
       ok:true,json:async()=>{
         Object.assign(p,{historicalFoAuthEpoch:2});
         return {status:'success',data:{
-          a:{instrument_token:key,last_price:95,
-            last_trade_time:String(Date.now())}
+          a:native()
         }};
       }
     } as Response));
@@ -151,16 +161,10 @@ describe('Phase131 exact last-trade MIS live SL/TP quote fail-closed fence',()=>
     const sample=(v:unknown)=>({ok:true,
       json:async()=>({status:'success',data:v})} as Response);
     const cases=[
-      {a:{instrument_token:key,last_price:'95',
-        last_trade_time:String(Date.now())}},
-      {a:{instrument_token:'NSE_FO|WRONG',last_price:95,
-        last_trade_time:String(Date.now())}},
-      {a:{instrument_token:key,last_price:95,
-        last_trade_time:String(Date.now()-31_000)}},
-      {a:{instrument_token:key,last_price:95,
-        last_trade_time:String(Date.now())},
-       b:{instrument_token:key,last_price:95,
-        last_trade_time:String(Date.now())}},
+      {a:native({last_price:'95'})},
+      {a:native({instrument_token:'NSE_FO|WRONG'})},
+      {a:native({last_trade_time:String(Date.now()-31_000)})},
+      {a:native(),b:native()},
       []
     ];
     for(const data of cases){
