@@ -163,7 +163,8 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     assert.match(gitignore,/\*\.sqlite/);
     assert.match(gitignore,/\*\.db/);
     const pkg=JSON.parse(readFileSync('package.json','utf8'));
-    assert.equal(pkg.scripts.start,'node dist/server.cjs');
+    assert.equal(pkg.scripts.start,'node server.ts');
+    assert.equal(pkg.scripts['start:built'],'node dist/server.cjs');
     assert.equal(pkg.scripts['smoke:paper-staging'],
       'node scripts/verify_paper_staging_rc.mjs');
   });
