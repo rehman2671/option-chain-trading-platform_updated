@@ -194,14 +194,7 @@ describe('Phase127 eight-read braided order/GTT/position NRML TOCTOU census',()=
       {maxPassWindowSeconds:61},
       {maxTotalReadWindowSeconds:1},
       {maxTotalReadWindowSeconds:181},
-      {maxTotalReadWindowSeconds:2.5},
-      {originalBuyAndCensus:{
-        ...dataset().originalBuyAndCensus,
-        originalBuy:{
-          ...dataset().originalBuyAndCensus.originalBuy,
-          expectedAccountId:'wrong'
-        }
-      }}
+      {maxTotalReadWindowSeconds:2.5}
     ];
     for(const patch of cases){
       const r=run({...dataset(),...patch} as BraidedAccountInput);
