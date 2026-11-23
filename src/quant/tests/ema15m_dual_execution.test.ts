@@ -58,6 +58,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 1. Pipeline Isolation: Paper ON, Live OFF
   it('1. Paper ON, Live OFF: enters paper trade, skips broker order', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,
@@ -75,6 +76,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 2. Pipeline Isolation: Paper OFF, Live ON
   it('2. Paper OFF, Live ON: skips paper trade', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,
@@ -91,6 +93,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 3. Pipeline Isolation: Both ON (Dual Execution)
   it('3. Both ON: 1 confirmed signal executes BOTH paper and live pipelines', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,
@@ -105,9 +108,27 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
     assert.ok(result.paper.status === 'FILLED_SIMULATED' || result.paper.status === 'HELD');
   });
 
+  // Regression: missing product is NOT silently promoted to LIVE MIS.
+  it('3b. Missing stored product cannot arm LIVE, even with toggle ON', () => {
+    const id = 'PH129-INVALID-MISSING-PRODUCT-SETTINGS';
+    dbEngine.saveEmaNotificationSettings({
+      telegramEnabled: false,
+      emailEnabled: false,
+      browserEnabled: false,
+      soundEnabled: false,
+      autoPaperTradingEnabled: false,
+      liveBrokerExecutionEnabled: true
+    }, id);
+    const settings = dbEngine.getEmaNotificationSettings(id);
+    assert.strictEqual(settings.upstoxProductType, 'MIS');
+    assert.strictEqual(settings.liveBrokerExecutionEnabled, false,
+      'Invalid/missing product must never arm live broker orders');
+  });
+
   // 4. Pipeline Isolation: Both OFF
   it('4. Both OFF: signal evaluated, but zero execution across both pipelines', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,
@@ -312,6 +333,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 15. Synthetic Mock Crossover Isolation
   it('15. Mock Crossover Isolation: suppresses real broker orders even if live trading is armed', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,
@@ -414,6 +436,7 @@ describe('EMA 15M Dual Execution Platform - 20 Invariant Test Matrix', () => {
   // 21. Ordinary Upstox placement acknowledgment sets SUBMITTED, 0 filledQty, and 0 live positions
   it('21. Placement Acknowledgment: order_id only sets SUBMITTED, 0 filledQty, and 0 live positions', async () => {
     dbEngine.saveEmaNotificationSettings({
+      upstoxProductType: 'MIS',
       telegramEnabled: false,
       emailEnabled: false,
       browserEnabled: false,

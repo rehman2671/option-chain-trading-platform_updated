@@ -26,7 +26,8 @@ import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
   from './adaptivePostClaimSellRevalidation.js';
 import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
 import {
-  assessEmaLiveProductGate,isMisForcedSquareOffEligible
+  assessEmaLiveProductGate,assessEmaAutomaticLiveEntryPreflight,
+  isMisForcedSquareOffEligible
 } from './adaptiveNrmlLiveReleaseInterlock.js';
 import {
   EmaLiveOrderAttempt,
@@ -64,7 +65,7 @@ export class LiveExecutionService {
     // The generic Upstox live toggle is MIS-only while issue #20 is open.
     // NRML product selection requests a positional mode, not stop protection
     // or permission to route a real BUY. Unknown products fail closed.
-    const productGate = assessEmaLiveProductGate(settings.upstoxProductType || 'MIS');
+    const productGate = assessEmaLiveProductGate(settings.upstoxProductType);
     if (!productGate.allowed) {
       return { passed: false, failureReason: productGate.reason || 'NRML not released.' };
     }
@@ -168,27 +169,50 @@ export class LiveExecutionService {
     userId: string
   ): Promise<DualExecutionResult['live']> {
     const requestedSettings = dbEngine.getEmaNotificationSettings(userId);
-    const requestedProductType = requestedSettings.upstoxProductType || 'MIS';
-    const nrmlRelease = assessEmaLiveProductGate(requestedProductType);
-    // Check BEFORE any async broker contract verification, DB attempt,
-    // side effect, signal reversal, or potential BUY order submission.
-    if (!nrmlRelease.allowed) {
-      return {
-        enabled: false,
-        status: 'PRE_TRADE_REJECTED',
-        requestedQuantity: contract.lotSize,
-        filledQuantity: 0,
-        positionCreated: false,
-        rejectionReason: nrmlRelease.reason || 'NRML not released.',
-        message: nrmlRelease.reason || 'NRML live BUY not authorised.'
-      };
-    }
+    // A blank/malformed product must NOT silently become MIS.
+    const requestedProductType = requestedSettings.upstoxProductType;
+    const refuseAutomaticEntry = (reason: string): DualExecutionResult['live'] => ({
+      enabled: false,
+      status: 'PRE_TRADE_REJECTED',
+      requestedQuantity: contract.lotSize,
+      filledQuantity: 0,
+      positionCreated: false,
+      rejectionReason: reason,
+      message: reason
+    });
+    const currentAutomaticEntryIntent = () => {
+      try {
+        const latestSettings = dbEngine.getEmaNotificationSettings(userId);
+        const halted = killSwitchEngine.isHalted(userId);
+        return assessEmaAutomaticLiveEntryPreflight(
+          requestedProductType,
+          latestSettings.upstoxProductType,
+          latestSettings.liveBrokerExecutionEnabled,
+          halted
+        );
+      } catch {
+        return { allowed: false, reason:
+          'Broker entry settings or kill-switch state unavailable; fail closed.' };
+      }
+    };
+    // Strictly before contract network I/O, automatic reversal SELL,
+    // BUY claims or any broker orders: disabled live or active kill
+    // switch blocks BOTH automatic entry and automatic reversal exit.
+    const initialIntent = currentAutomaticEntryIntent();
+    if (!initialIntent.allowed)
+      return refuseAutomaticEntry(initialIntent.reason || 'Live entry blocked.');
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
     const attemptId = `att-${inst.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Paper and signal generation may use modelled contracts. Real BUY must use
     // the broker's exact listed instrument key, expiry, lot size and tick size.
     contract = await ContractResolver.verifyLiveContract(contract, activeProvider as any);
+    // Contract verification awaited broker I/O: the operator may have
+    // disabled live, changed product or engaged a kill switch in-flight.
+    // Prevent a stale MIS intent from initiating automatic reversal SELL.
+    const afterContractIntent = currentAutomaticEntryIntent();
+    if (!afterContractIntent.allowed)
+      return refuseAutomaticEntry(afterContractIntent.reason || 'Live entry changed.');
     const quantity = contract.lotSize;
     // Freeze product selected BEFORE awaiting broker I/O. A mid-flight UI
     // change cannot silently convert a checked MIS intention to an NRML BUY.
@@ -270,6 +294,19 @@ export class LiveExecutionService {
       } catch (riskErr: any) {
         preCheck = { passed: false, failureReason: 'Unable to validate real broker account risk: ' +
           (riskErr?.message || String(riskErr)) };
+      }
+    }
+
+    // The live broker risk GET above is asynchronous. Recheck current
+    // intent immediately before creating any durable SUBMITTED BUY claim.
+    // A disabled toggle/kill switch must never cause BUY or reversal.
+    if (preCheck.passed) {
+      const beforeBuyIntent = currentAutomaticEntryIntent();
+      if (!beforeBuyIntent.allowed) {
+        preCheck = {
+          passed: false,
+          failureReason: beforeBuyIntent.reason || 'Live entry changed.'
+        };
       }
     }
 

@@ -17,6 +17,7 @@ import {assessDurableSellEvidenceReplay,
 import type {PreparedBuyTradeEvidence} from
   './engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
+import {normalizeEmaLiveProductSettings} from './engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
 
 export interface MigrationReport {
   engine: string;
@@ -3514,6 +3515,11 @@ class DatabaseEngine {
         row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = 'GLOBAL'`).get() as any;
       }
       if (!row) return defaultSettings;
+      // Legacy or corrupted persisted product must NEVER enable broker
+      // orders by being silently coerced to default MIS.
+      const safeLiveProduct = normalizeEmaLiveProductSettings(
+        row.upstox_product_type, row.live_broker_execution_enabled === 1
+      );
       return {
         userId: row.user_id,
         telegramEnabled: row.telegram_enabled === 1,
@@ -3521,9 +3527,9 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
-        liveBrokerExecutionEnabled: row.live_broker_execution_enabled === 1,
+        liveBrokerExecutionEnabled: safeLiveProduct.liveEnabled,
         maxDailyLossLimit: row.max_daily_loss_limit !== null && row.max_daily_loss_limit !== undefined ? Number(row.max_daily_loss_limit) : 5000,
-        upstoxProductType: (row.upstox_product_type as any) || 'MIS',
+        upstoxProductType: safeLiveProduct.productType,
         trailingSlEnabled: row.trailing_sl_enabled !== undefined ? row.trailing_sl_enabled === 1 : true,
         profitLockPoints: row.profit_lock_points !== null && row.profit_lock_points !== undefined ? Number(row.profit_lock_points) : 70,
         trailDistancePoints: row.trail_distance_points !== null && row.trail_distance_points !== undefined ? Number(row.trail_distance_points) : 30,
@@ -3543,6 +3549,9 @@ class DatabaseEngine {
     if (!this.db) return;
     try {
       const uId = userId || settings.userId || 'GLOBAL';
+      const safeLiveProduct = normalizeEmaLiveProductSettings(
+        settings.upstoxProductType, settings.liveBrokerExecutionEnabled
+      );
       this.db.prepare(`
         INSERT INTO ema_notification_settings (
           user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, live_broker_execution_enabled, max_daily_loss_limit, upstox_product_type, trailing_sl_enabled, profit_lock_points, trail_distance_points, telegram_chat_id, telegram_bot_token, email_address, sound_volume, force_square_off_time, updated_at
@@ -3572,9 +3581,9 @@ class DatabaseEngine {
         settings.browserEnabled ? 1 : 0,
         settings.soundEnabled ? 1 : 0,
         settings.autoPaperTradingEnabled !== false ? 1 : 0,
-        settings.liveBrokerExecutionEnabled ? 1 : 0,
+        safeLiveProduct.liveEnabled ? 1 : 0,
         settings.maxDailyLossLimit ?? 5000,
-        settings.upstoxProductType || 'MIS',
+        safeLiveProduct.productType,
         settings.trailingSlEnabled !== false ? 1 : 0,
         settings.profitLockPoints ?? 70,
         settings.trailDistancePoints ?? 30,
