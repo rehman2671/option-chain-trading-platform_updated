@@ -13,7 +13,7 @@
  * This is deliberately for ONE asserted original BUY fill only. More
  * fills/averaging in require a separate exact fill-cohort review.
  *
- * No Date.now(), broker HTTP, storage, public routes, or mutations.
+ * No wall-clock reads, broker HTTP, storage, public routes, or mutations.
  */
 import {validUpstoxGttTimeFieldsIfPresent} from
   './adaptiveNrmlGttExpiryHorizonReadOnlyAudit.js';
