@@ -49,6 +49,16 @@ class DatabaseEngine {
 
   public async initialize(): Promise<void> {
     if (this.isInitialized) return;
+    // dotenv may be initialized AFTER static module imports. Select the
+    // staging data directory at initialization, after startup admission,
+    // rather than trusting module-import timing.
+    if (process.env.PAPER_STAGING_MODE === '1' &&
+        process.env.NODE_ENV !== 'test') {
+      this.dbFilePath = path.join(
+        process.env.PAPER_STAGING_DB_DIR || '',
+        'option_platform.sqlite'
+      );
+    }
 
     // 1. Audit and preserve legacy corrupt backup files
     this.auditLegacyBackups();
