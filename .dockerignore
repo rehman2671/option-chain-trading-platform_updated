@@ -1,0 +1,25 @@
+# No local secrets, git history, runtime state or licensed capture archives
+.git
+.github
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+.backups
+research-data
+node_modules
+dist
+build
+coverage
+*.log
+*.corrupt.*
