@@ -23,6 +23,8 @@ if(secrets.some(s=>process.env[s]?.trim()))
 if(!existsSync(compiled)||!existsSync(frontend))
   throw Error('PAPER_RC_SMOKE_REQUIRES_NPM_RUN_BUILD');
 const tmp=mkdtempSync(join(tmpdir(),'option-rc1-paper-smoke-'));
+const stagingDbDir=join(tmp,'mounted-paper-data');
+const listenPort=43137;
 const dist=join(tmp,'dist');
 cpSync(resolve(root,'dist'),dist,{recursive:true});
 if(existsSync(resolve(root,'assets')))
@@ -32,6 +34,8 @@ const env={
   NODE_ENV:'production',
   PAPER_STAGING_MODE:'1',
   DATA_PROVIDER:'practice',
+  PAPER_STAGING_DB_DIR:stagingDbDir,
+  PORT:String(listenPort),
   JWT_SECRET:randomBytes(48).toString('hex'),
   QUANT_SUPERVISOR_RESET_KEY:randomBytes(48).toString('hex'),
   GEMINI_API_KEY:'',
@@ -50,7 +54,7 @@ const probe=async(path,method='GET',payload=null,token=null)=>{
   const headers={};
   if(method==='POST')headers['Content-Type']='application/json';
   if(token)headers.Authorization='Bearer '+token;
-  const r=await fetch('http://127.0.0.1:3000'+path,{
+  const r=await fetch(`http://127.0.0.1:${listenPort}`+path,{
     method,headers,
     body:method==='POST'?JSON.stringify(payload??{}):undefined,
     signal:AbortSignal.timeout(2500)
@@ -182,6 +186,11 @@ try{
     throw Error('PAPER_RC_PAPER_CLOSE_NOT_RECORDED');
   if(closed.portfolio.positions.some(p=>p.id===paperPositionId))
     throw Error('PAPER_RC_CLOSED_PAPER_POSITION_REMAINS_OPEN');
+  // The runtime DB must use the explicitly configured external data
+  // directory rather than mutating the compiled app working directory.
+  if(!existsSync(join(stagingDbDir,'option_platform.sqlite'))||
+     existsSync(join(tmp,'option_platform.sqlite')))
+    throw Error('PAPER_RC_RUNTIME_DB_NOT_ON_SEPARATE_VOLUME');
   // Authenticating as SUPERADMIN does NOT remove paper-staging broker auth denial.
   const elevated=await probe('/api/upstox/set-token','POST',{
     accessToken:'FAKE-NO-BROKER-TOKEN'
