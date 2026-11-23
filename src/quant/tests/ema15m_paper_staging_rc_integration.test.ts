@@ -107,6 +107,11 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     assert.match(app,/paperStaging=process\.env\.NODE_ENV==='production'\|\|/);
     assert.match(app,/process\.env\.PAPER_STAGING_MODE==='1'/);
     assert.ok(routes>db&&routes<login&&routes<manual&&routes<autos);
+    const paperGuard=app.indexOf("app.use('/api/paper-trading',requireAuth as any)",start);
+    const paperRead=app.indexOf("app.get('/api/paper-trading/portfolio'",start);
+    const paperWrite=app.indexOf("app.post('/api/paper-trading/start'",start);
+    assert.ok(paperGuard>routes&&paperGuard<paperRead&&paperGuard<paperWrite,
+      'paper staging must require auth before guest portfolio reads or writes');
     assert.match(app,/if\(!paperStaging\)\s*\{\s*initializeUpstoxAutoRefreshCron/);
     assert.match(app,/if \(!paperStaging && process\.env\.UPSTOX_ACCESS_TOKEN\)/);
     assert.ok(app.includes("app.get('/api/release/status'"));
