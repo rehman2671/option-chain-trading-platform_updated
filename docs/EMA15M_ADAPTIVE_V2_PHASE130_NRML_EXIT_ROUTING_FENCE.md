@@ -14,6 +14,7 @@ Even though the Phase90 new NRML BUY gate is closed, an older/externally sourced
 - The generic `requestLiveExit()` checks the product gate immediately after loading the existing live position and BEFORE any entry-order, broker orderbook, GTT, position net, durable CAS or broker `placeOrder()` call. It fails closed even when its caller supplied reason `MANUAL`, `OPPOSITE_CROSSOVER`, `SL_HIT`, `TRAILING_SL_HIT` or `TARGET_HIT`. No automatic fallback `pos.productType || 'MIS'` is allowed in the SELL placement parameters.
 - The existing forced-squareoff flow already uses `isMisForcedSquareOffEligible` and remains strictly MIS-only. Existing MIS manual and automatic stop/target SELLs still go through all prior broker-side reconciliations and post-claim read checks. They are NOT proof of fill/stop or a profitable strategy.
 - Adversarial tests call the actual service with fake DB and provider quote methods: NRML or unknown positions must not fetch quotes, submit exits, claim durable SELLs or write position P&L. Mixed MIS+NRML polling must still request the MIS-only stop exit through a stubbed broker-exit method. This is mock testing, NOT live broker acceptance proof.
+- The actual `attemptLiveSignal` reversal path is also exercised with a pre-existing NRML local long, fake MIS opposite signal and mocked contract/DB; no legacy NRML reversal SELL or replacement BUY claim is allowed. No real broker API is accessed.
 
 ## Manual operations / release
 
