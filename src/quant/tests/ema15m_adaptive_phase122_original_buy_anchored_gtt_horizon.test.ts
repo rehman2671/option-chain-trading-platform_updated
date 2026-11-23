@@ -98,6 +98,7 @@ describe('Phase122 exact original BUY anchored positional horizon quarantine',()
     for(const weeks of [1,2,4,8] as const){
       const r=audit(scope({
         selectedWeeks:weeks,
+        reviewedAtUtc:'2026-11-24T00:00:00.000Z',
         assertedContractExpiryUtc:'2027-03-01T00:00:00.000Z'
       }),parent({
         expires_at:micros('2027-03-02T00:00:00.000Z')
@@ -111,6 +112,7 @@ describe('Phase122 exact original BUY anchored positional horizon quarantine',()
     }
     for(const weeks of [1,2,4,8] as const){
       const r=audit(scope({selectedWeeks:weeks,
+        reviewedAtUtc:'2026-11-24T00:00:00.000Z',
         assertedContractExpiryUtc:'2027-03-01T00:00:00.000Z'
       }),parent({expires_at:micros('2027-02-15T00:00:00.000Z')}));
       safe(r);
