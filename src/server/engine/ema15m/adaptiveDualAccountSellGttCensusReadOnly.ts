@@ -203,7 +203,9 @@ export function auditTwoPassNrmlAccountCensusReadOnly(
       'EXACT_TWO_PASS_ACCOUNT_EPOCH_CLOCK_AND_LIMITATION_DECLARATION_REQUIRED');
   const scope=s.input?.cohortScope;
   if(!scope||scope.product!=='NRML'||!id(scope.originalBuyOrderId)||
-     !id(scope.gttOrderId)||!id(scope.instrumentKey.replace?.('|',''))||
+     !id(scope.gttOrderId)||
+     typeof scope.instrumentKey!=='string'||
+     !/^(?:NSE_FO|BSE_FO)\|[A-Za-z0-9_-]{1,240}$/.test(scope.instrumentKey)||
      !Number.isSafeInteger(scope.assertedCurrentNetLongQuantity)||
      scope.assertedCurrentNetLongQuantity<=0||
      !Number.isSafeInteger(scope.lotSize)||scope.lotSize<=0)
