@@ -27,6 +27,7 @@ if(banned.some(key=>process.env[key]?.trim()))
 const dir=mkdtempSync(join(tmpdir(),'main-aistudio-practice-'));
 const port=43139;
 cpSync(resolve(root,'dist'),join(dir,'dist'),{recursive:true});
+cpSync(resolve(root,'server.ts'),join(dir,'server.ts'));
 if(existsSync(resolve(root,'assets')))
   cpSync(resolve(root,'assets'),join(dir,'assets'),{recursive:true});
 const env={
@@ -53,7 +54,8 @@ const probe=async(route)=>{
   return {status:r.status,body:await r.text()};
 };
 try{
-  child=spawn(process.execPath,[binary],{
+  // Match original Google AI Studio npm start -> node server.ts launcher.
+  child=spawn(process.execPath,[join(dir,'server.ts')],{
     cwd:dir,env,stdio:['ignore','pipe','pipe']
   });
   child.stdout.on('data',v=>{logTail=(logTail+v.toString()).slice(-1800);});
