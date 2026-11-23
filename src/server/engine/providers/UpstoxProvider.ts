@@ -553,6 +553,10 @@ export class UpstoxProvider implements IMarketDataProvider {
   }
 
   public async placeOrder(params: any): Promise<any> {
+    // A staging demo must NEVER promote a direct provider call into a live
+    // Upstox POST, even if credentials are injected after server startup.
+    if(process.env.PAPER_STAGING_MODE==='1')
+      throw new Error('PAPER_STAGING_BROKER_ORDER_DISABLED');
     // Automated tests must use an injected fake broker. Never reach real Upstox orders.
     if (process.env.NODE_ENV === 'test') {
       throw new Error('REAL_UPSTOX_ORDER_DISABLED_IN_TEST');
