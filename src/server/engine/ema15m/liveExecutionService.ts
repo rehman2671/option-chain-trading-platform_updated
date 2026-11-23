@@ -25,6 +25,7 @@ import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGua
 import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
   from './adaptivePostClaimSellRevalidation.js';
 import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
+import {assessExactLiveOptionQuote} from './adaptiveLiveOptionQuoteFence.js';
 import {
   assessEmaLiveProductGate,assessEmaAutomaticLiveEntryPreflight,
   assessEmaBrokerExitProductGate,isMisLiveAutoExitCandidate,
@@ -650,12 +651,22 @@ export class LiveExecutionService {
         console.warn('[EMA LIVE] Real option quote provider unavailable for ' + pos.tradingsymbol);
         continue;
       }
-      const quote = await (activeProvider as any).getLiveOptionQuote(pos.brokerInstrumentKey || '');
-      if (!quote || !Number.isFinite(Number(quote.price)) || Number(quote.price) <= 0) {
-        console.warn('[EMA LIVE] Skipping SL/TP evaluation: no fresh Upstox option quote for ' + pos.tradingsymbol);
+      let quote:unknown=null;
+      try {
+        quote=await (activeProvider as any).getLiveOptionQuote(pos.brokerInstrumentKey || '');
+      } catch {
+        console.warn('[EMA LIVE] Broker quote read error; no auto SELL');
         continue;
       }
-      const currentOptionPrice = Number(quote.price);
+      const quoteCheck=assessExactLiveOptionQuote(
+        quote,pos.brokerInstrumentKey,Date.now()
+      );
+      if(!quoteCheck.accepted||quoteCheck.price===null){
+        console.warn('[EMA LIVE] Skipping SL/TP evaluation: exact live option LTP unverified ('+
+          quoteCheck.reason+')');
+        continue;
+      }
+      const currentOptionPrice=quoteCheck.price;
 
       const grossPnl = StrategyRules.calculateOptionGrossPnl(entryPrice, currentOptionPrice, qty);
       const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
