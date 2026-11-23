@@ -47,7 +47,7 @@ const input=(when:string,extra:Partial<NativeOrderTradeTimeInput>={})
   :NativeOrderTradeTimeInput=>({
     cohortScope:{
       instrumentKey:key,originalBuyOrderId:orderId,
-      expectedExchangeOrderId:exchangeId,gttOrderId,product:'NRML',
+      expectedExchangeOrderId:exchangeId,gttOrderId:gttId,product:'NRML',
       originalQuantity:100,assertedCurrentNetLongQuantity:100,
       lotSize:50,selectedWeeks:4,reviewedAtUtc:reviewAt,
       assertedContractExpiryUtc:'2027-01-15T00:00:00.000Z'
@@ -314,7 +314,7 @@ describe('Phase125 offline dual native BUY trade snapshot drift quarantine',()=>
     huge.second.input.cohortEvidence={
       ...huge.second.input.cohortEvidence,
       unexpectedPayload:'X'.repeat(251000)
-    };
+    } as typeof huge.second.input.cohortEvidence;
     const r2=audit(huge);safe(r2);
     assert.equal(r2.state,'ORIGINAL_BUY_POSITION_GTT_OR_REVIEW_CONTEXT_DRIFT');
   });
