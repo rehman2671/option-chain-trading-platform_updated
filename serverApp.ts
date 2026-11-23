@@ -299,12 +299,12 @@ async function startServer() {
   // Before any persistent DB open, route registration, WebSocket or cron:
   // refuse staging startup if an .env or injected Upstox credential can
   // turn a simulated demo into a broker-connected trading process.
-  // This RC must NEVER boot as a broker-connected production service
-  // merely because the deployment forgot PAPER_STAGING_MODE=1.
-  const paperStaging=process.env.NODE_ENV==='production'||
-    process.env.PAPER_STAGING_MODE==='1'
-      ? assertPaperStagingAdmission(process.env)
-      : null;
+  // This release branch is paper-staging ONLY, regardless of launch
+  // command (npm start/dev, NODE_ENV missing, injected broker token).
+  // Never fall back to the general-purpose live-capable server mode.
+  // The strict admission verifies NODE_ENV=production, practice provider,
+  // ZERO broker credentials and the explicit paper staging flag.
+  const paperStaging=assertPaperStagingAdmission(process.env);
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
 
