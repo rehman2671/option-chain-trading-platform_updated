@@ -1,0 +1,34 @@
+name: Adaptive Phase106 FO auth epoch pinning (read-only)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase106-fo-auth-epoch-pinning'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase105-fo-session-continuity'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fo-auth-epoch-pinning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 27
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase106 same-account reauth epoch and prior FO read-only safety tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase106_fo_auth_epoch_pinning.test.ts \
+            src/quant/tests/ema15m_adaptive_phase105_fo_account_session_continuity.test.ts \
+            src/quant/tests/ema15m_adaptive_phase104_historical_fo_trades.test.ts \
+            src/quant/tests/ema15m_adaptive_phase103_account_wide_exposure_review.test.ts \
+            src/quant/tests/ema15m_adaptive_phase102_joint_buy_sell_receipts.test.ts

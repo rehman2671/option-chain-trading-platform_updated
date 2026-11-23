@@ -22,20 +22,25 @@ import { quantScheduler } from '../scheduler/quantScheduler.js';
 
 describe('Unified Risk Controls & Real Execution Integration', () => {
   const TEST_USER = 'test_user_unified_risk';
+  const TEST_RESET_SECRET = 'ema15m-unit-test-reset-key-isolated-2026';
+  const previousResetSecret = process.env.QUANT_SUPERVISOR_RESET_KEY;
 
   before(async () => {
+    process.env.QUANT_SUPERVISOR_RESET_KEY = TEST_RESET_SECRET;
     await dbEngine.initialize();
   });
 
   after(() => {
+    if (previousResetSecret === undefined) delete process.env.QUANT_SUPERVISOR_RESET_KEY;
+    else process.env.QUANT_SUPERVISOR_RESET_KEY = previousResetSecret;
     quantScheduler.stop();
     setTimeout(() => process.exit(0), 200).unref();
   });
 
   afterEach(() => {
     // Reset test user and global state after each test
-    killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Test cleanup', TEST_USER);
-    killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Test cleanup', 'GLOBAL');
+    killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET, 'Test cleanup', TEST_USER);
+    killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET, 'Test cleanup', 'GLOBAL');
     drawdownController.resetHalt('TEST_OPERATOR', 'Test cleanup', TEST_USER);
     drawdownController.resetHalt('TEST_OPERATOR', 'Test cleanup', 'GLOBAL');
     dbEngine.deleteQuantUserSettings(TEST_USER);
@@ -209,7 +214,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), true);
 
     // Authorized reset
-    const goodReset = killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Supervisor authorized', TEST_USER);
+    const goodReset = killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET, 'Supervisor authorized', TEST_USER);
     assert.strictEqual(goodReset.success, true);
     assert.strictEqual(killSwitchEngine.isHalted(TEST_USER), false);
 
@@ -228,7 +233,7 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
 
   it('11. Verifies LIVE real order execution fails safe with REJECTED when broker rejects or is disconnected', async () => {
     // Ensure kill switch is unarmed
-    killSwitchEngine.resetKillSwitch('RESET_RISK_AUTH', 'Ensure armed', TEST_USER);
+    killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET, 'Ensure armed', TEST_USER);
 
     // Live order with no valid Upstox session
     const liveOrder = await orderAdapter.submitOrder({

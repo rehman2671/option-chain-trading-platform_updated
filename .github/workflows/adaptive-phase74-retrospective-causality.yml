@@ -1,0 +1,32 @@
+name: Adaptive Phase74 retrospective option L1 as-of decision causality quarantine
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase74-retrospective-causality-quarantine'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase73-licensed-source-intake-readiness'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-quote-asof-versus-retrospective-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase74 all-listed decision as-of 5s late quote and retrospective market archive source
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase74_retrospective_causality.test.ts

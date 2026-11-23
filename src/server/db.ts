@@ -6,11 +6,18 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import bcrypt from 'bcrypt';
 import { DatabaseSchemaInfo, DatabaseMigrationStatus, BasketOrderRecord, PaperPosition, OIAnomaly, User, Ema15mCandle, Ema15mSignal, EmaNotificationLog, EmaNotificationSettings, EmaPaperTrade, EmaPaperTradingSummary, EmaExecutionLog } from '../types.js';
 import type { TradeReviewRecord, MarketRegimeType, QuantFeatureRecord } from '../quant/types.js';
 import type { EmaLiveOrderAttempt, EmaLivePosition, EmaExecutionEvent } from './engine/ema15m/types.js';
+import {assessDurableSellEvidenceReplay,
+  type PreparedSellChild,type PreparedSellTrade
+} from './engine/ema15m/adaptiveDurableSellChildEvidence.js';
+import type {PreparedBuyTradeEvidence} from
+  './engine/ema15m/adaptiveDurableBuyTradeEvidence.js';
 import { PRIMARY_COVERAGE_SYMBOLS } from '../shared/marketConfig.js';
+import {normalizeEmaLiveProductSettings} from './engine/ema15m/adaptiveNrmlLiveReleaseInterlock.js';
 
 export interface MigrationReport {
   engine: string;
@@ -23,7 +30,12 @@ export interface MigrationReport {
 class DatabaseEngine {
   private db: Database.Database | null = null;
   private isInitialized = false;
-  private dbFilePath = path.join(process.cwd(), 'option_platform.sqlite');
+  private dbFilePath = process.env.NODE_ENV === 'test'
+    ? path.join(os.tmpdir(), `ema15m-test-${process.pid}.sqlite`)
+    : process.env.PAPER_STAGING_MODE === '1'
+      ? path.join(process.env.PAPER_STAGING_DB_DIR || '',
+          'option_platform.sqlite')
+      : path.join(process.cwd(), 'option_platform.sqlite');
   private isRecovering = false;
   private walCheckpointTimer: NodeJS.Timeout | null = null;
 
@@ -37,6 +49,16 @@ class DatabaseEngine {
 
   public async initialize(): Promise<void> {
     if (this.isInitialized) return;
+    // dotenv may be initialized AFTER static module imports. Select the
+    // staging data directory at initialization, after startup admission,
+    // rather than trusting module-import timing.
+    if (process.env.PAPER_STAGING_MODE === '1' &&
+        process.env.NODE_ENV !== 'test') {
+      this.dbFilePath = path.join(
+        process.env.PAPER_STAGING_DB_DIR || '',
+        'option_platform.sqlite'
+      );
+    }
 
     // 1. Audit and preserve legacy corrupt backup files
     this.auditLegacyBackups();
@@ -73,8 +95,8 @@ class DatabaseEngine {
       console.log('DatabaseEngine (better-sqlite3): SQLite database initialized in WAL mode with transactional disk persistence.');
       console.log('DatabaseEngine Recovery Summary:', JSON.stringify(this.migrationReport));
     } catch (err: any) {
-      console.warn('[DB INITIALIZE NOTICE] Database integrity issue detected, initiating safe salvaging & recovery:', err?.message || err);
-      this.salvageAndResetDatabase();
+      console.error('[DB INITIALIZE FATAL] Initialization failed; preserving existing SQLite/WAL files:', err?.message || err);
+      throw err;
     }
   }
 
@@ -120,7 +142,8 @@ class DatabaseEngine {
       };
 
       console.error('[DB ENGINE FATAL] Runtime SQLite corruption detected with structured diagnostics:\n' + JSON.stringify(diagnostic, null, 2));
-      this.salvageAndResetDatabase(diagnostic);
+      // Never auto-delete/recreate trading ledgers following a runtime SQLite error.
+      throw new Error('SQLITE_CORRUPTION_DETECTED: preserve database and require manual recovery');
     }
   }
 
@@ -196,7 +219,7 @@ class DatabaseEngine {
     // 2. Backup corrupt database and auxiliary WAL/SHM files to safe .backups/ directory
     if (fs.existsSync(this.dbFilePath)) {
       const stats = fs.statSync(this.dbFilePath);
-      const backupDir = path.join(process.cwd(), '.backups');
+      const backupDir = path.join(path.dirname(this.dbFilePath), '.backups');
       if (!fs.existsSync(backupDir)) {
         try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
       }
@@ -398,7 +421,9 @@ class DatabaseEngine {
 
   private auditLegacyBackups(): void {
     try {
-      const cwd = process.cwd();
+      // Reconcile/backup only the actual current database volume;
+      // never scan the compiled application root for operator data.
+      const cwd = path.dirname(this.dbFilePath);
       const backupDir = path.join(cwd, '.backups');
       if (!fs.existsSync(backupDir)) {
         try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
@@ -2287,6 +2312,97 @@ class DatabaseEngine {
       console.log('DatabaseEngine: Applied Migration 018 - Independent Dual Execution Tables.');
     }
 
+    // Migration 019: Persist cumulative confirmed broker SELL fills across restarts.
+    if (!appliedVersions.has(19)) {
+      const positionCols = new Set(
+        (this.db.prepare('PRAGMA table_info(ema_live_positions)').all() as any[]).map(c => c.name)
+      );
+      if (!positionCols.has('exit_filled_quantity')) {
+        this.db.exec('ALTER TABLE ema_live_positions ADD COLUMN exit_filled_quantity INTEGER NOT NULL DEFAULT 0');
+      }
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version, description) VALUES (19, 'EMA live cumulative exit fill tracking')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 019 - EMA live exit fill quantity.');
+    }
+
+    // Migration 020: local append-only broker-REPORTED child/trade evidence.
+    // Never a broker order, independently certified exchange fill, CLOSED
+    // position or realised P&L. Historical observations are immutable;
+    // identity (position, order, trade) is unique across restarts.
+    if (!appliedVersions.has(20)) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_exit_child_observations (
+          observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_account_id TEXT NOT NULL,
+          broker_instrument_key TEXT NOT NULL,
+          product_type TEXT NOT NULL CHECK(product_type IN ('MIS','NRML')),
+          requested_quantity INTEGER NOT NULL CHECK(requested_quantity > 0),
+          exchange_order_id TEXT NOT NULL,
+          observed_filled_quantity INTEGER NOT NULL CHECK(observed_filled_quantity >= 0),
+          observed_pending_quantity INTEGER NOT NULL CHECK(observed_pending_quantity >= 0),
+          observed_net_quantity INTEGER NOT NULL CHECK(observed_net_quantity >= 0),
+          observed_broker_status TEXT NOT NULL,
+          observed_trade_count INTEGER NOT NULL CHECK(observed_trade_count >= 0),
+          observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ema_exit_child_observations
+          ON ema_exit_child_observations(position_id,broker_order_id,observation_id);
+        CREATE TABLE IF NOT EXISTS ema_exit_trade_evidence (
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_trade_id TEXT NOT NULL,
+          broker_exchange_order_id TEXT NOT NULL,
+          reported_quantity INTEGER NOT NULL CHECK(reported_quantity > 0),
+          reported_average_price REAL NOT NULL CHECK(reported_average_price > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(position_id,broker_order_id,broker_trade_id)
+        );
+      `);
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version, description) VALUES (20, 'Immutable EMA live SELL child observations and unique trade-ID broker evidence')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 020 - Append-only broker SELL evidence; no automatic settlement.');
+    }
+
+    // Migration 021: one original fully-filled BUY receipt per position,
+    // with immutable unique individual broker-reported trade executions.
+    // This never mutates live positions or realised P&L.
+    if(!appliedVersions.has(21)){
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ema_entry_buy_receipts (
+          position_id TEXT PRIMARY KEY,
+          broker_account_id TEXT NOT NULL,
+          attempt_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          instrument_key TEXT NOT NULL,
+          product_type TEXT NOT NULL CHECK(product_type IN ('MIS','NRML')),
+          exchange_order_id TEXT NOT NULL,
+          original_quantity INTEGER NOT NULL CHECK(original_quantity > 0),
+          reported_average_price REAL NOT NULL CHECK(reported_average_price > 0),
+          trade_count INTEGER NOT NULL CHECK(trade_count > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(broker_account_id,broker_order_id)
+        );
+        CREATE TABLE IF NOT EXISTS ema_entry_buy_trade_receipts (
+          position_id TEXT NOT NULL,
+          broker_order_id TEXT NOT NULL,
+          broker_trade_id TEXT NOT NULL,
+          exchange_order_id TEXT NOT NULL,
+          reported_quantity INTEGER NOT NULL CHECK(reported_quantity > 0),
+          reported_price REAL NOT NULL CHECK(reported_price > 0),
+          first_observed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(position_id,broker_order_id,broker_trade_id)
+        );
+      `);
+      this.db.prepare(
+        "INSERT INTO schema_migrations (version,description) VALUES (21,'Immutable original EMA BUY child and per-trade broker receipts')"
+      ).run();
+      console.log('DatabaseEngine: Applied Migration 021 - Immutable original BUY receipts only, no settlement.');
+    }
+
     // Safeguard: Ensure all modern columns exist on ema_notification_settings
     try {
       const settingsCols = new Set(
@@ -2672,57 +2788,76 @@ class DatabaseEngine {
    */
   public syncConfiguredUsersFromEnv(): void {
     if (!this.db) return;
+    // Fixed operator roster is configured only from environment-provided credentials.
+    // Never silently provision a well-known password or default email address.
+    const accounts: Array<{
+      id: string;
+      role: 'SUPERADMIN' | 'OPERATOR';
+      emailEnv: string;
+      passwordEnv: string;
+      nameEnv: string;
+      fallbackName: string;
+    }> = [
+      { id: 'usr-admin-master', role: 'SUPERADMIN', emailEnv: 'ADMIN_EMAIL',
+        passwordEnv: 'ADMIN_INITIAL_PASSWORD', nameEnv: 'ADMIN_NAME', fallbackName: 'Master Administrator' },
+      { id: 'usr-op-1', role: 'OPERATOR', emailEnv: 'OPERATOR_1_EMAIL',
+        passwordEnv: 'OPERATOR_1_INITIAL_PASSWORD', nameEnv: 'OPERATOR_1_NAME', fallbackName: 'Quant Operator 1' },
+      { id: 'usr-op-2', role: 'OPERATOR', emailEnv: 'OPERATOR_2_EMAIL',
+        passwordEnv: 'OPERATOR_2_INITIAL_PASSWORD', nameEnv: 'OPERATOR_2_NAME', fallbackName: 'Quant Operator 2' },
+      { id: 'usr-op-3', role: 'OPERATOR', emailEnv: 'OPERATOR_3_EMAIL',
+        passwordEnv: 'OPERATOR_3_INITIAL_PASSWORD', nameEnv: 'OPERATOR_3_NAME', fallbackName: 'Risk Operator 3' },
+      { id: 'usr-op-4', role: 'OPERATOR', emailEnv: 'OPERATOR_4_EMAIL',
+        passwordEnv: 'OPERATOR_4_INITIAL_PASSWORD', nameEnv: 'OPERATOR_4_NAME', fallbackName: 'Execution Operator 4' }
+    ];
+
     try {
-      const adminEmail = (process.env.ADMIN_EMAIL || 'vinuparab86@gmail.com').trim().toLowerCase();
-      const adminName = process.env.ADMIN_NAME || 'Master Admin (Vinu)';
-      const adminPass = process.env.ADMIN_INITIAL_PASSWORD || 'Admin@Trading2026!';
-
-      const op1Email = (process.env.OPERATOR_1_EMAIL || 'operator1@trading.internal').trim().toLowerCase();
-      const op1Name = process.env.OPERATOR_1_NAME || 'Quant Operator 1';
-      const op1Pass = process.env.OPERATOR_1_INITIAL_PASSWORD || 'Operator1@Trading2026!';
-
-      const op2Email = (process.env.OPERATOR_2_EMAIL || 'operator2@trading.internal').trim().toLowerCase();
-      const op2Name = process.env.OPERATOR_2_NAME || 'Quant Operator 2';
-      const op2Pass = process.env.OPERATOR_2_INITIAL_PASSWORD || 'Operator2@Trading2026!';
-
-      const op3Email = (process.env.OPERATOR_3_EMAIL || 'operator3@trading.internal').trim().toLowerCase();
-      const op3Name = process.env.OPERATOR_3_NAME || 'Risk Operator 3';
-      const op3Pass = process.env.OPERATOR_3_INITIAL_PASSWORD || 'Operator3@Trading2026!';
-
-      const op4Email = (process.env.OPERATOR_4_EMAIL || 'operator4@trading.internal').trim().toLowerCase();
-      const op4Name = process.env.OPERATOR_4_NAME || 'Execution Operator 4';
-      const op4Pass = process.env.OPERATOR_4_INITIAL_PASSWORD || 'Operator4@Trading2026!';
-
-      const roster = [
-        { id: 'usr-admin-master', email: adminEmail, name: adminName, role: 'SUPERADMIN', pass: adminPass },
-        { id: 'usr-op-1', email: op1Email, name: op1Name, role: 'OPERATOR', pass: op1Pass },
-        { id: 'usr-op-2', email: op2Email, name: op2Name, role: 'OPERATOR', pass: op2Pass },
-        { id: 'usr-op-3', email: op3Email, name: op3Name, role: 'OPERATOR', pass: op3Pass },
-        { id: 'usr-op-4', email: op4Email, name: op4Name, role: 'OPERATOR', pass: op4Pass }
-      ];
-
       const now = new Date().toISOString();
-      for (const u of roster) {
-        const existing = this.db.prepare(`SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?`).get(u.email, u.id) as any;
+      for (const account of accounts) {
+        const email = (process.env[account.emailEnv] || '').trim().toLowerCase();
+        const password = process.env[account.passwordEnv] || '';
+        const name = process.env[account.nameEnv] || account.fallbackName;
+        const valid = email.includes('@') && password.length >= 12;
+
+        if (!valid) {
+          // Existing bootstrap identities must not remain enabled when their
+          // authoritative environment credentials are missing.
+          if (process.env.NODE_ENV === 'production') {
+            this.db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(account.id);
+          }
+          console.warn('[DB] Skipping user roster entry ' + account.id +
+            ': missing/invalid ' + account.emailEnv + ' or ' + account.passwordEnv);
+          continue;
+        }
+
+        const existing = this.db.prepare(
+          'SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?'
+        ).get(email, account.id) as any;
+
+        // Env credentials are authoritative for this managed roster. Updating
+        // a configured password rotates any previously seeded/known password.
+        const currentHash = existing?.password_hash as string | undefined;
+        const passwordHash = currentHash && bcrypt.compareSync(password, currentHash)
+          ? currentHash
+          : bcrypt.hashSync(password, 12);
+
         if (existing) {
-          // If existing account has no password_hash, initialize with environment initial password hash
-          const passHash = existing.password_hash || bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            UPDATE users 
-            SET email = lower(?), name = COALESCE(?, name), role = ?, email_verified = 1,
-                password_hash = ?
+            UPDATE users
+            SET email = lower(?), name = ?, role = ?, email_verified = 1,
+                password_hash = ?, is_active = 1
             WHERE id = ?
-          `).run(u.email, u.name, u.role, passHash, existing.id);
+          `).run(email, name, account.role, passwordHash, existing.id);
         } else {
-          const passHash = bcrypt.hashSync(u.pass, 10);
           this.db.prepare(`
-            INSERT INTO users (id, email, name, role, is_active, password_hash, email_verified, created_at)
+            INSERT INTO users (id, email, name, role, is_active, password_hash,
+                               email_verified, created_at)
             VALUES (?, lower(?), ?, ?, 1, ?, 1, ?)
-          `).run(u.id, u.email, u.name, u.role, passHash, now);
+          `).run(account.id, email, name, account.role, passwordHash, now);
         }
       }
     } catch (err: any) {
-      console.warn('[DB] User env sync warning:', err.message);
+      console.error('[DB] User env sync failed:', err.message);
+      if (process.env.NODE_ENV === 'production') throw err;
     }
   }
 
@@ -3395,6 +3530,11 @@ class DatabaseEngine {
         row = this.db.prepare(`SELECT * FROM ema_notification_settings WHERE user_id = 'GLOBAL'`).get() as any;
       }
       if (!row) return defaultSettings;
+      // Legacy or corrupted persisted product must NEVER enable broker
+      // orders by being silently coerced to default MIS.
+      const safeLiveProduct = normalizeEmaLiveProductSettings(
+        row.upstox_product_type, row.live_broker_execution_enabled === 1
+      );
       return {
         userId: row.user_id,
         telegramEnabled: row.telegram_enabled === 1,
@@ -3402,9 +3542,9 @@ class DatabaseEngine {
         browserEnabled: row.browser_enabled === 1,
         soundEnabled: row.sound_enabled === 1,
         autoPaperTradingEnabled: row.auto_paper_trading_enabled !== undefined ? row.auto_paper_trading_enabled === 1 : true,
-        liveBrokerExecutionEnabled: row.live_broker_execution_enabled === 1,
+        liveBrokerExecutionEnabled: safeLiveProduct.liveEnabled,
         maxDailyLossLimit: row.max_daily_loss_limit !== null && row.max_daily_loss_limit !== undefined ? Number(row.max_daily_loss_limit) : 5000,
-        upstoxProductType: (row.upstox_product_type as any) || 'MIS',
+        upstoxProductType: safeLiveProduct.productType,
         trailingSlEnabled: row.trailing_sl_enabled !== undefined ? row.trailing_sl_enabled === 1 : true,
         profitLockPoints: row.profit_lock_points !== null && row.profit_lock_points !== undefined ? Number(row.profit_lock_points) : 70,
         trailDistancePoints: row.trail_distance_points !== null && row.trail_distance_points !== undefined ? Number(row.trail_distance_points) : 30,
@@ -3424,6 +3564,9 @@ class DatabaseEngine {
     if (!this.db) return;
     try {
       const uId = userId || settings.userId || 'GLOBAL';
+      const safeLiveProduct = normalizeEmaLiveProductSettings(
+        settings.upstoxProductType, settings.liveBrokerExecutionEnabled
+      );
       this.db.prepare(`
         INSERT INTO ema_notification_settings (
           user_id, telegram_enabled, email_enabled, browser_enabled, sound_enabled, auto_paper_trading_enabled, live_broker_execution_enabled, max_daily_loss_limit, upstox_product_type, trailing_sl_enabled, profit_lock_points, trail_distance_points, telegram_chat_id, telegram_bot_token, email_address, sound_volume, force_square_off_time, updated_at
@@ -3453,9 +3596,9 @@ class DatabaseEngine {
         settings.browserEnabled ? 1 : 0,
         settings.soundEnabled ? 1 : 0,
         settings.autoPaperTradingEnabled !== false ? 1 : 0,
-        settings.liveBrokerExecutionEnabled ? 1 : 0,
+        safeLiveProduct.liveEnabled ? 1 : 0,
         settings.maxDailyLossLimit ?? 5000,
-        settings.upstoxProductType || 'MIS',
+        safeLiveProduct.productType,
         settings.trailingSlEnabled !== false ? 1 : 0,
         settings.profitLockPoints ?? 70,
         settings.trailDistancePoints ?? 30,
@@ -4019,8 +4162,35 @@ class DatabaseEngine {
   // 15-MINUTE 23/50 EMA LIVE BROKER EXECUTION PERSISTENCE
   // ========================================================
 
+  /**
+   * Atomic SQLite claim for ONE active EMA BUY per instrument. BEGIN IMMEDIATE
+   * serializes concurrent workers using the same durable SQLite database.
+   */
+  public claimEmaLiveEntryAttempt(attempt: EmaLiveOrderAttempt): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveEntryAttempt');
+    const claim = db.transaction(() => {
+      const pending = db.prepare(`
+        SELECT id FROM ema_live_order_attempts
+        WHERE instrument = ? AND order_status IN
+          ('CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      const position = db.prepare(`
+        SELECT id FROM ema_live_positions
+        WHERE instrument = ? AND status IN
+          ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')
+        LIMIT 1
+      `).get(attempt.instrument);
+      if (pending || position) return false;
+      this.saveEmaLiveOrderAttempt(attempt);
+      return true;
+    });
+    return claim.immediate();
+  }
+
   public saveEmaLiveOrderAttempt(attempt: EmaLiveOrderAttempt): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLiveOrderAttempt');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_order_attempts (
@@ -4061,11 +4231,12 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public updateEmaLiveOrderAttempt(id: string, updates: Partial<EmaLiveOrderAttempt>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLiveOrderAttempt');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
@@ -4099,11 +4270,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_order_attempts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live order attempt:', err.message);
+    throw err;
     }
   }
 
   public getEmaLiveOrderAttempts(instrument?: string, limit: number = 50, offset: number = 0): EmaLiveOrderAttempt[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttempts');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
@@ -4140,12 +4312,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error fetching EMA live order attempts:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getLatestEmaLiveOrderAttempt(signalId?: string, instrument?: string): EmaLiveOrderAttempt | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getLatestEmaLiveOrderAttempt');
     try {
       let query = `SELECT * FROM ema_live_order_attempts WHERE 1=1`;
       const params: any[] = [];
@@ -4183,13 +4356,64 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
+  public getEmaLiveOrderAttemptById(attemptId: string): EmaLiveOrderAttempt | null {
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLiveOrderAttemptById');
+    try {
+      const r = this.db.prepare('SELECT * FROM ema_live_order_attempts WHERE id = ? LIMIT 1').get(attemptId) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        signalId: r.signal_id,
+        executionMode: 'LIVE',
+        instrument: r.instrument,
+        brokerAccountId: r.broker_account_id || undefined,
+        brokerInstrumentKey: r.broker_instrument_key || undefined,
+        tradingsymbol: r.tradingsymbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: r.expiry,
+        requestedQuantity: Number(r.requested_quantity),
+        filledQuantity: Number(r.filled_quantity || 0),
+        averageFillPrice: r.average_fill_price !== null ? Number(r.average_fill_price) : undefined,
+        orderStatus: r.order_status,
+        brokerOrderId: r.broker_order_id || undefined,
+        rejectionReason: r.rejection_reason || undefined,
+        submittedAt: r.submitted_at || undefined,
+        lastBrokerUpdateAt: r.last_broker_update_at || undefined,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    } catch (err: any) {
+      console.error('[DB] Unable to query EMA live entry attempt:', err.message);
+      throw err;
+      
+    }
+  }
+
+  /**
+   * One authoritative live position per broker BUY attempt, even when multiple
+   * reconcilers poll simultaneously on workers sharing this SQLite database.
+   */
+  public tryCreateEmaLivePositionIfAbsent(pos: EmaLivePosition): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: tryCreateEmaLivePositionIfAbsent');
+    const create = db.transaction(() => {
+      const existing = db.prepare('SELECT id FROM ema_live_positions WHERE attempt_id = ? LIMIT 1')
+        .get(pos.attemptId);
+      if (existing) return false;
+      this.saveEmaLivePosition(pos);
+      return true;
+    });
+    return create.immediate();
+  }
+
   public saveEmaLivePosition(pos: EmaLivePosition): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: saveEmaLivePosition');
     try {
       this.db.prepare(`
         INSERT INTO ema_live_positions (
@@ -4256,15 +4480,538 @@ class DatabaseEngine {
       );
     } catch (err: any) {
       console.error('[DB] Error saving EMA live position:', err.message);
+    throw err;
     }
   }
 
+  /**
+   * Phase102: private read-only joint original BUY receipt + SELL receipt
+   * snapshot under one SQLite transaction. The existing Phase100 private
+   * ledger reader runs as a nested SAVEPOINT on the same DB connection.
+   * Never return raw trade/order/account IDs via the public API.
+   */
+  public readEmaJointBuySellEvidence(positionId:string):{
+    position:Record<string,unknown>|null;
+    entryAttempt:Record<string,unknown>|null;
+    observations:Record<string,unknown>[];
+    trades:Record<string,unknown>[];
+    originalBuyReceipt:Record<string,unknown>|null;
+    originalBuyTrades:Record<string,unknown>[];
+  }{
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: readEmaJointBuySellEvidence');
+    if(typeof positionId!=='string'||positionId.length<1||
+       positionId.length>128)throw new Error('EMA_LIVE_JOINT_RECEIPTS_SCOPE_INVALID');
+    const db=this.db;
+    const query=db.transaction(()=>{
+      const base=this.readEmaExitSettlementEvidence(positionId);
+      if(!base.position)return {...base,
+        originalBuyReceipt:null,originalBuyTrades:[]};
+      const buy=db.prepare(`
+        SELECT position_id,broker_account_id,attempt_id,
+          broker_order_id,instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        FROM ema_entry_buy_receipts WHERE position_id=?
+      `).get(positionId) as any;
+      if(!buy)return {...base,originalBuyReceipt:null,
+        originalBuyTrades:[]};
+      const executions=db.prepare(`
+        SELECT broker_trade_id,exchange_order_id,
+          reported_quantity,reported_price
+        FROM ema_entry_buy_trade_receipts
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY broker_trade_id ASC LIMIT 5001
+      `).all(positionId,buy.broker_order_id) as any[];
+      return {...base,
+        originalBuyReceipt:{
+          positionId:buy.position_id,accountId:buy.broker_account_id,
+          attemptId:buy.attempt_id,orderId:buy.broker_order_id,
+          instrumentKey:buy.instrument_key,product:buy.product_type,
+          exchangeOrderId:buy.exchange_order_id,
+          originalQuantity:buy.original_quantity,
+          brokerReportedAveragePrice:buy.reported_average_price,
+          tradeCount:buy.trade_count
+        },
+        originalBuyTrades:executions.map(e=>({
+          tradeId:e.broker_trade_id,exchangeOrderId:e.exchange_order_id,
+          quantity:e.reported_quantity,price:e.reported_price
+        }))
+      };
+    });
+    return query();
+  }
+
+  /**
+   * Phase101: single IMMEDIATE SQLite transaction for *original BUY receipt*
+   * provenance only. Never writes to ema_live_positions, closes an exit,
+   * books P&L, or invokes any brokerage API. An existing receipt is immutable.
+   */
+  public appendEmaOriginalBuyTradeEvidence(candidate:PreparedBuyTradeEvidence):{
+    state:'BROKER_BUY_RECEIPT_RECORDED_NOT_SETTLEMENT'|
+      'IDENTICAL_RECEIPT_REPLAY'|'BUY_RECEIPT_CONFLICT';
+    reason:string;
+    recordedBuyTrades:number;
+    independentExchangeReceiptCertified:false;
+    realisedPnlWriteAuthorized:false;
+    automaticClosureAuthorized:false;
+    liveNrmlBuyAuthorized:false;
+    brokerWrites:0;
+  } {
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: appendEmaOriginalBuyTradeEvidence');
+    const db=this.db;
+    const reject=(reason:string)=>({
+      state:'BUY_RECEIPT_CONFLICT' as const,reason,
+      recordedBuyTrades:0,independentExchangeReceiptCertified:false as const,
+      realisedPnlWriteAuthorized:false as const,
+      automaticClosureAuthorized:false as const,
+      liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+    });
+    const capture=db.transaction(()=>{
+      const id=(x:unknown)=>typeof x==='string'&&
+        /^[A-Za-z0-9_-]{1,128}$/.test(x);
+      const price=(x:unknown)=>typeof x==='number'&&
+        Number.isFinite(x)&&x>0&&Number.isSafeInteger(Math.round(x*100))&&
+        Math.abs(x*100-Math.round(x*100))<0.00001;
+      if(!candidate||!id(candidate.positionId)||
+         !id(candidate.accountId)||!id(candidate.attemptId)||
+         !id(candidate.orderId)||!id(candidate.exchangeOrderId)||
+         typeof candidate.instrumentKey!=='string'||
+         !candidate.instrumentKey||candidate.instrumentKey.length>256||
+         !['MIS','NRML'].includes(candidate.product)||
+         !Number.isSafeInteger(candidate.originalQuantity)||
+         candidate.originalQuantity<=0||
+         !price(candidate.brokerReportedAveragePrice)||
+         !Array.isArray(candidate.trades)||candidate.trades.length===0||
+         candidate.trades.length>5000)
+        return reject('INVALID_CANONICAL_ORIGINAL_BUY_RECEIPT');
+      const original=db.prepare(`
+        SELECT p.id,p.broker_account_id,p.broker_instrument_key,
+          p.product_type,p.status,p.attempt_id,
+          p.entry_broker_order_id,p.quantity,p.lot_size,
+          p.entry_price,p.exit_filled_quantity,
+          a.broker_order_id AS buy_broker_order_id,
+          a.broker_account_id AS buy_broker_account_id,
+          a.broker_instrument_key AS buy_instrument_key,
+          a.order_status AS buy_status,
+          a.requested_quantity AS buy_requested_quantity,
+          a.filled_quantity AS buy_filled_quantity,
+          a.average_fill_price AS buy_price
+        FROM ema_live_positions p
+        JOIN ema_live_order_attempts a ON a.id=p.attempt_id
+        WHERE p.id=? LIMIT 1
+      `).get(candidate.positionId) as any;
+      if(!original||
+         !['OPEN','EXIT_REQUESTED','EXIT_PENDING',
+           'EXIT_FAILED','PARTIALLY_CLOSED'].includes(original.status)||
+         original.broker_account_id!==candidate.accountId||
+         original.broker_instrument_key!==candidate.instrumentKey||
+         original.product_type!==candidate.product||
+         original.attempt_id!==candidate.attemptId||
+         original.entry_broker_order_id!==candidate.orderId||
+         original.buy_broker_order_id!==candidate.orderId||
+         original.buy_broker_account_id!==candidate.accountId||
+         original.buy_instrument_key!==candidate.instrumentKey||
+         original.buy_status!=='FILLED'||
+         original.buy_requested_quantity!==candidate.originalQuantity||
+         original.buy_filled_quantity!==candidate.originalQuantity||
+         original.quantity!==candidate.originalQuantity||
+         !Number.isSafeInteger(original.lot_size)||original.lot_size<=0||
+         candidate.originalQuantity%original.lot_size!==0||
+         !price(original.entry_price)||!price(original.buy_price)||
+         Math.abs(original.entry_price-original.buy_price)>0.011||
+         Math.abs(candidate.brokerReportedAveragePrice-original.buy_price)>0.011)
+        return reject('DURABLE_ORIGINAL_BUY_ATTEMPT_AND_POSITION_NOT_MATCHED');
+      const seen=new Set<string>();let total=0,totalPaise=0;
+      for(const t of candidate.trades){
+        if(!t||!id(t.tradeId)||seen.has(t.tradeId)||
+           t.exchangeOrderId!==candidate.exchangeOrderId||
+           !Number.isSafeInteger(t.quantity)||t.quantity<=0||
+           !price(t.price))
+          return reject('INVALID_OR_DUPLICATED_IMMUTABLE_BUY_TRADE');
+        seen.add(t.tradeId);
+        total+=t.quantity;
+        totalPaise+=Math.round(t.price*100)*t.quantity;
+        if(!Number.isSafeInteger(total)||!Number.isSafeInteger(totalPaise))
+          return reject('BUY_TRADE_TOTAL_OVERFLOW');
+      }
+      if(total!==candidate.originalQuantity||
+         Math.abs(Math.round(totalPaise/total)-
+           Math.round(candidate.brokerReportedAveragePrice*100))>1)
+        return reject('BUY_TRADE_EXECUTED_QUANTITY_OR_WEIGHTED_PRICE_MISMATCH');
+      const old=db.prepare(`
+        SELECT broker_account_id,attempt_id,broker_order_id,
+          instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        FROM ema_entry_buy_receipts WHERE position_id=?
+      `).get(candidate.positionId) as any;
+      if(old){
+        if(old.broker_account_id!==candidate.accountId||
+           old.attempt_id!==candidate.attemptId||
+           old.broker_order_id!==candidate.orderId||
+           old.instrument_key!==candidate.instrumentKey||
+           old.product_type!==candidate.product||
+           old.exchange_order_id!==candidate.exchangeOrderId||
+           old.original_quantity!==candidate.originalQuantity||
+           old.reported_average_price!==candidate.brokerReportedAveragePrice||
+           old.trade_count!==candidate.trades.length)
+          return reject('IMMUTABLE_ORIGINAL_BUY_HEADER_CHANGED');
+        const stored=db.prepare(`
+          SELECT broker_trade_id,exchange_order_id,
+            reported_quantity,reported_price
+          FROM ema_entry_buy_trade_receipts
+          WHERE position_id=? AND broker_order_id=?
+        `).all(candidate.positionId,candidate.orderId) as any[];
+        if(stored.length!==candidate.trades.length)
+          return reject('IMMUTABLE_ORIGINAL_BUY_TRADE_COUNT_CHANGED');
+        const byId=new Map<string,typeof candidate.trades[number]>(
+          candidate.trades.map(t=>[t.tradeId,t] as const)
+        );
+        for(const x of stored){
+          const t=byId.get(x.broker_trade_id);
+          if(!t||x.exchange_order_id!==t.exchangeOrderId||
+             x.reported_quantity!==t.quantity||
+             x.reported_price!==t.price)
+            return reject('REPLAYED_ORIGINAL_BUY_TRADE_ID_MUTATED_OR_MISSING');
+        }
+        return {
+          state:'IDENTICAL_RECEIPT_REPLAY' as const,
+          reason:'BROKER_REPORTED_ORIGINAL_BUY_ONLY_NOT_CERTIFIED',
+          recordedBuyTrades:stored.length,
+          independentExchangeReceiptCertified:false as const,
+          realisedPnlWriteAuthorized:false as const,
+          automaticClosureAuthorized:false as const,
+          liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+        };
+      }
+      const alreadyLinked=db.prepare(`
+        SELECT position_id FROM ema_entry_buy_receipts
+        WHERE broker_account_id=? AND broker_order_id=? LIMIT 1
+      `).get(candidate.accountId,candidate.orderId) as {position_id:string}|undefined;
+      if(alreadyLinked&&alreadyLinked.position_id!==candidate.positionId)
+        return reject('ORIGINAL_BUY_ORDER_ALREADY_LINKED_TO_ANOTHER_POSITION');
+      db.prepare(`
+        INSERT INTO ema_entry_buy_receipts(
+          position_id,broker_account_id,attempt_id,broker_order_id,
+          instrument_key,product_type,exchange_order_id,
+          original_quantity,reported_average_price,trade_count
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+      `).run(candidate.positionId,candidate.accountId,candidate.attemptId,
+        candidate.orderId,candidate.instrumentKey,candidate.product,
+        candidate.exchangeOrderId,candidate.originalQuantity,
+        candidate.brokerReportedAveragePrice,candidate.trades.length);
+      const insert=db.prepare(`
+        INSERT INTO ema_entry_buy_trade_receipts(
+          position_id,broker_order_id,broker_trade_id,exchange_order_id,
+          reported_quantity,reported_price
+        ) VALUES(?,?,?,?,?,?)
+      `);
+      for(const t of candidate.trades)
+        insert.run(candidate.positionId,candidate.orderId,t.tradeId,
+          t.exchangeOrderId,t.quantity,t.price);
+      return {
+        state:'BROKER_BUY_RECEIPT_RECORDED_NOT_SETTLEMENT' as const,
+        reason:'BROKER_REPORTED_ORIGINAL_BUY_ONLY_NOT_CERTIFIED',
+        recordedBuyTrades:candidate.trades.length,
+        independentExchangeReceiptCertified:false as const,
+        realisedPnlWriteAuthorized:false as const,
+        automaticClosureAuthorized:false as const,
+        liveNrmlBuyAuthorized:false as const,brokerWrites:0 as const
+      };
+    });
+    return capture.immediate();
+  }
+
+  /**
+   * Phase100: internally scoped, consistent SQLite READ snapshot of one
+   * pending SELL child and its original BUY / immutable trade evidence.
+   * Caller must authenticate/authorise before invoking this private reader.
+   * Do not return this raw snapshot to an API consumer (broker identifiers
+   * and trade prices are sensitive); use the redacted pure preview.
+   */
+  public readEmaExitSettlementEvidence(positionId:string): {
+    position:Record<string,unknown>|null;
+    entryAttempt:Record<string,unknown>|null;
+    observations:Record<string,unknown>[];
+    trades:Record<string,unknown>[];
+  } {
+    if(!this.db)throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: readEmaExitSettlementEvidence');
+    if(typeof positionId!=='string'||positionId.length===0||positionId.length>128)
+      throw new Error('EMA_LIVE_SETTLEMENT_READ_POSITION_ID_INVALID');
+    const db=this.db;
+    const read=db.transaction(()=>{
+      const raw=db.prepare(`
+        SELECT id,attempt_id,broker_account_id,broker_instrument_key,
+          product_type,status,entry_broker_order_id,exit_broker_order_id,
+          quantity,lot_size,exit_filled_quantity,entry_price
+        FROM ema_live_positions WHERE id=?
+      `).get(positionId) as any;
+      if(!raw)return {
+        position:null,entryAttempt:null,observations:[],trades:[]
+      };
+      const buy=db.prepare(`
+        SELECT id,broker_account_id,broker_instrument_key,
+          broker_order_id,order_status,requested_quantity,
+          filled_quantity,average_fill_price
+        FROM ema_live_order_attempts WHERE id=?
+      `).get(raw.attempt_id) as any;
+      const observations=db.prepare(`
+        SELECT observation_id,position_id,broker_order_id,
+          broker_account_id,broker_instrument_key,product_type,
+          requested_quantity,exchange_order_id,
+          observed_filled_quantity,observed_pending_quantity,
+          observed_net_quantity,observed_broker_status,
+          observed_trade_count
+        FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY observation_id ASC LIMIT 2001
+      `).all(positionId,raw.exit_broker_order_id) as any[];
+      const trades=db.prepare(`
+        SELECT broker_trade_id,broker_exchange_order_id,
+          reported_quantity,reported_average_price
+        FROM ema_exit_trade_evidence
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY broker_trade_id ASC LIMIT 5001
+      `).all(positionId,raw.exit_broker_order_id) as any[];
+      return {
+        position:{
+          id:raw.id,attemptId:raw.attempt_id,
+          brokerAccountId:raw.broker_account_id,
+          brokerInstrumentKey:raw.broker_instrument_key,
+          productType:raw.product_type,status:raw.status,
+          entryBrokerOrderId:raw.entry_broker_order_id,
+          exitBrokerOrderId:raw.exit_broker_order_id,
+          quantity:raw.quantity,lotSize:raw.lot_size,
+          exitFilledQuantity:raw.exit_filled_quantity,
+          entryPrice:raw.entry_price
+        },
+        entryAttempt:buy?{
+          id:buy.id,brokerAccountId:buy.broker_account_id,
+          brokerInstrumentKey:buy.broker_instrument_key,
+          brokerOrderId:buy.broker_order_id,
+          orderStatus:buy.order_status,
+          requestedQuantity:buy.requested_quantity,
+          filledQuantity:buy.filled_quantity,
+          averageFillPrice:buy.average_fill_price
+        }:null,
+        observations:observations.map(r=>({
+          observationId:r.observation_id,positionId:r.position_id,
+          brokerOrderId:r.broker_order_id,accountId:r.broker_account_id,
+          instrumentKey:r.broker_instrument_key,product:r.product_type,
+          requestedQuantity:r.requested_quantity,
+          exchangeOrderId:r.exchange_order_id,
+          filledQuantity:r.observed_filled_quantity,
+          pendingQuantity:r.observed_pending_quantity,
+          currentNetQuantity:r.observed_net_quantity,
+          brokerStatus:r.observed_broker_status,
+          tradeCount:r.observed_trade_count
+        })),
+        trades:trades.map(t=>({
+          tradeId:t.broker_trade_id,
+          exchangeOrderId:t.broker_exchange_order_id,
+          quantity:t.reported_quantity,price:t.reported_average_price
+        }))
+      };
+    });
+    return read();
+  }
+
+  /**
+   * Phase99: only append local BROKER-REPORTED SELL child observations and
+   * immutable per-trade evidence, never change positions/CLOSED/P&L.
+   * This transaction must not be called from automatic order placement or
+   * risk-control retry paths. Authenticated admin capture does broker GETs
+   * first, then this single SQLite transaction.
+   */
+  public appendEmaExitChildTradeEvidence(candidate: PreparedSellChild): {
+    state:'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT'|'REPLAY_NO_NEW_EVIDENCE'|'EVIDENCE_CONFLICT';
+    reason:string;
+    newlyObservedTrades:number;
+    observedTrades:number;
+    recordedChildObservations:number;
+    automaticClosureAuthorized:false;
+    realisedPnlAuthorized:false;
+    brokerWrites:0;
+  } {
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: appendEmaExitChildTradeEvidence');
+    const db=this.db;
+    const reject=(reason:string)=>({
+      state:'EVIDENCE_CONFLICT' as const,reason,
+      newlyObservedTrades:0,observedTrades:0,recordedChildObservations:0,
+      automaticClosureAuthorized:false as const,
+      realisedPnlAuthorized:false as const,brokerWrites:0 as const
+    });
+    const capture=db.transaction(()=>{
+      if(!candidate||!candidate.positionId||!candidate.orderId||
+         !candidate.accountId||!candidate.instrumentKey||
+         !candidate.exchangeOrderId||
+         !['MIS','NRML'].includes(candidate.product)||
+         !Number.isSafeInteger(candidate.requestedQuantity)||
+         candidate.requestedQuantity<=0||
+         !Number.isSafeInteger(candidate.filledQuantity)||
+         candidate.filledQuantity<0||
+         !Number.isSafeInteger(candidate.pendingQuantity)||
+         candidate.pendingQuantity<0||
+         !Number.isSafeInteger(candidate.currentNetQuantity)||
+         candidate.currentNetQuantity<0||
+         !Array.isArray(candidate.trades))
+        return reject('INVALID_CANONICAL_BROKER_EVIDENCE');
+      const position=db.prepare(`
+        SELECT id,broker_account_id,broker_instrument_key,product_type,
+          status,quantity,lot_size,exit_filled_quantity,exit_broker_order_id
+        FROM ema_live_positions WHERE id=?
+      `).get(candidate.positionId) as any;
+      // Scope to one still-pending child only. Earlier partial exit orders
+      // need independent per-child original requested size and fill history,
+      // which Phase98/99 intentionally do not reconstruct from a mutable
+      // cumulative total.
+      if(!position||position.status!=='EXIT_PENDING'||
+         position.broker_account_id!==candidate.accountId||
+         position.broker_instrument_key!==candidate.instrumentKey||
+         position.product_type!==candidate.product||
+         position.exit_broker_order_id!==candidate.orderId||
+         position.exit_filled_quantity!==0||
+         !Number.isSafeInteger(position.quantity)||
+         !Number.isSafeInteger(position.lot_size)||
+         position.lot_size<=0||
+         position.quantity!==candidate.requestedQuantity||
+         position.quantity%position.lot_size!==0)
+        return reject('DURABLE_EXIT_POSITION_OR_CHILD_SCOPE_NOT_MATCHED');
+      const previous=db.prepare(`
+        SELECT broker_account_id,broker_instrument_key,product_type,
+          requested_quantity,exchange_order_id,observed_filled_quantity,
+          observed_pending_quantity,observed_net_quantity,
+          observed_broker_status,observed_trade_count
+        FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+        ORDER BY observation_id DESC LIMIT 1
+      `).get(candidate.positionId,candidate.orderId) as any;
+      if(previous&&(
+         previous.broker_account_id!==candidate.accountId||
+         previous.broker_instrument_key!==candidate.instrumentKey||
+         previous.product_type!==candidate.product||
+         previous.requested_quantity!==candidate.requestedQuantity||
+         previous.exchange_order_id!==candidate.exchangeOrderId))
+        return reject('DURABLE_CHILD_IDENTITY_OR_EXCHANGE_REFERENCE_CHANGED');
+      // A stale broker snapshot may return OPEN after an earlier
+      // terminal COMPLETE/CANCELLED observation with identical trade
+      // totals. Preserve the terminal lifecycle; never accept a
+      // backwards transition as fresh broker truth.
+      if(previous){
+        const terminal=new Set(['COMPLETE','COMPLETED','FILLED',
+          'CANCELLED','CANCELED','REJECTED','EXPIRED','FAILED']);
+        if(terminal.has(previous.observed_broker_status)&&
+           previous.observed_broker_status!==candidate.brokerStatus)
+          return reject('BROKER_CHILD_TERMINAL_LIFECYCLE_REGRESSED_OR_CHANGED');
+      }
+      const storedRows=db.prepare(`
+        SELECT broker_trade_id,broker_exchange_order_id,
+          reported_quantity,reported_average_price
+        FROM ema_exit_trade_evidence
+        WHERE position_id=? AND broker_order_id=?
+      `).all(candidate.positionId,candidate.orderId) as any[];
+      const stored:PreparedSellTrade[]=storedRows.map(x=>({
+        tradeId:x.broker_trade_id,
+        exchangeOrderId:x.broker_exchange_order_id,
+        quantity:Number(x.reported_quantity),
+        price:Number(x.reported_average_price)
+      }));
+      const replay=assessDurableSellEvidenceReplay(
+        stored,candidate.trades,
+        previous?Number(previous.observed_filled_quantity):0,
+        candidate.filledQuantity
+      );
+      if(!replay.accept)return reject(replay.reason);
+      if(candidate.filledQuantity+candidate.pendingQuantity>
+         candidate.requestedQuantity)
+        return reject('BROKER_EXIT_FILLED_PLUS_PENDING_EXCEEDS_ORDER_QUANTITY');
+      if(candidate.currentNetQuantity!==
+         candidate.requestedQuantity-candidate.filledQuantity)
+        return reject('BROKER_NET_NOT_EQUAL_TO_CHILD_REMAINING');
+      const present=new Set(stored.map(t=>t.tradeId));
+      const insertTrade=db.prepare(`
+        INSERT INTO ema_exit_trade_evidence(
+          position_id,broker_order_id,broker_trade_id,
+          broker_exchange_order_id,reported_quantity,reported_average_price
+        ) VALUES(?,?,?,?,?,?)
+      `);
+      for(const trade of candidate.trades){
+        if(!present.has(trade.tradeId))
+          insertTrade.run(candidate.positionId,candidate.orderId,
+            trade.tradeId,trade.exchangeOrderId,trade.quantity,trade.price);
+      }
+      const sameAsPrevious=!!previous&&
+        previous.observed_filled_quantity===candidate.filledQuantity&&
+        previous.observed_pending_quantity===candidate.pendingQuantity&&
+        previous.observed_net_quantity===candidate.currentNetQuantity&&
+        previous.observed_broker_status===candidate.brokerStatus&&
+        previous.observed_trade_count===candidate.trades.length;
+      if(!sameAsPrevious)
+        db.prepare(`
+          INSERT INTO ema_exit_child_observations(
+            position_id,broker_order_id,broker_account_id,
+            broker_instrument_key,product_type,requested_quantity,
+            exchange_order_id,observed_filled_quantity,
+            observed_pending_quantity,observed_net_quantity,
+            observed_broker_status,observed_trade_count
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        `).run(candidate.positionId,candidate.orderId,
+          candidate.accountId,candidate.instrumentKey,candidate.product,
+          candidate.requestedQuantity,candidate.exchangeOrderId,
+          candidate.filledQuantity,candidate.pendingQuantity,
+          candidate.currentNetQuantity,candidate.brokerStatus,
+          candidate.trades.length);
+      const count=db.prepare(`
+        SELECT COUNT(*) AS total FROM ema_exit_child_observations
+        WHERE position_id=? AND broker_order_id=?
+      `).get(candidate.positionId,candidate.orderId) as {total:number};
+      return {
+        state:(sameAsPrevious?'REPLAY_NO_NEW_EVIDENCE':
+          'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT') as
+          'REPLAY_NO_NEW_EVIDENCE'|'RECORDED_BROKER_EVIDENCE_NOT_SETTLEMENT',
+        reason:'BROKER_REPORTED_EVIDENCE_ONLY_NO_CLOSED_OR_PNL',
+        newlyObservedTrades:replay.newTrades,
+        observedTrades:candidate.trades.length,
+        recordedChildObservations:count.total,
+        automaticClosureAuthorized:false as const,
+        realisedPnlAuthorized:false as const,
+        brokerWrites:0 as const
+      };
+    });
+    // IMMEDIATE obtains one SQLite writer lock before reading the previous
+    // trade IDs, making replay and the append atomic across workers.
+    return capture.immediate();
+  }
+
+  /** Atomic claim: only one worker may transition an eligible position to EXIT_REQUESTED. */
+  public claimEmaLiveExit(positionId: string): boolean {
+    const db = this.db;
+    if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveExit');
+    const updated = db.prepare(`
+      UPDATE ema_live_positions
+      SET status = 'EXIT_REQUESTED', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status IN ('OPEN', 'EXIT_FAILED')
+        AND exit_broker_order_id IS NULL
+    `).run(positionId);
+    return updated.changes === 1;
+  }
+
   public updateEmaLivePosition(id: string, updates: Partial<EmaLivePosition>): void {
-    if (!this.db) return;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: updateEmaLivePosition');
     try {
       const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
       const values: any[] = [];
 
+      if (updates.quantity !== undefined) {
+        sets.push('quantity = ?');
+        values.push(updates.quantity);
+      }
+      if (updates.entryPrice !== undefined) {
+        sets.push('entry_price = ?');
+        values.push(updates.entryPrice);
+      }
+      if (updates.exitFilledQuantity !== undefined) {
+        sets.push('exit_filled_quantity = ?');
+        values.push(updates.exitFilledQuantity);
+      }
       if (updates.currentPrice !== undefined) {
         sets.push('current_price = ?');
         values.push(updates.currentPrice);
@@ -4322,11 +5069,12 @@ class DatabaseEngine {
       this.db.prepare(`UPDATE ema_live_positions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     } catch (err: any) {
       console.error('[DB] Error updating EMA live position:', err.message);
+    throw err;
     }
   }
 
   public getOpenEmaLivePositions(instrument?: string): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositions');
     try {
       let query = `SELECT * FROM ema_live_positions WHERE status IN ('OPEN', 'EXIT_REQUESTED', 'EXIT_PENDING', 'EXIT_FAILED', 'PARTIALLY_CLOSED')`;
       const params: any[] = [];
@@ -4364,6 +5112,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4375,12 +5124,13 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting open EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 
   public getOpenEmaLivePositionByInstrument(instrument: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getOpenEmaLivePositionByInstrument');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions 
@@ -4415,6 +5165,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4424,13 +5175,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositionByAttemptId(attemptId: string): EmaLivePosition | null {
-    if (!this.db) return null;
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositionByAttemptId');
     try {
       const r = this.db.prepare(`
         SELECT * FROM ema_live_positions WHERE attempt_id = ? LIMIT 1
@@ -4463,6 +5214,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4472,13 +5224,13 @@ class DatabaseEngine {
         createdAt: r.created_at,
         updatedAt: r.updated_at
       };
-    } catch {
-      return null;
+    } catch (err) {
+      throw err;
     }
   }
 
   public getEmaLivePositions(instrument?: string, status?: string, limit: number = 50, offset: number = 0): EmaLivePosition[] {
-    if (!this.db) return [];
+    if (!this.db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: getEmaLivePositions');
     try {
       const safeLimit = Math.min(Math.max(1, limit), 200);
       let query = `SELECT * FROM ema_live_positions WHERE 1=1`;
@@ -4522,6 +5274,7 @@ class DatabaseEngine {
         isTrailingActive: r.is_trailing_active === 1,
         status: r.status,
         exitBrokerOrderId: r.exit_broker_order_id || undefined,
+        exitFilledQuantity: Number(r.exit_filled_quantity ?? 0),
         exitTimestamp: r.exit_timestamp || null,
         exitPrice: r.exit_price !== null ? Number(r.exit_price) : null,
         exitReason: r.exit_reason || null,
@@ -4533,7 +5286,8 @@ class DatabaseEngine {
       }));
     } catch (err: any) {
       console.error('[DB] Error getting EMA live positions:', err.message);
-      return [];
+      throw err;
+      
     }
   }
 

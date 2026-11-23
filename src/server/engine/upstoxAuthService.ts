@@ -108,6 +108,9 @@ export function getUpstoxAuthStatus(): UpstoxAuthStatus {
  * Executes automated headless TOTP authentication with Upstox.
  */
 export async function performUpstoxTOTPLogin(serverBaseUrl?: string): Promise<TOTPLoginResult> {
+  if((process.env.PAPER_STAGING_MODE==='1'||process.env.PAPER_RC_LOCKED==='1'))
+    return {success:false,error:'PAPER_STAGING_BROKER_AUTH_DISABLED',
+      message:'Broker authentication is disabled in paper staging.'};
   const apiKey = process.env.UPSTOX_API_KEY;
   const apiSecret = process.env.UPSTOX_API_SECRET;
   const mobileNo = process.env.UPSTOX_MOBILE_NO || process.env.UPSTOX_CLIENT_ID || process.env.UPSTOX_USER_ID;
@@ -460,6 +463,9 @@ export function initializeUpstoxAutoRefreshCron(serverBaseUrl?: string): void {
  * Sets and validates an access token manually or via residential bridge daemon.
  */
 export async function setManualAccessToken(token: string): Promise<{ success: boolean; message: string }> {
+  if((process.env.PAPER_STAGING_MODE==='1'||process.env.PAPER_RC_LOCKED==='1'))
+    return {success:false,
+      message:'PAPER_STAGING_BROKER_AUTH_DISABLED'};
   if (!token || typeof token !== 'string') {
     return { success: false, message: 'Invalid or empty access token' };
   }

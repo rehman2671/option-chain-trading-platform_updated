@@ -1,0 +1,363 @@
+/**
+ * Phase92: read-only GTT -> generated child order -> exchange reference
+ * diagnostic, based on documented Upstox v3 GTT / v2 order details/trades.
+ *
+ * - GTT quantity is gtt.quantity (NOT rules[].quantity).
+ * - GTT SELL STOPLOSS rules[].order_id is null until broker generates a child.
+ * - v2 order details order_ref_id should link back to gtt_order_id.
+ * - exchange_order_id is broker-REPORTED venue identifier, not guaranteed
+ *   execution, sufficient risk protection or independent order ACK proof.
+ *
+ * Live NRML BUY release gate is intentionally NOT imported or modified here.
+ */
+import {auditNrmlCompetingOrders} from './adaptiveNrmlCompetingOrdersAudit.js';
+type Obj=Record<string,unknown>;
+const record=(x:unknown):x is Obj=>
+  !!x&&typeof x==='object'&&!Array.isArray(x);
+const nonEmpty=(x:unknown):x is string=>
+  typeof x==='string'&&x.length>0&&x.length<=256;
+const integer=(x:unknown):x is number=>
+  typeof x==='number'&&Number.isSafeInteger(x)&&x>=0;
+const upper=(x:unknown)=>typeof x==='string'?x.trim().toUpperCase():'';
+export interface GttChildReviewRequest{
+  expectedAccountId:string;
+  instrumentKey:string;
+  gttOrderId:string;
+  expectedLongQuantity:number;
+  lotSize:number;
+}
+export interface GttChildReviewEvidence{
+  connectedAccountId:unknown;
+  connected:unknown;
+  gtt:unknown;
+  order:unknown;
+  trades:unknown;
+  positions:unknown;
+  orderBook:unknown;
+  /** Full account GTT list, distinct from the exact selected parent. */
+  gttOrders:unknown;
+}
+export interface GttChildReviewReport{
+  status:'INVALID_REQUEST'|'BROKER_ACCOUNT_UNVERIFIED'|
+    'BROKER_SOURCE_INCOMPLETE'|'CHILD_LINEAGE_CONFLICT'|
+    'SCHEDULED_GTT_NO_EXCHANGE_CHILD'|
+    'OBSERVED_BROKER_CHILD_EXCHANGE_REFERENCE_NOT_RELEASE';
+  reasonCodes:readonly string[];
+  parentGttFound:boolean;
+  scheduledWithoutGeneratedOrder:boolean;
+  generatedChildOrderIdObserved:boolean;
+  brokerReportedExchangeOrderIdObserved:boolean;
+  brokerReportedChildFilledQuantity:number;
+  brokerReportedNetLongQuantityMatches:boolean;
+  /** Broker-reported remaining net quantity equals original long minus
+   * uniquely reconciled SELL fills; NOT independently atomic/verified. */
+  brokerReportedNetPositionMatchesExecutedSellRemainder:boolean;
+  exactGttToChildReferenceMatched:boolean;
+  otherSellOrderCandidates:number;
+  otherGttSellRuleCandidates:number;
+  unresolvedSameContractBuyOrders:number;
+  parentGttListedExactlyOnce:boolean;
+  independentExchangeChildAckCertified:false;
+  stopFillGuaranteed:false;
+  fullAccountRiskReconciled:false;
+  brokerSnapshotsAtomic:false;
+  liveNrmlBuyAuthorized:false;
+  brokerWrites:0;
+}
+type Status=GttChildReviewReport['status'];
+const result=(status:Status,reasons:string[],
+  data:Partial<Obj>={}):GttChildReviewReport=>({
+  status,reasonCodes:[...new Set(reasons)].sort(),
+  parentGttFound:data.parentGttFound===true,
+  scheduledWithoutGeneratedOrder:data.scheduledWithoutGeneratedOrder===true,
+  generatedChildOrderIdObserved:data.generatedChildOrderIdObserved===true,
+  brokerReportedExchangeOrderIdObserved:data.brokerReportedExchangeOrderIdObserved===true,
+  brokerReportedChildFilledQuantity:typeof data.brokerReportedChildFilledQuantity==='number'?
+    data.brokerReportedChildFilledQuantity:0,
+  brokerReportedNetLongQuantityMatches:data.brokerReportedNetLongQuantityMatches===true,
+  brokerReportedNetPositionMatchesExecutedSellRemainder:
+    data.brokerReportedNetPositionMatchesExecutedSellRemainder===true,
+  exactGttToChildReferenceMatched:data.exactGttToChildReferenceMatched===true,
+  otherSellOrderCandidates:typeof data.otherSellOrderCandidates==='number'?
+    data.otherSellOrderCandidates:0,
+  otherGttSellRuleCandidates:typeof data.otherGttSellRuleCandidates==='number'?
+    data.otherGttSellRuleCandidates:0,
+  unresolvedSameContractBuyOrders:typeof data.unresolvedSameContractBuyOrders==='number'?
+    data.unresolvedSameContractBuyOrders:0,
+  parentGttListedExactlyOnce:data.parentGttListedExactlyOnce===true,
+  independentExchangeChildAckCertified:false,
+  stopFillGuaranteed:false,fullAccountRiskReconciled:false,
+  brokerSnapshotsAtomic:false,liveNrmlBuyAuthorized:false,brokerWrites:0
+});
+const valid=(r:GttChildReviewRequest):boolean=>
+  !!r&&nonEmpty(r.expectedAccountId)&&
+  nonEmpty(r.instrumentKey)&&
+  nonEmpty(r.gttOrderId)&&r.gttOrderId.startsWith('GTT-')&&
+  integer(r.expectedLongQuantity)&&r.expectedLongQuantity>0&&
+  integer(r.lotSize)&&r.lotSize>0&&
+  r.expectedLongQuantity%r.lotSize===0;
+/** Only a unique SELL STOPLOSS child; TARGET is not stop-loss protection. */
+function uniqueGttStop(gtt:unknown,r:GttChildReviewRequest):
+  {parent:Obj;leg:Obj}|null{
+  if(!Array.isArray(gtt)||gtt.length!==1||!record(gtt[0]))return null;
+  const parent=gtt[0];
+  if(parent.gtt_order_id!==r.gttOrderId||
+     parent.instrument_token!==r.instrumentKey||parent.product!=='D'||
+     !integer(parent.quantity)||parent.quantity!==r.expectedLongQuantity||
+     !Array.isArray(parent.rules))return null;
+  const sellStops=parent.rules.filter((x:unknown)=>
+    record(x)&&upper(x.transaction_type)==='SELL'&&upper(x.strategy)==='STOPLOSS');
+  if(sellStops.length!==1||!record(sellStops[0]))return null;
+  return {parent,leg:sellStops[0]};
+}
+export function auditNrmlGttChildLineage(
+  req:GttChildReviewRequest,e:GttChildReviewEvidence
+):GttChildReviewReport{
+  if(!valid(req))return result('INVALID_REQUEST',['INVALID_EXPECTED_NRML_ACCOUNT_GTT_INSTRUMENT_OR_LOT']);
+  if(!e||e.connected!==true||e.connectedAccountId!==req.expectedAccountId)
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_AUTHENTICATED_ACCOUNT_MISMATCH']);
+  if(!Array.isArray(e.gtt)||!Array.isArray(e.positions)||
+     !Array.isArray(e.orderBook)||!Array.isArray(e.gttOrders))
+    return result('BROKER_SOURCE_INCOMPLETE',
+      ['GTT_PORTFOLIO_FULL_ORDER_BOOK_OR_FULL_GTT_LIST_UNAVAILABLE']);
+  const linked=uniqueGttStop(e.gtt,req);
+  if(!linked)return result('CHILD_LINEAGE_CONFLICT',
+    ['GTT_NOT_UNIQUE_OR_WRONG_ACCOUNT_PRODUCT_INSTRUMENT_PARENT_QUANTITY_STOP_STRATEGY']);
+  const {leg}=linked;
+  const data:Partial<Obj>={parentGttFound:true};
+  const reasons:string[]=[];
+  // An exact GTT detail URL cannot rule out another dormant same-contract
+  // GTT SELL or another active exchange SELL. Compare ACCOUNT-WIDE lists.
+  const contenders=auditNrmlCompetingOrders({
+    instrumentKey:req.instrumentKey,
+    parentGttId:req.gttOrderId,
+    generatedChildOrderId:leg.order_id,
+    expectedLongQuantity:req.expectedLongQuantity,
+    orderBook:e.orderBook,
+    gttOrders:e.gttOrders
+  });
+  reasons.push(...contenders.reasonCodes);
+  data.otherSellOrderCandidates=contenders.otherSellOrderCandidates;
+  data.otherGttSellRuleCandidates=contenders.otherGttSellRuleCandidates;
+  data.unresolvedSameContractBuyOrders=contenders.unresolvedSameContractBuyOrders;
+  data.parentGttListedExactlyOnce=contenders.parentGttListedExactlyOnce;
+  const matching=e.positions.filter((x:unknown)=>
+    record(x)&&x.instrument_token===req.instrumentKey&&x.product==='D');
+  const rawNet=matching.length===1&&record(matching[0])
+    ?matching[0].net_quantity:undefined;
+  // Avoid Number(null)==0, Number('')==0, exponents, fractions, NaN
+  // or ambiguous duplicated position rows masquerading as net exposure.
+  const parseNet=(x:unknown):number|null=>{
+    if(typeof x==='number')return Number.isSafeInteger(x)&&x>=0?x:null;
+    if(typeof x==='string'&&/^(?:0|[1-9][0-9]*)$/.test(x)){
+      const n=Number(x);return Number.isSafeInteger(n)?n:null;
+    }
+    return null;
+  };
+  const observedNet=parseNet(rawNet);
+  if(e.positions.some((x:unknown)=>record(x)&&
+     x.instrument_token===req.instrumentKey&&x.product!=='D'))
+    reasons.push('OTHER_PRODUCT_EXPOSURE_ON_SAME_INSTRUMENT');
+  // Evaluate at 0 for an untriggered GTT; after any real SELL,
+  // original-long is NOT the current expected position anymore.
+  const reconcileNetAfterSell=(filled:unknown):void=>{
+    if(!integer(filled)||filled>req.expectedLongQuantity){
+      reasons.push('SELL_FILLED_QUANTITY_OUTSIDE_ORIGINAL_LONG_EXPOSURE');
+      return;
+    }
+    const remaining=req.expectedLongQuantity-filled;
+    if(matching.length!==1||observedNet===null){
+      reasons.push('BROKER_NRML_NET_POSITION_QUANTITY_UNKNOWN_OR_DUPLICATED');
+    }else if(observedNet!==remaining){
+      reasons.push('BROKER_NRML_NET_QUANTITY_DISAGREES_WITH_EXECUTED_SELL_REMAINDER');
+    }else{
+      data.brokerReportedNetLongQuantityMatches=true;
+      data.brokerReportedNetPositionMatchesExecutedSellRemainder=true;
+    }
+  };
+  const stopStatus=upper(leg.status),id=leg.order_id;
+  const scheduled=new Set(['SCHEDULED','PENDING']);
+  const childStates=new Set(['TRIGGERED','OPEN','COMPLETED']);
+  if((id===null||id===undefined)&&scheduled.has(stopStatus)){
+    reconcileNetAfterSell(0);
+    data.scheduledWithoutGeneratedOrder=true;
+    reasons.push('GTT_SCHEDULED_BROKER_SIDE_NO_EXCHANGE_CHILD');
+    return result(reasons.length>1?'CHILD_LINEAGE_CONFLICT':
+      'SCHEDULED_GTT_NO_EXCHANGE_CHILD',reasons,data);
+  }
+  if(!nonEmpty(id)||!childStates.has(stopStatus)){
+    reasons.push('GTT_STOP_CHILD_ID_OR_LIFECYCLE_UNRESOLVED');
+    return result('CHILD_LINEAGE_CONFLICT',reasons,data);
+  }
+  data.generatedChildOrderIdObserved=true;
+  if(!record(e.order)||!Array.isArray(e.trades))
+    return result('BROKER_SOURCE_INCOMPLETE',
+      ['GENERATED_CHILD_ORDER_DETAILS_OR_TRADE_BOOK_UNAVAILABLE'],data);
+  const o=e.order,qty=o.quantity,fill=o.filled_quantity,
+    pending=o.pending_quantity,status=upper(o.status);
+  if(o.order_id!==id||o.order_ref_id!==req.gttOrderId||
+     o.instrument_token!==req.instrumentKey||o.product!=='D'||
+     upper(o.transaction_type)!=='SELL'||
+     !integer(qty)||qty!==req.expectedLongQuantity){
+    reasons.push('GTT_CHILD_ORDER_REF_ID_PRODUCT_SIDE_CONTRACT_OR_QUANTITY_MISMATCH');
+  }else{
+    data.exactGttToChildReferenceMatched=true;
+  }
+  if(!nonEmpty(o.exchange_order_id))
+    reasons.push('BROKER_EXCHANGE_ORDER_ID_ABSENT');
+  else data.brokerReportedExchangeOrderIdObserved=true;
+  const eligibleChildStatuses=new Set([
+    'OPEN','TRIGGER PENDING','PARTIALLY FILLED','COMPLETE','COMPLETED',
+    'CANCEL PENDING','MODIFY PENDING','REJECTED','CANCELLED','CANCELED'
+  ]);
+  if(!eligibleChildStatuses.has(status))
+    reasons.push('GENERATED_CHILD_ORDER_STATUS_UNRECOGNISED');
+  if(['CANCEL PENDING','MODIFY PENDING','REJECTED','CANCELLED','CANCELED'].includes(status))
+    reasons.push('GENERATED_CHILD_STOP_NOT_VALID_ACTIVE_PROTECTION');
+  if(!integer(fill)||!integer(pending)||!integer(qty)||fill>qty||
+     pending>qty||fill+pending>qty){
+    reasons.push('CHILD_FILLED_PENDING_QUANTITY_INCONSISTENT');
+  }else{
+    data.brokerReportedChildFilledQuantity=fill;
+    if(['OPEN','TRIGGER PENDING','PARTIALLY FILLED','COMPLETE',
+        'COMPLETED'].includes(status)&&fill+pending!==qty)
+      reasons.push('NONTERMINAL_CHILD_FILLED_PLUS_PENDING_NOT_EQUAL_TO_ORDER_QUANTITY');
+    if((status==='PARTIALLY FILLED'&&(fill===0||pending===0))||
+       (['COMPLETE','COMPLETED'].includes(status)&&
+        (fill!==qty||pending!==0)))
+      reasons.push('CHILD_ORDER_STATUS_DISAGREES_WITH_EXECUTED_REMAINING_QUANTITY');
+  }
+  reconcileNetAfterSell(fill);
+  const book=e.orderBook.filter((x:unknown)=>record(x)&&x.order_id===id);
+  if(book.length!==1||!record(book[0])||
+     book[0].instrument_token!==req.instrumentKey||
+     book[0].product!=='D'||upper(book[0].transaction_type)!=='SELL'||
+     book[0].order_ref_id!==req.gttOrderId||
+     book[0].exchange_order_id!==o.exchange_order_id||
+     !integer(book[0].quantity)||book[0].quantity!==qty||
+     !integer(book[0].filled_quantity)||book[0].filled_quantity!==fill||
+     !integer(book[0].pending_quantity)||book[0].pending_quantity!==pending||
+     upper(book[0].status)!==status){
+    // Order details and order book may be fetched at different instants.
+    // Any contradictory lifecycle is UNKNOWN (not a reconciled fill).
+    reasons.push('CHILD_ORDER_DETAILS_CONTRADICT_CURRENT_BROKER_ORDER_BOOK');
+  }
+  // Trade book is a current-day broker observation, not a signed clearing
+  // record. Discrepancies are evidence blockers, never extra fills.
+  let sum=0;
+  const seenTrades=new Set<string>();
+  for(const row of e.trades){
+    if(!record(row)||row.order_id!==id||
+       row.instrument_token!==req.instrumentKey||row.product!=='D'||
+       upper(row.transaction_type)!=='SELL'||
+       !nonEmpty(row.trade_id)||seenTrades.has(row.trade_id)||
+       !integer(row.quantity)||row.quantity<=0||
+       row.exchange_order_id!==o.exchange_order_id){
+      reasons.push('BROKER_TRADE_BOOK_CONTRADICTS_LINKED_CHILD_ORDER');break;
+    }
+    seenTrades.add(row.trade_id);sum+=row.quantity;
+  }
+  if(!integer(fill)||sum!==fill)
+    reasons.push('BROKER_CHILD_EXECUTION_SUM_DOES_NOT_MATCH_ORDER_DETAILS');
+  // The order book may be stale. No reason-free result certifies future
+  // protective stop, original parent exchange ACK or actual filled quantity.
+  reasons.push('CHILD_EXCHANGE_REFERENCE_REPORTED_NOT_INDEPENDENTLY_VERIFIED');
+  reasons.push('GTT_SNAPSHOT_POSITION_ORDER_TRADES_NOT_ATOMIC');
+  return result(reasons.some(x=>![
+    'CHILD_EXCHANGE_REFERENCE_REPORTED_NOT_INDEPENDENTLY_VERIFIED',
+    'GTT_SNAPSHOT_POSITION_ORDER_TRADES_NOT_ATOMIC'
+  ].includes(x))?
+    'CHILD_LINEAGE_CONFLICT':
+    'OBSERVED_BROKER_CHILD_EXCHANGE_REFERENCE_NOT_RELEASE',reasons,data);
+}
+export interface ReadOnlyNrmlGttBroker{
+  getLiveConnectionStatus():{isConnected:boolean;userId?:string};
+  /** Local monotonic provider reconnect generation; not a signed broker ACK. */
+  getBrokerAuthEpoch():number;
+  getGttOrderDetails(id:string):Promise<unknown>;
+  getVerifiedNrmlPositionRows():Promise<unknown>;
+  getOrderBook():Promise<unknown>;
+  getGttOrders():Promise<unknown>;
+  getOrderDetails(id:string):Promise<unknown>;
+  getOrderTrades(id:string):Promise<unknown>;
+}
+export async function reviewNrmlGttChildReadOnly(
+  broker:ReadOnlyNrmlGttBroker,request:GttChildReviewRequest
+):Promise<GttChildReviewReport>{
+  if(!valid(request))return result('INVALID_REQUEST',
+    ['INVALID_EXPECTED_NRML_ACCOUNT_GTT_INSTRUMENT_OR_LOT']);
+  if(!broker||typeof broker.getLiveConnectionStatus!=='function')
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_CONNECTED_ACCOUNT_UNAVAILABLE']);
+  let auth:{isConnected:boolean;userId?:string};
+  try{auth=broker.getLiveConnectionStatus();}catch{
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_CONNECTED_ACCOUNT_UNAVAILABLE']);
+  }
+  if(auth?.isConnected!==true||auth.userId!==request.expectedAccountId)
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_AUTHENTICATED_ACCOUNT_MISMATCH']);
+  if(['getBrokerAuthEpoch','getGttOrderDetails','getVerifiedNrmlPositionRows','getOrderBook',
+      'getGttOrders','getOrderDetails','getOrderTrades'].some(k=>
+       typeof broker[k as keyof ReadOnlyNrmlGttBroker]!=='function'))
+    return result('BROKER_SOURCE_INCOMPLETE',['REQUIRED_BROKER_READ_METHOD_UNAVAILABLE']);
+  let pinnedEpoch:number;
+  try{pinnedEpoch=broker.getBrokerAuthEpoch();}catch{
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_GTT_AUTH_EPOCH_UNAVAILABLE']);
+  }
+  if(!Number.isSafeInteger(pinnedEpoch)||pinnedEpoch<1)
+    return result('BROKER_ACCOUNT_UNVERIFIED',['BROKER_GTT_AUTH_EPOCH_UNAVAILABLE']);
+  // A broker-account ID alone is not stable credential-session evidence.
+  // These checks only pin the local provider lifecycle, not remote atomicity.
+  const sameSession=():boolean=>{
+    try{
+      const current=broker.getLiveConnectionStatus();
+      const epoch=broker.getBrokerAuthEpoch();
+      return current?.isConnected===true&&
+        current.userId===request.expectedAccountId&&
+        Number.isSafeInteger(epoch)&&epoch===pinnedEpoch;
+    }catch{return false;}
+  };
+  const changedSession=()=>result('BROKER_ACCOUNT_UNVERIFIED',
+    ['BROKER_GTT_ACCOUNT_OR_AUTH_EPOCH_CHANGED_DURING_READ']);
+  if(!sameSession())return changedSession();
+  let gtt:unknown,positions:unknown,orderBook:unknown,gttOrders:unknown;
+  try{
+    // First read the parent GTT and broker order book. If it has
+    // generated a child, retrieve the exact child/trades BEFORE asking
+    // for the CURRENT net portfolio quantity. Concurrent position reads
+    // can predate a partial SELL and make stale 100-lot exposure seem
+    // consistent with a just-observed 50-lot fill.
+    [gtt,orderBook,gttOrders]=await Promise.all([
+      broker.getGttOrderDetails(request.gttOrderId),
+      broker.getOrderBook(),broker.getGttOrders()
+    ]);
+  }catch{return result('BROKER_SOURCE_INCOMPLETE',['BROKER_READ_ONLY_SOURCE_TRANSPORT_ERROR']);}
+  if(!sameSession())return changedSession();
+  const linked=uniqueGttStop(gtt,request);
+  const childId=linked?.leg.order_id;
+  let order:unknown=null,trades:unknown=null;
+  if(nonEmpty(childId)){
+    if(!sameSession())return changedSession();
+    try{
+      [order,trades]=await Promise.all([
+        broker.getOrderDetails(childId),broker.getOrderTrades(childId)
+      ]);
+    }catch{
+      return result('BROKER_SOURCE_INCOMPLETE',['BROKER_CHILD_DETAILS_OR_TRADES_TRANSPORT_ERROR'],
+        {parentGttFound:true,generatedChildOrderIdObserved:true});
+    }
+    if(!sameSession())return changedSession();
+  }
+  if(!sameSession())return changedSession();
+  try{
+    // Starting this read after child/trades reduces (but cannot eliminate)
+    // non-atomic point-in-time position/order disagreement. Never retry to
+    // manufacture a match.
+    positions=await broker.getVerifiedNrmlPositionRows();
+  }catch{
+    return result('BROKER_SOURCE_INCOMPLETE',['BROKER_LATEST_NET_POSITION_READ_FAILED']);
+  }
+  if(!sameSession())return changedSession();
+  return auditNrmlGttChildLineage(request,{
+    connected:true,connectedAccountId:auth.userId,
+    gtt,positions,orderBook,gttOrders,order,trades
+  });
+}

@@ -14,11 +14,23 @@
 import { Ema15mSignal } from '../../../types.js';
 import { dbEngine } from '../../db.js';
 import { activeProvider } from '../providers/index.js';
-import { ResolvedContract } from './contractResolver.js';
+import { ContractResolver, ResolvedContract } from './contractResolver.js';
 import { StrategyRules } from './strategyRules.js';
 import { SessionCalendar } from './sessionCalendar.js';
 import { killSwitchEngine } from '../../../quant/risk/killSwitch.js';
-import { exposureController } from '../../../quant/risk/exposureController.js';
+import { evaluateEmaBrokerRisk } from './brokerRiskGate.js';
+import { emaBrokerOrderTag } from './brokerOrderEvidence.js';
+import { assessBrokerSellInterlock, assessGttSellInterlock } from './protectiveExitSafety.js';
+import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGuard.js';
+import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
+  from './adaptivePostClaimSellRevalidation.js';
+import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
+import {assessSellableOptionDepthReadOnly} from './adaptiveSellableOptionDepthReadOnly.js';
+import {
+  assessEmaLiveProductGate,assessEmaAutomaticLiveEntryPreflight,
+  assessEmaBrokerExitProductGate,isMisLiveAutoExitCandidate,
+  isMisForcedSquareOffEligible
+} from './adaptiveNrmlLiveReleaseInterlock.js';
 import {
   EmaLiveOrderAttempt,
   EmaLivePosition,
@@ -30,6 +42,7 @@ import {
 export class LiveExecutionService {
   private static instance: LiveExecutionService;
   private pendingExitIds: Set<string> = new Set();
+  private pendingEntryInstruments: Set<string> = new Set();
 
   private constructor() {}
 
@@ -51,6 +64,14 @@ export class LiveExecutionService {
   ): { passed: boolean; failureReason?: string } {
     const settings = dbEngine.getEmaNotificationSettings(userId);
 
+    // The generic Upstox live toggle is MIS-only while issue #20 is open.
+    // NRML product selection requests a positional mode, not stop protection
+    // or permission to route a real BUY. Unknown products fail closed.
+    const productGate = assessEmaLiveProductGate(settings.upstoxProductType);
+    if (!productGate.allowed) {
+      return { passed: false, failureReason: productGate.reason || 'NRML not released.' };
+    }
+
     // 1. Live Trading Enabled Check
     if (!settings.liveBrokerExecutionEnabled) {
       return { passed: false, failureReason: 'Live broker execution is disabled in system settings.' };
@@ -62,11 +83,8 @@ export class LiveExecutionService {
       return { passed: false, failureReason: `Unified Risk Control: Kill Switch is active (${haltReason})` };
     }
 
-    // 3. Exposure Controller Check
-    const exposureCheck = exposureController.checkOrderGating();
-    if (!exposureCheck.passed) {
-      return { passed: false, failureReason: exposureCheck.reason || 'Portfolio exposure / margin limit exceeded' };
-    }
+    // Broker account funds, positions and exact order margin are checked
+    // asynchronously before any REAL BUY; never use synthetic risk defaults here.
 
     // 4. Contract Validity Check
     if (!contract.isValid) {
@@ -77,6 +95,9 @@ export class LiveExecutionService {
     const exchangeStatus = SessionCalendar.isExchangeOpen();
     if (!exchangeStatus.isOpen) {
       return { passed: false, failureReason: `Indian exchange is currently closed: ${exchangeStatus.reason}` };
+    }
+    if (SessionCalendar.isAtOrPastForcedSquareOff(new Date(), settings.forceSquareOffTime || '15:15')) {
+      return { passed: false, failureReason: 'MIS live entry blocked at/after forced square-off cutoff.' };
     }
 
     // 6. Broker Provider Connection Check
@@ -122,16 +143,87 @@ export class LiveExecutionService {
     estimatedEntryPrice: number,
     userId: string = 'GLOBAL'
   ): Promise<DualExecutionResult['live']> {
+    // Prevent simultaneous crossovers from bypassing pending-entry checks in this process.
+    // Durable multi-process idempotency must also be enforced at the DB/broker boundary.
+    const entryKey = signal.instrument;
+    if (this.pendingEntryInstruments.has(entryKey)) {
+      return {
+        enabled: true,
+        status: 'HELD',
+        requestedQuantity: contract.lotSize,
+        filledQuantity: 0,
+        positionCreated: false,
+        message: 'Another EMA live order is currently being dispatched for ' + entryKey
+      };
+    }
+    this.pendingEntryInstruments.add(entryKey);
+    try {
+      return await this.attemptLiveSignalInternal(signal, contract, estimatedEntryPrice, userId);
+    } finally {
+      this.pendingEntryInstruments.delete(entryKey);
+    }
+  }
+
+  private async attemptLiveSignalInternal(
+    signal: Ema15mSignal,
+    contract: ResolvedContract,
+    estimatedEntryPrice: number,
+    userId: string
+  ): Promise<DualExecutionResult['live']> {
+    const requestedSettings = dbEngine.getEmaNotificationSettings(userId);
+    // A blank/malformed product must NOT silently become MIS.
+    const requestedProductType = requestedSettings.upstoxProductType;
+    const refuseAutomaticEntry = (reason: string): DualExecutionResult['live'] => ({
+      enabled: false,
+      status: 'PRE_TRADE_REJECTED',
+      requestedQuantity: contract.lotSize,
+      filledQuantity: 0,
+      positionCreated: false,
+      rejectionReason: reason,
+      message: reason
+    });
+    const currentAutomaticEntryIntent = () => {
+      try {
+        const latestSettings = dbEngine.getEmaNotificationSettings(userId);
+        const halted = killSwitchEngine.isHalted(userId);
+        return assessEmaAutomaticLiveEntryPreflight(
+          requestedProductType,
+          latestSettings.upstoxProductType,
+          latestSettings.liveBrokerExecutionEnabled,
+          halted
+        );
+      } catch {
+        return { allowed: false, reason:
+          'Broker entry settings or kill-switch state unavailable; fail closed.' };
+      }
+    };
+    // Strictly before contract network I/O, automatic reversal SELL,
+    // BUY claims or any broker orders: disabled live or active kill
+    // switch blocks BOTH automatic entry and automatic reversal exit.
+    const initialIntent = currentAutomaticEntryIntent();
+    if (!initialIntent.allowed)
+      return refuseAutomaticEntry(initialIntent.reason || 'Live entry blocked.');
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
-    const attemptId = `att-${inst.toLowerCase()}-${Date.now()}`;
+    const attemptId = `att-${inst.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Paper and signal generation may use modelled contracts. Real BUY must use
+    // the broker's exact listed instrument key, expiry, lot size and tick size.
+    contract = await ContractResolver.verifyLiveContract(contract, activeProvider as any);
+    // Contract verification awaited broker I/O: the operator may have
+    // disabled live, changed product or engaged a kill switch in-flight.
+    // Prevent a stale MIS intent from initiating automatic reversal SELL.
+    const afterContractIntent = currentAutomaticEntryIntent();
+    if (!afterContractIntent.allowed)
+      return refuseAutomaticEntry(afterContractIntent.reason || 'Live entry changed.');
     const quantity = contract.lotSize;
-    const settings = dbEngine.getEmaNotificationSettings(userId);
-    const productType: 'MIS' | 'NRML' = settings.upstoxProductType || 'MIS';
+    // Freeze product selected BEFORE awaiting broker I/O. A mid-flight UI
+    // change cannot silently convert a checked MIS intention to an NRML BUY.
+    const productType: 'MIS' | 'NRML' = requestedProductType as 'MIS' | 'NRML';
+    const settings = requestedSettings;
 
     // 0. Check if there is an in-flight pending entry attempt for this instrument
-    const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 10);
-    const inFlightAttempt = recentAttempts.find(a => a.orderStatus === 'SUBMITTED' || a.orderStatus === 'OPEN');
+    const recentAttempts = dbEngine.getEmaLiveOrderAttempts(inst, 200);
+    const inFlightAttempt = recentAttempts.find(a => ['CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(a.orderStatus));
     if (inFlightAttempt) {
       console.log(`[EMA LIVE] In-flight entry attempt ${inFlightAttempt.id} exists for ${inst}. Suppressing duplicate entry.`);
       return {
@@ -148,6 +240,21 @@ export class LiveExecutionService {
     // 1. Check if an active live position already exists on this instrument
     const existingLivePos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
     if (existingLivePos) {
+      // An older deployed engine or externally managed position may be
+      // NRML despite the current new-BUY interlock. Do NOT reverse it
+      // using the legacy MIS automated market SELL path.
+      const existingExitGate = assessEmaBrokerExitProductGate(existingLivePos.productType);
+      if (!existingExitGate.allowed) {
+        return {
+          enabled: false,
+          status: 'PRE_TRADE_REJECTED',
+          requestedQuantity: quantity,
+          filledQuantity: 0,
+          positionCreated: false,
+          rejectionReason: existingExitGate.reason || 'Existing position not eligible for MIS reversal.',
+          message: existingExitGate.reason || 'Existing NRML position requires broker reconciliation.'
+        };
+      }
       const isOpposite = (signal.signalType === 'BULLISH' && existingLivePos.optionType === 'PE') ||
                          (signal.signalType === 'BEARISH' && existingLivePos.optionType === 'CE');
 
@@ -167,7 +274,7 @@ export class LiveExecutionService {
         }
         // Verify old position is not still open before submitting new BUY
         const postExitPos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
-        if (postExitPos && (postExitPos.status === 'OPEN' || postExitPos.status === 'EXIT_FAILED')) {
+        if (postExitPos) {
           console.warn(`[EMA LIVE] Reversal exit for ${existingLivePos.id} still active or failed. Blocking new live entry.`);
           return {
             enabled: true,
@@ -192,8 +299,33 @@ export class LiveExecutionService {
       }
     }
 
-    // 2. Pre-Trade Safety Verification
-    const preCheck = this.validatePreTrade(signal, contract, userId);
+    // 2. Pre-Trade Safety Verification. All account values are broker-origin.
+    const staticCheck = this.validatePreTrade(signal, contract, userId);
+    let preCheck = staticCheck;
+    if (staticCheck.passed) {
+      try {
+        const snapshot = typeof (activeProvider as any)?.getEmaBrokerRiskSnapshot === 'function'
+          ? await (activeProvider as any).getEmaBrokerRiskSnapshot(contract.brokerInstrumentKey, quantity, productType)
+          : null;
+        preCheck = evaluateEmaBrokerRisk(snapshot, settings.maxDailyLossLimit ?? 5000);
+      } catch (riskErr: any) {
+        preCheck = { passed: false, failureReason: 'Unable to validate real broker account risk: ' +
+          (riskErr?.message || String(riskErr)) };
+      }
+    }
+
+    // The live broker risk GET above is asynchronous. Recheck current
+    // intent immediately before creating any durable SUBMITTED BUY claim.
+    // A disabled toggle/kill switch must never cause BUY or reversal.
+    if (preCheck.passed) {
+      const beforeBuyIntent = currentAutomaticEntryIntent();
+      if (!beforeBuyIntent.allowed) {
+        preCheck = {
+          passed: false,
+          failureReason: beforeBuyIntent.reason || 'Live entry changed.'
+        };
+      }
+    }
 
     if (!preCheck.passed) {
       const orderAttempt: EmaLiveOrderAttempt = {
@@ -272,7 +404,16 @@ export class LiveExecutionService {
       createdAt: timestampStr,
       updatedAt: timestampStr
     };
-    dbEngine.saveEmaLiveOrderAttempt(orderAttempt);
+    if (!dbEngine.claimEmaLiveEntryAttempt(orderAttempt)) {
+      return {
+        enabled: true,
+        status: 'HELD',
+        requestedQuantity: quantity,
+        filledQuantity: 0,
+        positionCreated: false,
+        message: 'Another EMA live BUY or position was already claimed in the shared SQLite ledger.'
+      };
+    }
 
     dbEngine.logEmaExecutionEvent({
       id: `evt-live-sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -297,7 +438,7 @@ export class LiveExecutionService {
         tradingsymbol: contract.tradingsymbol,
         symbol: contract.tradingsymbol,
         instrumentToken: contract.brokerInstrumentKey,
-        tag: 'ema15m_live'
+        tag: emaBrokerOrderTag('BUY', attemptId)
       });
 
       const brokerOrderId = brokerRes?.order_id || brokerRes?.orderId;
@@ -309,11 +450,15 @@ export class LiveExecutionService {
       // In production Upstox, placeOrder returns { order_id: "..." } for acknowledgment.
       // Order status is SUBMITTED with 0 filledQty until authoritative fill confirmation is received.
       const brokerStatusStr = (brokerRes?.status || brokerRes?.order_status || '').toUpperCase();
+      const brokerFilledQty = Number(brokerRes?.filled_quantity ?? brokerRes?.filledQuantity ?? 0);
+      const brokerFillPrice = Number(brokerRes?.average_price ?? brokerRes?.averagePrice ?? 0);
       const isConfirmedFill = (brokerStatusStr === 'COMPLETE' || brokerStatusStr === 'FILLED') &&
-        Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || 0) > 0;
+        Number.isInteger(brokerFilledQty) && brokerFilledQty > 0 && brokerFilledQty <= quantity &&
+        Number.isFinite(brokerFillPrice) && brokerFillPrice > 0;
 
-      const filledQty = isConfirmedFill ? Number(brokerRes?.filled_quantity || brokerRes?.filledQuantity || quantity) : 0;
-      const avgFillPrice = isConfirmedFill ? Number(brokerRes?.average_price || brokerRes?.averagePrice || brokerRes?.price || estimatedEntryPrice) : 0;
+      // An estimated option premium is NEVER evidence of a broker execution price.
+      const filledQty = isConfirmedFill ? brokerFilledQty : 0;
+      const avgFillPrice = isConfirmedFill ? brokerFillPrice : 0;
       const finalStatus: OrderStatus = isConfirmedFill ? 'FILLED' : 'SUBMITTED';
 
       dbEngine.updateEmaLiveOrderAttempt(attemptId, {
@@ -426,12 +571,14 @@ export class LiveExecutionService {
           : `Live order ${brokerOrderId} submitted to Upstox. Awaiting broker execution fill.`
       };
     } catch (brokerErr: any) {
-      // 6. Handle Broker Rejection (e.g. Insufficient Margin / Funds)
-      const rejectionReason = brokerErr?.message || 'Broker order submission rejected';
-      console.warn(`[EMA LIVE] 🔴 Upstox Order Rejected: ${rejectionReason}`);
+      // A network timeout can occur after broker acceptance: never assume REJECTED.
+      const definitiveRejection = brokerErr?.isBrokerRejection === true;
+      const resultStatus: OrderStatus = definitiveRejection ? 'REJECTED' : 'UNKNOWN';
+      const rejectionReason = brokerErr?.message || 'Broker order outcome unconfirmed';
+      console.warn(`[EMA LIVE] Upstox order ${resultStatus}: ${rejectionReason}`);
 
       dbEngine.updateEmaLiveOrderAttempt(attemptId, {
-        orderStatus: 'REJECTED',
+        orderStatus: resultStatus,
         filledQuantity: 0,
         rejectionReason,
         lastBrokerUpdateAt: new Date().toISOString()
@@ -444,9 +591,9 @@ export class LiveExecutionService {
         executionId: attemptId,
         executionMode: 'LIVE',
         stage: 'LIVE_ORDER_REJECTED',
-        status: 'REJECTED',
+        status: definitiveRejection ? 'REJECTED' : 'PENDING',
         instrument: inst,
-        errorCode: 'BROKER_REJECTION',
+        errorCode: definitiveRejection ? 'BROKER_REJECTION' : 'BROKER_ORDER_OUTCOME_UNKNOWN',
         errorMessage: rejectionReason,
         details: { rejectionReason, tradingsymbol: contract.tradingsymbol },
         timestamp: new Date().toISOString()
@@ -458,18 +605,18 @@ export class LiveExecutionService {
         level: 'ERROR',
         stage: 'BROKER_RESPONSE',
         instrument: inst,
-        message: `🔴 Upstox Order Rejected: ${rejectionReason}. Live position NOT created.`,
+        message: `Upstox order ${resultStatus}: ${rejectionReason}. Position not assumed; reconcile before retry.`,
         details: { rejectionReason, tradingsymbol: contract.tradingsymbol }
       });
 
       return {
         enabled: true,
-        status: 'REJECTED',
+        status: resultStatus,
         requestedQuantity: quantity,
         filledQuantity: 0,
         positionCreated: false,
         rejectionReason,
-        message: rejectionReason
+        message: definitiveRejection ? rejectionReason : 'Broker outcome UNKNOWN; no automatic retry until reconciled.'
       };
     }
   }
@@ -491,25 +638,39 @@ export class LiveExecutionService {
     const trailDistancePts = settings.trailDistancePoints ?? 30;
 
     for (const pos of openPositions) {
-      if (pos.status !== 'OPEN' || this.pendingExitIds.has(pos.id)) {
+      if (!isMisLiveAutoExitCandidate(pos) || this.pendingExitIds.has(pos.id)) {
         continue; // Only monitor actively open positions; skip EXIT_PENDING, EXIT_FAILED, or in-flight exits
       }
 
       const entryPrice = Number(pos.entryPrice);
       const qty = Number(pos.quantity);
 
-      let currentOptionPrice = entryPrice;
-      if (pos.optionType && pos.strikePrice && pos.expiryDate) {
-        currentOptionPrice = getEstimatedOptionPrice(
-          pos.instrument,
-          pos.strikePrice,
-          pos.optionType,
-          pos.expiryDate,
-          currentSpotPrice
-        );
-      } else {
-        currentOptionPrice = currentSpotPrice;
+      // Never trigger a REAL SELL from theoretical Black-Scholes/fallback option prices.
+      // Missing/stale broker quotes require an explicit unresolved data state.
+      if (typeof (activeProvider as any)?.getLiveOptionQuote !== 'function') {
+        console.warn('[EMA LIVE] Real option quote provider unavailable for ' + pos.tradingsymbol);
+        continue;
       }
+      let quote:unknown=null;
+      try {
+        quote=await (activeProvider as any).getLiveOptionQuote(pos.brokerInstrumentKey || '');
+      } catch {
+        console.warn('[EMA LIVE] Broker quote read error; no auto SELL');
+        continue;
+      }
+      // A fresh LAST TRADED premium is NOT a sellable bid. Evaluate
+      // MIS auto SL/TP/trailing only from observed whole-position best
+      // BUY depth (the quote price at which a SELL might execute).
+      // This is indicative only; book can disappear before any order.
+      const quoteCheck=assessSellableOptionDepthReadOnly(
+        quote,pos.brokerInstrumentKey,Date.now(),qty
+      );
+      if(!quoteCheck.accepted||quoteCheck.observedSellBid===null){
+        console.warn('[EMA LIVE] Skipping MIS automatic SELL: exact bid depth/liquidity unverified ('+
+          quoteCheck.reason+'). Human broker risk review required.');
+        continue;
+      }
+      const currentOptionPrice=quoteCheck.observedSellBid;
 
       const grossPnl = StrategyRules.calculateOptionGrossPnl(entryPrice, currentOptionPrice, qty);
       const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
@@ -579,17 +740,108 @@ export class LiveExecutionService {
     if (!pos) {
       return { success: false, message: `Live position ${positionId} not found or already closed.` };
     }
+    // Never route a new NRML/ambiguous-product SELL from the legacy EMA
+    // request path, including MANUAL and automatic reversal/SL/TP routes.
+    // A mismatched product cannot silently become MIS via fallback.
+    const exitGate = assessEmaBrokerExitProductGate(pos.productType);
+    if (!exitGate.allowed) {
+      return {success:false,
+        message:exitGate.reason || 'Unreleased broker SELL product.'};
+    }
 
+    // Partial BUY fills are genuine exposure, but the unfilled remainder could
+    // execute AFTER a SELL. Until BUY is terminal/cancelled, prevent unmatched
+    // exit orders and require an explicit broker-side order reconciliation.
+    const entryAttempt = dbEngine.getEmaLiveOrderAttemptById(pos.attemptId);
+    if (entryAttempt && ['CREATED', 'SUBMITTED', 'OPEN', 'UNKNOWN', 'PARTIALLY_FILLED'].includes(entryAttempt.orderStatus)) {
+      return {
+        success: false,
+        message: `Cannot dispatch SELL: entry BUY ${entryAttempt.brokerOrderId || entryAttempt.id} has unresolved remaining quantity. Cancel/reconcile BUY first.`
+      };
+    }
+
+    // An acknowledged SELL or a partial exit is still real exposure. Never submit another
+    // SELL until its broker order has been reconciled and remaining quantity verified.
+    if (!['OPEN', 'EXIT_FAILED'].includes(pos.status) || pos.exitBrokerOrderId) {
+      return { success: false, message: `Exit for live position ${positionId} is unresolved (${pos.status}). Reconcile broker first.` };
+    }
     if (this.pendingExitIds.has(pos.id)) {
       return { success: false, message: `Exit already in flight for live position ${positionId}.` };
+    }
+
+    // A manual/external broker exit can make the local position stale. Never
+    // SELL the old local quantity without a fresh authoritative broker match.
+    const provider = activeProvider as any;
+    const brokerQty = pos.brokerInstrumentKey &&
+      typeof provider?.getVerifiedLivePositionQuantity === 'function'
+      ? await provider.getVerifiedLivePositionQuantity(pos.brokerInstrumentKey, pos.productType)
+      : null;
+    const sellSize = assessBrokerRemainingSellQuantity({
+      originalPositionQuantity: pos.quantity,
+      previousConfirmedSellFills: pos.exitFilledQuantity ?? 0,
+      lotSize: pos.lotSize,
+      brokerNetQuantity: brokerQty
+    });
+    if (!sellSize.allowed) {
+      return {
+        success: false,
+        message: 'Live SELL blocked: ' + sellSize.reason +
+          '. Verify broker net and original option fill ledger before retry.'
+      };
+    }
+    const remainingQty = sellSize.remainingQuantity;
+
+    // Any native exchange SL / existing pending SELL must first be cancelled
+    // and its terminal status verified. A cancellation ACK alone is NOT proof.
+    // A missing broker order book fails closed rather than risking a duplicate SELL.
+    let liveBook: unknown = null;
+    try {
+      liveBook = typeof provider?.getOrderBook === 'function'
+        ? await provider.getOrderBook()
+        : null;
+    } catch (err: any) {
+      console.warn('[EMA LIVE] Unable to verify native protective SELLs:', err?.message || err);
+    }
+    const orderSafety = assessBrokerSellInterlock(
+      liveBook, pos.brokerInstrumentKey || '', pos.productType
+    );
+    if (orderSafety.safe === false) {
+      return { success: false, message: 'Live SELL blocked: ' + orderSafety.reason };
+    }
+
+    // GTT is a separate broker subsystem: untriggered GTT SELL legs may
+    // not be in the ordinary exchange order book above.
+    let liveGttOrders: unknown = null;
+    try {
+      liveGttOrders = typeof provider?.getGttOrders === 'function'
+        ? await provider.getGttOrders()
+        : null;
+    } catch (err: any) {
+      console.warn('[EMA LIVE] Unable to verify broker GTT SELL protection:', err?.message || err);
+    }
+    const gttSafety = assessGttSellInterlock(
+      liveGttOrders, pos.brokerInstrumentKey || '', pos.productType
+    );
+    if (gttSafety.safe === false) {
+      return { success: false, message: 'Live SELL blocked: ' + gttSafety.reason };
     }
 
     this.pendingExitIds.add(pos.id);
     const timestampStr = new Date().toISOString();
 
-    dbEngine.updateEmaLivePosition(pos.id, {
-      status: 'EXIT_REQUESTED'
-    });
+    // Compare-and-swap prevents two independent workers from SELLing the same
+    // quantity when they share the same durable SQLite ledger.
+    let claimedExit = false;
+    try {
+      claimedExit = dbEngine.claimEmaLiveExit(pos.id);
+    } catch (err) {
+      this.pendingExitIds.delete(pos.id);
+      throw err;
+    }
+    if (!claimedExit) {
+      this.pendingExitIds.delete(pos.id);
+      return { success: false, message: 'Another worker already claimed this live exit; reconcile broker first.' };
+    }
 
     dbEngine.logEmaExecutionEvent({
       id: `evt-live-exit-req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -599,7 +851,7 @@ export class LiveExecutionService {
       stage: 'LIVE_EXIT_REQUESTED',
       status: 'PENDING',
       instrument: pos.instrument,
-      details: { positionId: pos.id, tradingsymbol: pos.tradingsymbol, quantity: pos.quantity, reason },
+      details: { positionId: pos.id, tradingsymbol: pos.tradingsymbol, quantity: remainingQty, originalQuantity: pos.quantity, reason },
       timestamp: timestampStr
     });
 
@@ -649,110 +901,118 @@ export class LiveExecutionService {
         return { success: false, message: disconnectMsg };
       }
 
+      // Phase97: the earlier broker net + order-book + GTT checks occurred
+      // BEFORE the durable EXIT_REQUESTED CAS. Another actor may have
+      // changed the account or local exit ledger during those awaits.
+      // Re-evaluate local state, fresh broker GETs, then local state again
+      // immediately before the existing SELL order boundary.
+      // A failure keeps the CAS claim EXIT_REQUESTED: no implicit retry.
+      const quarantine=(reason:string)=>{
+        dbEngine.updateEmaLivePosition(pos.id,{
+          exitReason:'POST_CLAIM_SELL_RECHECK_QUARANTINED: '+reason
+        });
+        this.pendingExitIds.delete(pos.id);
+        return {success:false,message:
+          'Live SELL quarantined after durable claim: '+reason+
+          '. Reconcile local and Upstox broker order/GTT/position evidence; do not auto-retry.'};
+      };
+      const journalCheck=()=>{
+        const latest=dbEngine.getOpenEmaLivePositions();
+        return assessPostClaimExitJournal({
+          original:pos,currentPositions:latest,
+          currentEntryAttempt:dbEngine.getEmaLiveOrderAttemptById(pos.attemptId),
+          requestedRemainingQuantity:remainingQty
+        });
+      };
+      const localBefore=journalCheck();
+      if(!localBefore.allowed)
+        return quarantine(localBefore.reason);
+      const brokerAfterClaim=await reviewPostClaimBrokerSell(provider,{
+        instrumentKey:pos.brokerInstrumentKey||'',
+        product:pos.productType,
+        originalQuantity:pos.quantity,
+        priorConfirmedSellFills:pos.exitFilledQuantity??0,
+        lotSize:pos.lotSize,
+        requestedRemainingQuantity:remainingQty
+      });
+      if(!brokerAfterClaim.allowed)
+        return quarantine(brokerAfterClaim.reason);
+      const localAfter=journalCheck();
+      if(!localAfter.allowed)
+        return quarantine(localAfter.reason);
+
       // Submit real SELL order to Upstox API v2
       const exitRes = await (activeProvider as any).placeOrder({
-        quantity: pos.quantity,
-        product: pos.productType || 'MIS',
+        // Original position size can exceed broker remaining long after a
+        // partial prior exit. Never issue the original quantity again.
+        quantity: remainingQty,
+        product: pos.productType,
         validity: 'DAY',
         orderType: 'MARKET',
         transactionType: 'SELL',
         tradingsymbol: pos.tradingsymbol,
         symbol: pos.tradingsymbol,
         instrumentToken: pos.brokerInstrumentKey,
-        tag: 'ema15m_exit'
+        tag: emaBrokerOrderTag('SELL', pos.id)
       });
 
-      const exitBrokerOrderId = exitRes?.order_id || exitRes?.orderId;
-      if (!exitBrokerOrderId) {
-        throw new Error('Broker did not return an authoritative order identifier for exit.');
-      }
-
-      const exitStatusStr = (exitRes?.status || exitRes?.order_status || '').toUpperCase();
-      const isExitFilled = (exitStatusStr === 'COMPLETE' || exitStatusStr === 'FILLED') &&
-        Number(exitRes?.filled_quantity || exitRes?.filledQuantity || 0) > 0;
-
+      // Phase98: an Upstox placeOrder() HTTP response is an ORDER ACK,
+      // even if its payload says COMPLETE, quotes a price or claims a fill.
+      // Do not mark a position CLOSED or post realised P&L based on an ACK.
+      // A missing order ID is UNKNOWN and must remain EXIT_REQUESTED.
+      const placement=assessExitPlacementAck(exitRes);
+      if(placement.state!=='EXIT_PENDING_NOT_CONFIRMED_FILLED')
+        throw new Error('Broker SELL acceptance UNKNOWN: no validated child order ID.');
+      const exitBrokerOrderId=placement.orderId;
       const randomSuffix = Math.random().toString(36).slice(2, 8);
-      if (isExitFilled) {
-        const exitPrice = Number(exitRes?.average_price || exitRes?.price || currentOptionPrice || pos.currentPrice || pos.entryPrice);
-        const grossPnl = StrategyRules.calculateOptionGrossPnl(pos.entryPrice, exitPrice, pos.quantity);
-        const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);
 
-        dbEngine.updateEmaLivePosition(pos.id, {
-          status: 'CLOSED',
-          exitBrokerOrderId,
-          exitTimestamp: new Date().toISOString(),
-          exitPrice,
-          exitReason: reason,
-          grossPnl,
-          netPnl,
-          unrealizedPnl: 0
-        });
+      // Persist the broker-reported child ID and preserve unresolved exposure
+      // until separately reviewed child order details, unique trades and
+      // remaining net quantity can be reconciled. No automatic retry.
+      dbEngine.updateEmaLivePosition(pos.id, {
+        status: 'EXIT_PENDING',
+        exitBrokerOrderId,
+        exitReason: reason
+      });
 
-        dbEngine.logEmaExecutionEvent({
-          id: `evt-live-exit-ok-${Date.now()}-${randomSuffix}`,
-          signalId: pos.signalId,
-          executionId: pos.id,
-          executionMode: 'LIVE',
-          stage: 'LIVE_EXIT_FILLED',
-          status: 'SUCCESS',
-          instrument: pos.instrument,
-          brokerOrderId: exitBrokerOrderId,
-          details: { exitBrokerOrderId, exitPrice, grossPnl, netPnl, reason },
-          timestamp: new Date().toISOString()
-        });
+      dbEngine.logEmaExecutionEvent({
+        id: `evt-live-exit-sub-${Date.now()}-${randomSuffix}`,
+        signalId: pos.signalId,
+        executionId: pos.id,
+        executionMode: 'LIVE',
+        stage: 'LIVE_EXIT_SUBMITTED',
+        status: 'PENDING',
+        instrument: pos.instrument,
+        brokerOrderId: exitBrokerOrderId,
+        details: { exitBrokerOrderId, reason,
+          requestedQuantity:remainingQty,
+          placementEvidence:'ACK_ONLY_NOT_FILL_OR_REALISED_PNL' },
+        timestamp: new Date().toISOString()
+      });
 
-        dbEngine.logEmaExecution({
-          id: `exec-live-exit-ok-${Date.now()}-${randomSuffix}`,
-          timestamp: new Date().toISOString(),
-          level: 'SUCCESS',
-          stage: 'EXIT',
-          instrument: pos.instrument,
-          message: `🟢 LIVE Position CLOSED on Upstox! Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol} @ ₹${exitPrice} (Net P&L: ₹${netPnl})`,
-          details: { exitBrokerOrderId, exitPrice, netPnl }
-        });
+      dbEngine.logEmaExecution({
+        id: `exec-live-exit-sub-${Date.now()}-${randomSuffix}`,
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        stage: 'EXIT',
+        instrument: pos.instrument,
+        message: `🟡 LIVE SELL acknowledged by Upstox; fill NOT verified. Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol}`,
+        details: { exitBrokerOrderId, reason,
+          placementEvidence:'ACK_ONLY_NOT_FILL_OR_REALISED_PNL' }
+      });
 
-        this.pendingExitIds.delete(pos.id);
-        return { success: true, message: `Live position closed on broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
-      } else {
-        // Exit order submitted to broker; remains visible and tracked until fill confirmed
-        dbEngine.updateEmaLivePosition(pos.id, {
-          status: 'EXIT_PENDING',
-          exitBrokerOrderId,
-          exitReason: reason
-        });
-
-        dbEngine.logEmaExecutionEvent({
-          id: `evt-live-exit-sub-${Date.now()}-${randomSuffix}`,
-          signalId: pos.signalId,
-          executionId: pos.id,
-          executionMode: 'LIVE',
-          stage: 'LIVE_EXIT_SUBMITTED',
-          status: 'SUCCESS',
-          instrument: pos.instrument,
-          brokerOrderId: exitBrokerOrderId,
-          details: { exitBrokerOrderId, reason },
-          timestamp: new Date().toISOString()
-        });
-
-        dbEngine.logEmaExecution({
-          id: `exec-live-exit-sub-${Date.now()}-${randomSuffix}`,
-          timestamp: new Date().toISOString(),
-          level: 'INFO',
-          stage: 'EXIT',
-          instrument: pos.instrument,
-          message: `🟡 LIVE Exit Order SUBMITTED to Upstox. Awaiting fill. Order ID: ${exitBrokerOrderId} | ${pos.tradingsymbol}`,
-          details: { exitBrokerOrderId, reason }
-        });
-
-        this.pendingExitIds.delete(pos.id);
-        return { success: true, message: `Live exit order submitted to broker. Order ID: ${exitBrokerOrderId}`, exitBrokerOrderId };
-      }
+      this.pendingExitIds.delete(pos.id);
+      return { success: true, message:
+        `Broker SELL acknowledged, fill unverified; position remains EXIT_PENDING. Order ID: ${exitBrokerOrderId}`,
+        exitBrokerOrderId };
     } catch (exitErr: any) {
       console.error(`[EMA LIVE] 🔴 Error dispatching broker exit order for ${pos.tradingsymbol}:`, exitErr.message);
 
+      // Transport errors can occur AFTER a broker accepted SELL. Preserve unresolved
+      // state rather than marking it retryable and risking a duplicate real SELL.
       dbEngine.updateEmaLivePosition(pos.id, {
-        status: 'EXIT_FAILED',
-        exitReason: `Exit Failed: ${exitErr.message}`
+        status: 'EXIT_REQUESTED',
+        exitReason: `Exit submission outcome UNKNOWN: ${exitErr.message}`
       });
 
       const randomSuffix = Math.random().toString(36).slice(2, 8);
@@ -799,10 +1059,15 @@ export class LiveExecutionService {
     const openPositions = dbEngine.getOpenEmaLivePositions();
     if (!openPositions || openPositions.length === 0) return;
 
-    console.log(`[EMA LIVE INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Exiting ${openPositions.length} live position(s)...`);
+    // Restrict this legacy intraday path strictly to actual MIS positions.
+    // Neither a global product setting change nor an NRML position's OPEN
+    // state must induce a positional 15:15 market SELL.
+    const misPositions = openPositions.filter(isMisForcedSquareOffEligible);
+    if (misPositions.length === 0) return;
+    console.log(`[EMA LIVE INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Exiting ${misPositions.length} MIS live position(s)...`);
 
-    for (const pos of openPositions) {
-      if (pos.status === 'OPEN' && !this.pendingExitIds.has(pos.id)) {
+    for (const pos of misPositions) {
+      if (!this.pendingExitIds.has(pos.id)) {
         await this.requestLiveExit(pos.id, 'FORCED_INTRADAY_SQUARE_OFF');
       }
     }

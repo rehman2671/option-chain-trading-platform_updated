@@ -1,0 +1,15 @@
+# Phase76 — offline-only NRML positional paper risk monitor
+
+**DRAFT; research and safety scaffolding only.** Stacked on Phase75 Draft PR #80. No live trading, broker order/GTT/stop placement, calendar validation, position sync, profit claims, expiry-roll execution, or production deployment.
+
+The pure `reviewPhase76NrmlPaperRisk()` function accepts **explicitly hypothetical** long-option position assumptions plus manually supplied or synthetic paper BID marks. It does NOT read broker positions or fetch prices, and the operator must run any workflow in an externally enforced network-isolated environment.
+
+It calculates the one-/multi-lot paid ASK premium debit plus assumed nonrecoverable fees, preserves the full long-option cash-at-risk even after a profitable-looking mark, and reports a separately *indicative*, **not fillable** BID mark only when the quote is causally ordered, recent, and has the declared minimum displayed BID depth. A displayed best BID is not a sale, even with displayed depth.
+
+Paper premium-trail alert arming requires two valid spaced observations; one isolated premium spike cannot arm it. Once armed, the hypothetical level ratchets upward and never moves down. A +50/+70 premium move that reverses before a +100 PREMIUM point target raises a manual review. An overnight BID gap through a hypothetical level is marked using the new BID, **never** as execution at the trailing level. Missing/old quotes or inadequate depth withhold indicative PnL and require review, not a guessed fill. Separate alerts mark adverse indicative loss budget, whole paid-debit budget, approaching/passed operator-claimed expiry and observed target marks. Neither hysteresis nor a trail alert is an executable protective stop.
+
+The declared 1W/2W/4W/8W horizons are checked for approximate entry-to-claimed-expiry date range. The expiry itself is **NOT exchange-authenticated**, and no best contract or horizon is chosen. All alerts remain advisory-only. Original EMA23/50 **MIS intraday** 15:15 handling is unchanged; NRML paper positions have **no forced 15:15 exit** and no automatic expiry rollover.
+
+All reports permanently declare market authentication, broker fills, native GTT/stop ACK, realized PnL, live execution authorization, and production-safety FALSE or NULL. This module is intentionally unconnected to routes, schedulers, order execution, or account settings. Production readiness still needs genuine legally available original option BID/ASK/depth tapes, official contract/session calendars, a genuine as-of market data pipeline, many market-regime OOS tests and an independently validated broker stop/exchange ACK lifecycle (issues #17–#22, especially #20).
+
+Focused synthetic test file: `src/quant/tests/ema15m_adaptive_phase76_nrml_paper_risk_monitor.test.ts`. Run `npm run lint` plus `npx tsx --test --test-concurrency=1 src/quant/tests/ema15m_adaptive_phase76_nrml_paper_risk_monitor.test.ts` and the existing regression workflows. Passing synthetic tests does not establish profitable option trading.

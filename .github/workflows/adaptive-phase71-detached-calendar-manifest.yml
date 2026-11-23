@@ -1,0 +1,32 @@
+name: Adaptive Phase71 detached candidate calendar manifest Ed25519 verification
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase71-detached-issuer-calendar-provenance'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase70-session-exception-evidence'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  detached-original-holiday-manifest-crypto:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase71 TypeScript static gate
+        run: npm run lint
+      - name: Phase71 detached Ed25519 exact manifest/archive/OOS/source and hard issuer nontrust cases
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase71_detached_calendar_manifest.test.ts

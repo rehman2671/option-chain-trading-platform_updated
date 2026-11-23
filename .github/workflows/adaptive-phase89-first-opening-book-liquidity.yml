@@ -1,0 +1,31 @@
+name: Adaptive Phase89 first causal next-open option BID and liquidity (offline)
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase89-first-opening-book-liquidity'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase88-overnight-gap-calendar-causality'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  first-bounded-opening-book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Phase79-89 original L1 first bounded opening book and private intake tests
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase79_original_premium_path_coverage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase80_private_l1_intake.test.ts

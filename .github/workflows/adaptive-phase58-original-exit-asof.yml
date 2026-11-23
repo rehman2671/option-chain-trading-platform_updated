@@ -1,0 +1,32 @@
+name: Adaptive Phase58 original OOS holding L1 availableAt and next-BID
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase58-matched-exit-debit-coverage'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase57-regime-horizon-debit-risk'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-hold-path-risk-join:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static gate
+        run: npm run lint
+      - name: Original Phase58 OOS exit availableAt and full debit join
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase58_exit_asof_risk_join.test.ts

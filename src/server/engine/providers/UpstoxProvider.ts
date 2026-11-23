@@ -11,6 +11,15 @@ import {
   OptionContractQuote
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
+import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
+import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
+import {resolveUniqueBrokerNetPosition}
+  from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
+import {
+  guardExactBrokerGttGet,guardFullBrokerGttList,
+  guardFullBrokerOrderBook,guardExactBrokerOrderTrades,
+  guardFullBrokerPositionRows
+} from '../ema15m/adaptiveUpstoxNativeReadCardinalityGuard.js';
 
 export const COMMODITY_SYMBOLS = new Set(['GOLD', 'CRUDEOIL', 'SILVER', 'NATURALGAS', 'COPPER']);
 
@@ -21,6 +30,10 @@ export class UpstoxProvider implements IMarketDataProvider {
   private statusMessage: string = 'Initializing Upstox API v2...';
   private userName: string = '';
   private userId: string = '';
+  // Monotonic local credential lifecycle marker for read-only F&O history.
+  // Never expose a credential or token hash. Starts/finishes of connect()
+  // invalidate any in-flight historical page sequence.
+  private historicalFoAuthEpoch: number = 0;
   private practiceFallback: PracticeModeProvider = new PracticeModeProvider();
 
   private symbolInstrumentKeyMap: Record<string, string> = {
@@ -51,11 +64,45 @@ export class UpstoxProvider implements IMarketDataProvider {
     };
   }
 
+  public getHistoricalFoAuthEpoch(): number {
+    return this.historicalFoAuthEpoch;
+  }
+
+  /** Local authentication lifecycle generation shared by read-only FO/GTT
+   * audits. A changing value invalidates cross-endpoint evidence. */
+  public getBrokerAuthEpoch(): number {
+    return this.historicalFoAuthEpoch;
+  }
+
+  /**
+   * Native NRML/GTT read-only HTTP identity fence.
+   * Captured bearer token is never logged. Any account, credential or
+   * local generation change while a GET is in flight invalidates it.
+   * The generation is local and NOT independent broker authentication.
+   */
+  private captureRiskReadIdentity():
+    {authEpoch:number;accountId:string;bearerToken:string}|null{
+    if(!this.isConnected||!this.accessToken||!this.userId||
+       !Number.isSafeInteger(this.historicalFoAuthEpoch)||
+       this.historicalFoAuthEpoch<1)return null;
+    return {authEpoch:this.historicalFoAuthEpoch,accountId:this.userId,
+      bearerToken:this.accessToken};
+  }
+  private currentRiskReadIdentity(
+    s:{authEpoch:number;accountId:string;bearerToken:string}
+  ):boolean{
+    return this.isConnected&&!!this.accessToken&&
+      this.historicalFoAuthEpoch===s.authEpoch&&
+      this.userId===s.accountId&&this.accessToken===s.bearerToken;
+  }
+
   public getProviderMode(): DataProviderMode {
     return 'LIVE';
   }
 
   public async connect(): Promise<ProviderHealthStatus> {
+    // Invalidate a pinned historical session BEFORE changing credentials.
+    this.historicalFoAuthEpoch++;
     this.apiKey = process.env.UPSTOX_API_KEY || '';
     this.accessToken = process.env.UPSTOX_ACCESS_TOKEN || process.env.UPSTOX_TOKEN || '';
 
@@ -64,6 +111,7 @@ export class UpstoxProvider implements IMarketDataProvider {
 
     if (!this.accessToken) {
       this.isConnected = false;
+      this.historicalFoAuthEpoch++;
       this.statusMessage = 'Upstox Token not set in .env. Real-time calibrated NSE/MCX Practice Mode active.';
       return {
         mode: 'LIVE',
@@ -86,6 +134,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (!res.ok) {
         if (res.status === 401) {
           this.isConnected = false;
+          this.historicalFoAuthEpoch++;
           this.statusMessage = 'Upstox session expired or invalid (HTTP 401). Real-time calibrated market feed active.';
           console.warn(`[UPSTOX PROVIDER] ${this.statusMessage}`);
           return {
@@ -119,6 +168,9 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.warn('[UPSTOX PROVIDER] Notice:', this.statusMessage);
     }
 
+    // The async authentication result also invalidates a historical
+    // snapshot that began while profile verification was pending.
+    this.historicalFoAuthEpoch++;
     return {
       mode: 'LIVE',
       connected: this.isConnected,
@@ -186,7 +238,12 @@ export class UpstoxProvider implements IMarketDataProvider {
                 prevClose: quote.ohlc?.close || quote.last_price,
                 volume: quote.volume || 0,
                 available: true,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                source: 'UPSTOX_LIVE',
+                exchangeTimestamp: Number.isFinite(Number(quote.last_trade_time)) &&
+                  Number(quote.last_trade_time) > 0
+                  ? new Date(Number(quote.last_trade_time)).toISOString()
+                  : undefined
               });
             }
           }
@@ -358,6 +415,122 @@ export class UpstoxProvider implements IMarketDataProvider {
     return { available: 1000000, source: 'PRACTICE' };
   }
 
+  /**
+   * Strict account snapshot for REAL EMA BUY gating. Unlike UI margin helpers,
+   * this method NEVER substitutes practice funds or an empty portfolio on error.
+   */
+  public async getEmaBrokerRiskSnapshot(
+    instrumentKey: string, quantity: number, product: 'MIS' | 'NRML'
+  ): Promise<BrokerRiskSnapshot | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !instrumentKey || !Number.isInteger(quantity) || quantity <= 0) return null;
+    const headers = {
+      Authorization: 'Bearer ' + this.accessToken,
+      Accept: 'application/json'
+    };
+    try {
+      const [fundsRes, marginRes, positionsRes] = await Promise.all([
+        fetch('https://api.upstox.com/v2/user/get-funds-and-margin', { headers }),
+        fetch('https://api.upstox.com/v2/charges/margin', {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instruments: [{
+            instrument_key: instrumentKey, quantity, transaction_type: 'BUY',
+            product: product === 'MIS' ? 'I' : 'D'
+          }] })
+        }),
+        fetch('https://api.upstox.com/v2/portfolio/short-term-positions', { headers })
+      ]);
+      if (!fundsRes.ok || !marginRes.ok || !positionsRes.ok) {
+        console.warn('[EMA BROKER RISK] Upstox live account API unavailable:', fundsRes.status, marginRes.status, positionsRes.status);
+        return null;
+      }
+      const [funds, margin, portfolio]: any[] = await Promise.all([
+        fundsRes.json(), marginRes.json(), positionsRes.json()
+      ]);
+      if (funds?.status !== 'success' || margin?.status !== 'success' ||
+          portfolio?.status !== 'success' || !Array.isArray(portfolio?.data)) return null;
+      const availableMargin = Number(funds?.data?.equity?.available_margin);
+      const usedMargin = Number(funds?.data?.equity?.used_margin);
+      const requiredMargin = Number(margin?.data?.final_margin);
+      if (![availableMargin, usedMargin, requiredMargin].every(Number.isFinite)) return null;
+      let portfolioPnl = 0;
+      let activePositions = 0;
+      for (const p of portfolio.data) {
+        if (p?.pnl === null || p?.pnl === undefined ||
+            p?.net_quantity === null || p?.net_quantity === undefined) return null;
+        const pnl = Number(p.pnl);
+        const netQuantity = Number(p.net_quantity);
+        if (!Number.isFinite(pnl) || !Number.isInteger(netQuantity)) return null;
+        portfolioPnl += pnl;
+        if (netQuantity !== 0) activePositions++;
+      }
+      return {
+        source: 'UPSTOX_LIVE',
+        checkedAt: new Date().toISOString(),
+        availableMargin, usedMargin, requiredMargin, portfolioPnl, activePositions
+      };
+    } catch (err: any) {
+      console.warn('[EMA BROKER RISK] Live broker account lookup failed:', err?.message || String(err));
+      return null;
+    }
+  }
+
+  /**
+   * Fail-closed exchange quantity lookup for EMA real SELL. This is intentionally
+   * NOT the UI's getPositions() method, which returns [] on transport errors.
+   */
+  public async getVerifiedLivePositionQuantity(
+    instrumentKey: string, product: 'MIS' | 'NRML'
+  ): Promise<number | null> {
+    const session=this.captureRiskReadIdentity();
+    if(!session||!instrumentKey)return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      const positions=guardFullBrokerPositionRows(json?.data);
+      if (json?.status !== 'success' || !positions) return null;
+      // Phase119: consume the same validated/normalized native rows,
+      // including the official Upstox 'quantity' -> net_quantity alias.
+      // Never fall back to the original unvalidated JSON account list.
+      const result = resolveUniqueBrokerNetPosition(positions,instrumentKey,product);
+      return result.verified ? result.netQuantity : null;
+    } catch (err: any) {
+      console.warn('[EMA BROKER] Read-only verified position lookup unavailable');
+      return null;
+    }
+  }
+
+  /**
+   * Phase91: broker-authoritative position rows for NRML safety review.
+   * Unlike the UI's getPositions(), a disconnection/HTTP error returns
+   * null, NEVER an empty list that might be misread as no exposure.
+   * Read-only: no broker order or GTT modifications.
+   */
+  public async getVerifiedNrmlPositionRows(): Promise<any[] | null> {
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/portfolio/short-term-positions', {
+        signal:AbortSignal.timeout(12_000), headers: {
+          'Authorization': 'Bearer ' + session.bearerToken,
+          'Accept': 'application/json'
+        }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      return json?.status === 'success'
+        ? guardFullBrokerPositionRows(json?.data) : null;
+    } catch {
+      return null;
+    }
+  }
+
   public async getPositions(): Promise<any> {
     if (!this.isConnected || !this.accessToken) return [];
 
@@ -374,12 +547,20 @@ export class UpstoxProvider implements IMarketDataProvider {
         return json.data || [];
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getPositions error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only positions unavailable');
     }
     return [];
   }
 
   public async placeOrder(params: any): Promise<any> {
+    // A staging demo must NEVER promote a direct provider call into a live
+    // Upstox POST, even if credentials are injected after server startup.
+    if((process.env.PAPER_STAGING_MODE==='1'||process.env.PAPER_RC_LOCKED==='1'))
+      throw new Error('PAPER_STAGING_BROKER_ORDER_DISABLED');
+    // Automated tests must use an injected fake broker. Never reach real Upstox orders.
+    if (process.env.NODE_ENV === 'test') {
+      throw new Error('REAL_UPSTOX_ORDER_DISABLED_IN_TEST');
+    }
     if (!this.isConnected || !this.accessToken) {
       throw new Error('Upstox API is not connected. Cannot execute live order.');
     }
@@ -413,11 +594,307 @@ export class UpstoxProvider implements IMarketDataProvider {
       if (json.status === 'success') {
         return json.data;
       } else {
-        throw new Error(json.errors?.[0]?.message || 'Upstox order placement failed');
+        const err: any = new Error(json.errors?.[0]?.message || 'Upstox order placement failed');
+        // Only an explicit broker-side terminal error is evidence of rejection.
+        // Timeouts, rate limits and unexpected gateway failures have UNKNOWN outcome.
+        err.isBrokerRejection = res.status >= 400 && res.status < 500 &&
+          ![408, 409, 425, 429].includes(res.status) &&
+          Array.isArray(json.errors) && json.errors.length > 0;
+        err.httpStatus = res.status;
+        throw err;
       }
     } catch (err: any) {
       console.error('[UPSTOX PROVIDER] placeOrder error:', err.message || err);
       throw err;
+    }
+  }
+
+  /** Listed, exchange-authoritative option contracts for one underlying.
+   * Live EMA entry must never use a formatted trading symbol as instrument_key.
+   */
+  public async getOptionContracts(underlyingKey: string): Promise<any[]> {
+    if (!this.isConnected || !this.accessToken) {
+      throw new Error('UPSTOX_CONTRACT_LOOKUP_DISCONNECTED');
+    }
+    const url = `https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(underlyingKey)}`;
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${this.accessToken}`, 'Accept': 'application/json' }
+    });
+    if (!res.ok) throw new Error(`UPSTOX_CONTRACT_LOOKUP_HTTP_${res.status}`);
+    const json: any = await res.json();
+    if (json?.status !== 'success' || !Array.isArray(json?.data)) {
+      throw new Error('UPSTOX_CONTRACT_LOOKUP_INVALID_RESPONSE');
+    }
+    return json.data;
+  }
+
+  /**
+   * Research-only broker option-chain snapshot for a verified listed expiry.
+   * This is a GET; it cannot place, modify or cancel any Upstox order.
+   * WARNING: API chain does not include a verified exchange snapshot age.
+   */
+  public async getAdaptiveOptionChain(underlyingKey: string, expiryDate: string): Promise<any[] | null> {
+    if (!this.isConnected || !this.accessToken ||
+        !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(expiryDate)) return null;
+    const permittedKeys = new Set([
+      'NSE_INDEX|Nifty 50', 'NSE_INDEX|Nifty Bank', 'BSE_INDEX|SENSEX'
+    ]);
+    if (!permittedKeys.has(underlyingKey)) return null;
+    try {
+      const url = 'https://api.upstox.com/v2/option/chain?instrument_key=' +
+        encodeURIComponent(underlyingKey) + '&expiry_date=' + encodeURIComponent(expiryDate);
+      const res = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + this.accessToken, Accept: 'application/json' },
+        signal: AbortSignal.timeout(7000)
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      return json?.status === 'success' && Array.isArray(json?.data) ? json.data : null;
+    } catch (err: any) {
+      console.warn('[EMA ADAPTIVE] Read-only option-chain snapshot unavailable:',
+        err?.message || String(err));
+      return null;
+    }
+  }
+
+  /**
+   * Adapter-declared Upstox D5 option depth + LTP, NOT a native stop ACK,
+   * protected exchange order or guaranteed executable best-bid volume.
+   */
+  public async getLiveOptionQuote(instrumentKey: string): Promise<{
+    price:number;exchangeTimestamp:string;instrumentKey:string;
+    source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP';
+    bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5';
+    snapshotTimestamp:string;
+    bestBidPrice:number;bestBidQuantity:number;
+    bestAskPrice:number;bestAskQuantity:number;
+  } | null> {
+    const session=this.captureRiskReadIdentity();
+    if (!session || !/^(?:NSE_FO|BSE_FO)\|[A-Za-z0-9_-]{1,240}$/.test(instrumentKey))
+      return null;
+    try {
+      const url = 'https://api.upstox.com/v3/market-quote/quotes?instrument_key=' +
+        encodeURIComponent(instrumentKey);
+      const res = await fetch(url, {
+        signal:AbortSignal.timeout(12_000),
+        headers: { 'Authorization': 'Bearer ' + session.bearerToken, 'Accept': 'application/json' }
+      });
+      if (!res.ok) return null;
+      const payload: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      if (payload?.status !== 'success' || !payload?.data ||
+          typeof payload.data!=='object'||Array.isArray(payload.data))
+        return null;
+      const quotes: any[] = Object.values(payload.data);
+      // Duplicate matching instrument rows in the response are ambiguous.
+      const matching=quotes.filter(q=>q?.instrument_token===instrumentKey);
+      if(matching.length!==1)return null;
+      const quote=matching[0];
+      const price=quote?.last_price;
+      const timestamp=Number(quote?.last_trade_time);
+      const now=Date.now();
+      if(typeof price!=='number'||!Number.isFinite(price)||price<=0||
+         !Number.isSafeInteger(timestamp)||timestamp<946684800000||
+         timestamp>=4102444800000||
+         timestamp>now+5000||now-timestamp>30000)return null;
+      // Full quote V3: timestamp is the quote SNAPSHOT, unlike
+      // last_trade_time (which is the most recent executed trade).
+      const snapshot=parseStrictQuoteSnapshotTime(quote?.timestamp);
+      if(snapshot===null||snapshot>now+3000||now-snapshot>10_000||
+         timestamp>snapshot+2000)return null;
+      const bids=quote?.depth?.buy,asks=quote?.depth?.sell;
+      if(!Array.isArray(bids)||!Array.isArray(asks)||
+         bids.length<1||asks.length<1||bids.length>5||asks.length>5)
+        return null;
+      const bestBid=bids[0],bestAsk=asks[0];
+      if(typeof bestBid?.price!=='number'||
+         typeof bestAsk?.price!=='number'||
+         !Number.isFinite(bestBid.price)||
+         !Number.isFinite(bestAsk.price)||
+         bestBid.price<=0||bestAsk.price<=0||
+         bestBid.price>bestAsk.price||
+         typeof bestBid.quantity!=='number'||
+         typeof bestAsk.quantity!=='number'||
+         !Number.isSafeInteger(bestBid.quantity)||
+         !Number.isSafeInteger(bestAsk.quantity)||
+         bestBid.quantity<=0||bestAsk.quantity<=0)return null;
+      if(!this.currentRiskReadIdentity(session))return null;
+      return {price,exchangeTimestamp:new Date(timestamp).toISOString(),
+        instrumentKey,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP',
+        bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5',
+        snapshotTimestamp:new Date(snapshot).toISOString(),
+        bestBidPrice:bestBid.price,bestBidQuantity:bestBid.quantity,
+        bestAskPrice:bestAsk.price,bestAskQuantity:bestAsk.quantity};
+    } catch {
+      console.warn('[UPSTOX] Exact live option last-trade quote unavailable');
+      return null;
+    }
+  }
+
+  /**
+   * Authoritative CURRENT-DAY broker order book; returns null on any error.
+   * Never interpret transport failure as an empty exchange order book.
+   */
+  /** Broker ACTIVE GTT rules are separate from normal exchange orders.
+   * Null means unavailable/ambiguous: real MARKET SELL must fail closed.
+   */
+  public async getGttOrders(): Promise<any[] | null> {
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v3/order/gtt', {
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      return json?.status === 'success'
+        ? guardFullBrokerGttList(json?.data) : null;
+    } catch (err: any) {
+      console.warn('[UPSTOX] Read-only GTT order state unavailable');
+      return null;
+    }
+  }
+
+  /** Phase92: broker-native GTT details by its exact ID (read-only).
+   * This API cannot retrieve completed GTTs. Null is UNKNOWN, not absent.
+   */
+  public async getGttOrderDetails(gttId: string): Promise<any[] | null> {
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
+        !/^GTT-[A-Za-z0-9-]{1,240}$/.test(gttId)) return null;
+    try {
+      const url = 'https://api.upstox.com/v3/order/gtt?gtt_order_id=' +
+        encodeURIComponent(gttId);
+      const res = await fetch(url, {
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      return json?.status === 'success'
+        ? guardExactBrokerGttGet(json?.data,gttId) : null;
+    } catch { return null; }
+  }
+
+  /** Phase92: read exact generated child exchange order details, never write.
+   * Null on API error or missing order; never fabricate an ACK or fill.
+   */
+  public async getOrderDetails(orderId: string): Promise<any | null> {
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
+        !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
+    try {
+      const url = 'https://api.upstox.com/v2/order/details?order_id=' +
+        encodeURIComponent(orderId);
+      const res = await fetch(url, {
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      // A syntactically valid HTTP 200 with data:{} is NOT a native
+      // order ACK. Validate the exact requested order before exposing
+      // the record to read-only GTT child/SELL reconciliation.
+      const row: any = json?.data;
+      return json?.status === 'success' && row &&
+        !Array.isArray(row) && typeof row === 'object' &&
+        row.order_id === orderId &&
+        typeof row.instrument_token === 'string' &&
+        row.instrument_token.length > 0 &&
+        ['I', 'D', 'CO', 'MTF'].includes(row.product) &&
+        ['BUY', 'SELL'].includes(row.transaction_type) &&
+        ['MARKET', 'LIMIT', 'SL', 'SL-M'].includes(row.order_type) &&
+        typeof row.status === 'string' && row.status.length > 0 &&
+        Number.isSafeInteger(row.quantity) && row.quantity > 0 &&
+        Number.isSafeInteger(row.filled_quantity) &&
+        row.filled_quantity >= 0 &&
+        Number.isSafeInteger(row.pending_quantity) &&
+        row.pending_quantity >= 0 &&
+        row.filled_quantity + row.pending_quantity <= row.quantity
+        ? row : null;
+    } catch { return null; }
+  }
+
+  public async getOrderBook(): Promise<any[] | null> {
+    const session=this.captureRiskReadIdentity();
+    if(!session)return null;
+    try {
+      const res = await fetch('https://api.upstox.com/v2/order/retrieve-all', {
+        signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' }
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      return json?.status === 'success'
+        ? guardFullBrokerOrderBook(json?.data) : null;
+    } catch (err: any) {
+      console.warn('[UPSTOX] Read-only order book unavailable');
+      return null;
+    }
+  }
+
+  /**
+   * Phase104: full-account F&O trade HISTORY by date range and page.
+   * Distinct from the current-day order book. F&O history does not give
+   * authenticated order_id/instrument_token linkage for a specific option;
+   * the read-only validator must match trade ID + option contract fields.
+   * No broker order or local DB changes.
+   */
+  public async getHistoricalFoTradesPage(
+    startDate:string,endDate:string,pageNumber:number,pageSize:number
+  ):Promise<unknown|null>{
+    const session=this.captureRiskReadIdentity();
+    const date=/^\d{4}-\d{2}-\d{2}$/;
+    if(!session||
+       !date.test(startDate)||!date.test(endDate)||
+       !Number.isSafeInteger(pageNumber)||pageNumber<1||pageNumber>20||
+       !Number.isSafeInteger(pageSize)||pageSize!==1000)
+      return null;
+    try{
+      const params=new URLSearchParams({
+        segment:'FO',start_date:startDate,end_date:endDate,
+        page_number:String(pageNumber),page_size:String(pageSize)
+      });
+      const res=await fetch(
+        'https://api.upstox.com/v2/charges/historical-trades?'+params.toString(),
+        {signal:AbortSignal.timeout(12_000), headers:{Authorization:'Bearer '+session.bearerToken,
+          Accept:'application/json'}}
+      );
+      if(!res.ok)return null;
+      const payload:unknown=await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      if(!payload||typeof payload!=='object'||Array.isArray(payload))
+        return null;
+      const reply=payload as Record<string,unknown>;
+      return reply.status==='success'&&Array.isArray(reply.data)&&
+        reply.meta_data&&typeof reply.meta_data==='object'
+        ?payload:null;
+    }catch{return null;}
+  }
+
+  /** Individual broker-reported current-day order executions.
+   * Refuse malformed IDs and unavailable sources; NEVER coerce to [].
+   * A broker trade ID/order ID is sensitive and must not enter logs.
+   */
+  public async getOrderTrades(orderId: string): Promise<any[] | null> {
+    const session=this.captureRiskReadIdentity();
+    if (!session ||
+        !/^[A-Za-z0-9-]{1,128}$/.test(orderId)) return null;
+    try {
+      const res = await fetch(
+        'https://api.upstox.com/v2/order/trades?order_id=' + encodeURIComponent(orderId),
+        { signal:AbortSignal.timeout(12_000), headers: { Authorization: 'Bearer ' + session.bearerToken, Accept: 'application/json' } }
+      );
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      if(!this.currentRiskReadIdentity(session))return null;
+      return json?.status === 'success'
+        ? guardExactBrokerOrderTrades(json?.data,orderId) : null;
+    } catch {
+      // No order IDs, bearer token, user details or raw broker error in logs.
+      console.warn('[UPSTOX] Read-only order trades unavailable');
+      return null;
     }
   }
 
@@ -437,7 +914,7 @@ export class UpstoxProvider implements IMarketDataProvider {
         return Array.isArray(json.data) ? json.data : (json.data ? [json.data] : []);
       }
     } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getOrderHistory error:', err.message || err);
+      console.error('[UPSTOX PROVIDER] Read-only order history unavailable');
     }
     return [];
   }

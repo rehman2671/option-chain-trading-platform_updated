@@ -1,0 +1,32 @@
+name: Adaptive Phase57 market-regime horizon debit-risk focused
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase57-regime-horizon-debit-risk'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase56-two-source-native-crypto-e2e'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-regime-risk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript static check
+        run: npm run lint
+      - name: Phase57 independent source and regime debit risk regression
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase57_regime_horizon_debit_risk.test.ts

@@ -1,0 +1,32 @@
+name: Adaptive Phase66 standalone new vendor option L1 preflight
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase66-standalone-vendor-preflight'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase65-vendor-delivery-intake'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-vendor-standalone-oos-intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase66 TypeScript static gate
+        run: npm run lint
+      - name: Phase66 independent original OOS vendor preflight and full CE PE coverage
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase66_standalone_vendor_preflight.test.ts
