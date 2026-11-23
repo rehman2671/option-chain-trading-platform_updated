@@ -199,8 +199,10 @@ export function auditNativeUpstoxOriginalBuyTradeClockReadOnly(
      body.data.length===0||body.data.length>5000)
     return make('ORDER_TRADES_RESPONSE_MISSING_FAILED_OR_TRUNCATED',
       'NONEMPTY_UNFILTERED_PER_ORDER_SUCCESS_DATA_REQUIRED');
-  const expectedExchange=scope.instrumentKey?.startsWith('NSE_FO|')?
-    'NFO':scope.instrumentKey?.startsWith('BSE_FO|')?'BFO':null;
+  const expectedExchange=typeof scope.instrumentKey==='string'&&
+    scope.instrumentKey.startsWith('NSE_FO|')?'NFO':
+    typeof scope.instrumentKey==='string'&&
+    scope.instrumentKey.startsWith('BSE_FO|')?'BFO':null;
   if(!expectedExchange)
     return make('INVALID_NATIVE_TRADE_CAPTURE_OR_CLOCK_ASSUMPTION',
       'ORIGINAL_OPTION_SEGMENT_NOT_VALID');
