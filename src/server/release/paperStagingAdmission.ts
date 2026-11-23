@@ -8,6 +8,8 @@
  *
  * No token values, passwords, account IDs or secret lengths are returned.
  */
+import path from 'node:path';
+
 const forbiddenBrokerEnv=[
   'UPSTOX_ACCESS_TOKEN','UPSTOX_TOKEN',
   'UPSTOX_API_KEY','UPSTOX_API_SECRET',
@@ -25,7 +27,8 @@ export type PaperStagingAdmission={
     'PAPER_STAGING_NOT_PRODUCTION_RUNTIME'|
     'PAPER_STAGING_PRACTICE_PROVIDER_REQUIRED'|
     'PAPER_STAGING_BROKER_CREDENTIALS_PRESENT'|
-    'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED';
+    'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED'|
+    'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED';
   brokerWritesAuthorized:false;
   liveNrmlBuySellAuthorized:false;
   legacyMisBrokerOrderAuthorized:false;
@@ -63,6 +66,16 @@ export function checkPaperStagingAdmission(
   if(typeof env.JWT_SECRET!=='string'||env.JWT_SECRET.length<32)
     return info(false,'PAPER_STAGING_RC',
       'PAPER_STAGING_JWT_SIGNING_SECRET_REQUIRED');
+  // Staging runtime data must reside under an explicitly mounted absolute
+  // directory, not in the source tree, deploy bundle or temp folder.
+  // This is a path contract, NOT proof the directory is a durable volume.
+  const dbDir=env.PAPER_STAGING_DB_DIR;
+  if(typeof dbDir!=='string'||!path.isAbsolute(dbDir)||
+     path.normalize(dbDir)==='/'||dbDir.trim()!==dbDir||
+     dbDir.includes('\\0')||dbDir.includes('..')||
+     dbDir.length>1024)
+    return info(false,'PAPER_STAGING_RC',
+      'PAPER_STAGING_DATA_VOLUME_DIRECTORY_REQUIRED');
   return info(true,'PAPER_STAGING_RC','PAPER_STAGING_SETTINGS_OK');
 }
 /** Startup guard: never disclose which credential or its value. */
