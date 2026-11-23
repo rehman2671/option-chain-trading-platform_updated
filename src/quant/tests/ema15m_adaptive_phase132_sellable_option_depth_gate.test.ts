@@ -101,7 +101,9 @@ describe('Phase132 D5 top-of-book MIS SELL indicative bid and liquidity quaranti
       assert.equal(v.reason,
         'BOOK_SNAPSHOT_STALE_OR_FUTURE');
     }
-    assert.equal(inspect(q({snapshotTimestamp:stamp(at-10000)})).accepted,true);
+    // A valid older snapshot must also have a trade no LATER than that snapshot.
+    assert.equal(inspect(q({snapshotTimestamp:stamp(at-10000),
+      exchangeTimestamp:stamp(at-10000)})).accepted,true);
     assert.equal(inspect(q({snapshotTimestamp:stamp(at+3000)})).accepted,true);
   });
   it('a claimed trade after the quote snapshot is not a coherent market book',()=>{
