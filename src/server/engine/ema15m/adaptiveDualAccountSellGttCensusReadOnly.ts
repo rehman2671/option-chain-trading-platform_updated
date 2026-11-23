@@ -15,6 +15,8 @@ import {
   type NativeBuyTradeDoubleCapture,
   type NativeBuyTradeDoubleState
 } from './adaptiveDoubleNativeBuyTradeReadOnlyAudit.js';
+import {parseUpstoxExchangeTradeTimestampAssumedIst} from
+  './adaptiveUpstoxNativeTradeClockProvenanceReadOnly.js';
 
 type Row=Record<string,unknown>;
 const obj=(x:unknown):x is Row=>
@@ -69,6 +71,7 @@ export type DualAccountCensusState=
   'BROKER_CURRENT_NRML_NET_NOT_EXACT_UNIQUE_POSITIVE_LOT'|
   'ORIGINAL_BUY_ABSENT_FROM_CURRENT_DAY_ORDERBOOK_UNKNOWN'|
   'ORIGINAL_BUY_CURRENT_DAY_ORDER_CONFLICT'|
+  'ORIGINAL_BUY_REPORTED_EXECUTION_OUTSIDE_CURRENT_DAY_BOOK'|
   'SAME_CONTRACT_OTHER_BUY_SELL_FILLED_OR_PENDING'|
   'PHASE125_BUY_TRADE_SOURCE_OR_GTT_QUARANTINED'|
   'CURRENT_CENSUS_STABLE_GTT_SAME_SECOND_BUY_UNRESOLVED'|
@@ -290,6 +293,24 @@ export function auditTwoPassNrmlAccountCensusReadOnly(
     return report('ORIGINAL_BUY_CURRENT_DAY_ORDER_CONFLICT',
       'CURRENT_DAY_ORIGINAL_BUY_NOT_EXACT_FILLED_ORDER',d);
   d.originalBuySeenInCurrentDayBook=true;
+  // Per-order trade exchange_timestamp is only an unverified local-second
+  // label. Still, if its declared IST date is not the current-day
+  // order-book snapshot's local date, today's BUY row is contradictory
+  // rather than independent evidence of an old original purchase.
+  // Missing/malformed times are left to the stricter Phase124/125 gate.
+  const tradeResponse=s.input.perOrderTradeResponse;
+  if(obj(tradeResponse)&&Array.isArray(tradeResponse.data)){
+    for(const row of tradeResponse.data){
+      if(!obj(row))continue;
+      const time=parseUpstoxExchangeTradeTimestampAssumedIst(
+        row.exchange_timestamp);
+      if(time!==null&&istDay(Date.parse(time))!==
+         istDay(requiredUtc(s.input.captureAtUtc)!))
+        return report('ORIGINAL_BUY_REPORTED_EXECUTION_OUTSIDE_CURRENT_DAY_BOOK',
+          'REPORTED_ORIGINAL_TRADE_DAY_DIFFERS_FROM_TODAY_ONLY_ORDERBOOK',
+          d);
+    }
+  }
   for(const o of orders){
     if(o.instrument_token!==scope.instrumentKey||
        o.order_id===scope.originalBuyOrderId)continue;
