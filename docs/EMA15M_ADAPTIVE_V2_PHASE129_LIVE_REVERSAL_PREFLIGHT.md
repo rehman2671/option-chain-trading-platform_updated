@@ -14,6 +14,7 @@
 - Remove fallback `requestedSettings.upstoxProductType || 'MIS'` from live entry and `validatePreTrade`: missing/blank product must not be silently promoted to MIS.
 - Add pure `normalizeEmaLiveProductSettings` to both persisted SQLite settings READ and SAVE: recognized exact MIS/NRML remain unchanged; malformed/null/blank product is *display-normalized* MIS but its live toggle is FORCIBLY OFF in both paths. Invalid product can never be stored as a silently live MIS order permission.
 - Adversarial tests cover disabled toggle, ambiguous kill-switch state, NRML/unknown type, invalid saved product, product change while awaiting broker I/O and source-level ordering of preflight vs contract verification, reversal SELL, broker-risk GET, durable claim and broker placeOrder.
+- An additional `LiveExecutionService` mock-based regression invokes actual `attemptLiveSignal` with fake contracts and mocked DB, kill switch and broker contract resolver. It asserts no broker contract GET/automatic reversal SELL/entry attempt on disabled toggle, halted kill switch or NRML, and no automatic reversal after an asynchronous product/toggle switch. This uses TEST doubles, not a broker-sanctioned real-order rehearsal.
 
 ## Remaining caveats and release blockers
 
