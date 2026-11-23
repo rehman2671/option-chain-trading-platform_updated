@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "NODE_ENV=test tsx --test --test-concurrency=1 src/quant/tests/*.test.ts src/server/tests/*.test.ts",
     "auth:local": "node scripts/upstox_zero_click.js",
-    "smoke:paper-staging": "node scripts/verify_paper_staging_rc.mjs"
+    "smoke:paper-staging": "node scripts/verify_paper_staging_rc.mjs",
+    "smoke:main-compat": "node scripts/verify_main_aistudio_compat_rc.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
