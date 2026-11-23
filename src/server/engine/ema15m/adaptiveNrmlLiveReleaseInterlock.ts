@@ -63,6 +63,37 @@ export function assessEmaLiveProductGate(
   };
   return {allowed:false,reason:'Unrecognised broker order product; fail closed.'};
 }
+/**
+ * Pure automatic ENTRY preflight. The product-only MIS check is NOT a
+ * live-order permission: a disabled toggle, ambiguous kill-switch state
+ * or mid-flight product mutation must reject BEFORE automatic reversal
+ * exits, contract/network reads, BUY attempts and broker-order claims.
+ *
+ * A manual operator-initiated exit uses a separate broker-authoritative
+ * exit path. This guard must not be used to auto SELL an existing long.
+ */
+export function assessEmaAutomaticLiveEntryPreflight(
+  originallySelectedProduct:unknown,
+  currentlySelectedProduct:unknown,
+  currentLiveToggle:unknown,
+  killSwitchHalted:unknown
+):{allowed:boolean;reason:string|null}{
+  const original=assessEmaLiveProductGate(originallySelectedProduct);
+  if(!original.allowed)return original;
+  const current=assessEmaLiveProductGate(currentlySelectedProduct);
+  if(!current.allowed)return current;
+  if(originallySelectedProduct!==currentlySelectedProduct)
+    return {allowed:false,
+      reason:'Live entry product changed during broker verification; fail closed.'};
+  if(currentLiveToggle!==true)
+    return {allowed:false,
+      reason:'Live broker execution disabled; suppress automatic entry and reversal exit.'};
+  if(killSwitchHalted!==false)
+    return {allowed:false,
+      reason:'Kill switch active or status unavailable; suppress automatic entry and reversal exit.'};
+  return {allowed:true,reason:null};
+}
+
 /** The 15:15 intraday job must NEVER square off an NRML position. */
 export function isMisForcedSquareOffEligible(
   position:unknown
