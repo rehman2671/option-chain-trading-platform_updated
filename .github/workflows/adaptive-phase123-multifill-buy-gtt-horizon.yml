@@ -1,0 +1,51 @@
+name: Adaptive Phase123 multi-fill original BUY GTT carry quarantine
+on:
+  push:
+    branches:
+      - 'research/adaptive-v2-phase123-multifill-entry-cohort-reconciliation'
+  pull_request:
+    branches:
+      - 'research/adaptive-v2-phase122-original-buy-anchored-gtt-horizon'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-partial-buy-trade-cohort:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Strict TypeScript noEmit gate
+        run: npm run lint
+      - name: Phase123 original multi-fill cohort plus previous NRML safety suites
+        run: |
+          npx tsx --test --test-concurrency=1 \
+            src/quant/tests/ema15m_adaptive_phase123_multifill_buy_cohort_gtt_horizon.test.ts \
+            src/quant/tests/ema15m_adaptive_phase122_original_buy_anchored_gtt_horizon.test.ts \
+            src/quant/tests/ema15m_adaptive_phase121_gtt_expiry_horizon_quarantine.test.ts \
+            src/quant/tests/ema15m_adaptive_phase120_legacy_fo_trade_child_linkage.test.ts \
+            src/quant/tests/ema15m_adaptive_phase119_native_get_cardinality.test.ts \
+            src/quant/tests/ema15m_adaptive_phase118_native_get_session_fence.test.ts \
+            src/quant/tests/ema15m_adaptive_phase117_upstox_read_transport_contract.test.ts \
+            src/quant/tests/ema15m_adaptive_phase116_portfolio_gtt_stream_offline_replay.test.ts \
+            src/quant/tests/ema15m_adaptive_phase115_missing_gtt_historical_sell_join.test.ts \
+            src/quant/tests/ema15m_adaptive_phase114_missing_gtt_restart_quarantine.test.ts \
+            src/quant/tests/ema15m_adaptive_phase113_single_sell_gtt_child_fills.test.ts \
+            src/quant/tests/ema15m_adaptive_phase112_existing_single_sell_gtt.test.ts \
+            src/quant/tests/ema15m_adaptive_phase111_multiweek_carry_debit_risk.test.ts \
+            src/quant/tests/ema15m_adaptive_phase110_existing_nrml_day_stop.test.ts \
+            src/quant/tests/ema15m_adaptive_phase109_gtt_entry_buy_provenance.test.ts \
+            src/quant/tests/ema15m_adaptive_phase108_gtt_two_pass_drift.test.ts \
+            src/quant/tests/ema15m_adaptive_phase107_gtt_broker_auth_epoch.test.ts \
+            src/quant/tests/ema15m_adaptive_phase104_historical_fo_trades.test.ts \
+            src/quant/tests/ema15m_adaptive_phase101_original_buy_trade_receipts.test.ts \
+            src/quant/tests/ema15m_adaptive_phase90_nrml_live_release_interlock.test.ts
+      - name: Build read-only research branch
+        run: npm run build
