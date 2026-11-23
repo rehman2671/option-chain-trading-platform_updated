@@ -94,6 +94,24 @@ export function assessEmaAutomaticLiveEntryPreflight(
   return {allowed:true,reason:null};
 }
 
+/**
+ * Persisted EMA live product must be an exact MIS/NRML value. A malformed
+ * row may be DISPLAYED as legacy MIS, but MUST disable live execution,
+ * never silently coerce an unsafe NRML/unknown product into live MIS.
+ * No broker effects; usable on DB read and DB settings write boundaries.
+ */
+export function normalizeEmaLiveProductSettings(
+  storedProduct:unknown,
+  liveEnabled:unknown
+):{productType:EmaBrokerProduct;liveEnabled:boolean;recognized:boolean}{
+  const recognized=storedProduct==='MIS'||storedProduct==='NRML';
+  return {
+    productType:recognized?storedProduct:'MIS',
+    liveEnabled:recognized&&liveEnabled===true,
+    recognized
+  };
+}
+
 /** The 15:15 intraday job must NEVER square off an NRML position. */
 export function isMisForcedSquareOffEligible(
   position:unknown
