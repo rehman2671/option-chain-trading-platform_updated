@@ -1,0 +1,59 @@
+name: Paper staging RC1 integration smoke (NO live broker)
+
+on:
+  push:
+    branches:
+      - release/paper-staging-rc1-integration
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-staging-rc1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paper-staging-rc1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      PAPER_STAGING_MODE: '1'
+      DATA_PROVIDER: practice
+      UPSTOX_ACCESS_TOKEN: ''
+      UPSTOX_TOKEN: ''
+      UPSTOX_API_KEY: ''
+      UPSTOX_API_SECRET: ''
+      UPSTOX_PIN: ''
+      UPSTOX_TOTP_SECRET: ''
+      UPSTOX_TOTP_KEY: ''
+      UPSTOX_MOBILE_NO: ''
+      UPSTOX_CLIENT_ID: ''
+      UPSTOX_USER_ID: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Verify NO runtime account DB/WAL tracked in RC source
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files '*.sqlite' '*.sqlite-wal' '*.sqlite-shm' '*.db' '*.db-wal' '*.db-shm')" ]; then
+            echo "::error::Runtime account DB must not be tracked in paper staging"
+            exit 1
+          fi
+      - name: Reproducible package install
+        run: npm ci
+      - name: TypeScript full typecheck
+        run: npm run lint
+      - name: Staging startup, token and direct order denial adversarial tests
+        run: npx tsx --test --test-concurrency=1 src/quant/tests/ema15m_paper_staging_rc_integration.test.ts
+      - name: Production frontend and server bundle
+        run: NODE_ENV=production npm run build
+      - name: Isolated production-mode HTTP smoke (practice, no credentials or network broker orders)
+        run: npm run smoke:paper-staging
