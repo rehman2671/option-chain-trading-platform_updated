@@ -133,6 +133,7 @@ on:
       - 'research/adaptive-v2-phase130-nrml-legacy-exit-routing-fence'
       - 'research/adaptive-v2-phase131-live-option-quote-time-and-auth-fence'
       - 'research/adaptive-v2-phase132-sellable-option-depth-fence'
+      - 'release/paper-staging-rc1-integration'
   pull_request:
     branches:
       - main
@@ -267,6 +268,7 @@ on:
       - 'research/adaptive-v2-phase130-nrml-legacy-exit-routing-fence'
       - 'research/adaptive-v2-phase131-live-option-quote-time-and-auth-fence'
       - 'research/adaptive-v2-phase132-sellable-option-depth-fence'
+      - 'release/paper-staging-rc1-integration'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks
