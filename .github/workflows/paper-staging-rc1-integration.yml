@@ -57,6 +57,8 @@ jobs:
         run: NODE_ENV=production npm run build
       - name: Isolated production-mode HTTP smoke (practice, no credentials or network broker orders)
         run: npm run smoke:paper-staging
+      - name: Ordinary Google AI Studio/main startup compatibility (no staging flag, no broker credentials)
+        run: npm run smoke:main-compat
 
   paper-staging-container:
     runs-on: ubuntu-latest
