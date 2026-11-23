@@ -360,6 +360,21 @@ describe('Phase126 full-account current-day SELL/GTT and original BUY census',()
     assert.equal(r.originalBuySeenInCurrentDayBook,false);
     assert.equal(r.historicalOrderOrCompletedGttAbsenceCertified,false);
   });
+  it('old BUY trade clock in today-only book cannot certify cross-session original entry',()=>{
+    const x=fixture();
+    for(const pass of [x.originalBuy.first,x.originalBuy.second]){
+      const snapshot=pass.input.perOrderTradeResponse as
+        {status:string;data:Record<string,unknown>[]};
+      for(const raw of snapshot.data)
+        raw.exchange_timestamp='20-Nov-2026 09:15:00';
+    }
+    const r=run(x);
+    assert.equal(r.state,
+      'ORIGINAL_BUY_REPORTED_EXECUTION_OUTSIDE_CURRENT_DAY_BOOK');
+    assert.equal(r.originalBuySeenInCurrentDayBook,true);
+    assert.equal(r.historicalOrderOrCompletedGttAbsenceCertified,false);
+    assert.equal(r.originalBuyExecutionVenueSigned,false);
+  });
   it('current day original BUY altered quantity or side conflicts',()=>{
     for(const changes of [
       {transaction_type:'SELL'},{filled_quantity:50},
