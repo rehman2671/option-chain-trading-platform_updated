@@ -32,7 +32,10 @@ class DatabaseEngine {
   private isInitialized = false;
   private dbFilePath = process.env.NODE_ENV === 'test'
     ? path.join(os.tmpdir(), `ema15m-test-${process.pid}.sqlite`)
-    : path.join(process.cwd(), 'option_platform.sqlite');
+    : process.env.PAPER_STAGING_MODE === '1'
+      ? path.join(process.env.PAPER_STAGING_DB_DIR || '',
+          'option_platform.sqlite')
+      : path.join(process.cwd(), 'option_platform.sqlite');
   private isRecovering = false;
   private walCheckpointTimer: NodeJS.Timeout | null = null;
 
@@ -206,7 +209,7 @@ class DatabaseEngine {
     // 2. Backup corrupt database and auxiliary WAL/SHM files to safe .backups/ directory
     if (fs.existsSync(this.dbFilePath)) {
       const stats = fs.statSync(this.dbFilePath);
-      const backupDir = path.join(process.cwd(), '.backups');
+      const backupDir = path.join(path.dirname(this.dbFilePath), '.backups');
       if (!fs.existsSync(backupDir)) {
         try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
       }
@@ -408,7 +411,9 @@ class DatabaseEngine {
 
   private auditLegacyBackups(): void {
     try {
-      const cwd = process.cwd();
+      // Reconcile/backup only the actual current database volume;
+      // never scan the compiled application root for operator data.
+      const cwd = path.dirname(this.dbFilePath);
       const backupDir = path.join(cwd, '.backups');
       if (!fs.existsSync(backupDir)) {
         try { fs.mkdirSync(backupDir, { recursive: true }); } catch {}
