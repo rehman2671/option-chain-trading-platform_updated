@@ -248,7 +248,7 @@ export function auditBraidedNrmlAccountReadsReadOnly(
   }
   for(let i=0;i<times.length;i++){
     if(i===0){
-      if(times[0]!>secondPrior)
+      if(times[0]!<=secondPrior)
         return report('BROKER_RECEIPT_ID_DUPLICATE_OR_READ_CLOCK_REVERSED',
           'BRAID_MUST_FOLLOW_TWO_ORIGINAL_BUY_CAPTURES');
     }else if(times[i]!<=times[i-1]!)
