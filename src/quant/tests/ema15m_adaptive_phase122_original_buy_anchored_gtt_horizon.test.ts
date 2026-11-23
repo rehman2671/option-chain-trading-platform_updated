@@ -96,8 +96,11 @@ describe('Phase122 exact original BUY anchored positional horizon quarantine',()
   });
   it('1/2/4/8 nominal calendar weeks always anchored to original BUY',()=>{
     for(const weeks of [1,2,4,8] as const){
-      const r=audit(scope({selectedWeeks:weeks}),parent({
-        expires_at:micros('2027-02-15T00:00:00.000Z')
+      const r=audit(scope({
+        selectedWeeks:weeks,
+        assertedContractExpiryUtc:'2027-03-01T00:00:00.000Z'
+      }),parent({
+        expires_at:micros('2027-03-02T00:00:00.000Z')
       }));
       safe(r);
       // GTT expiry after asserted contract expiry is still rejected
