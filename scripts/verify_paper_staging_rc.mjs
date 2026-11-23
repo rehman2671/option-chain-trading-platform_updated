@@ -37,18 +37,23 @@ const env={
   GEMINI_API_KEY:'',
   TELEGRAM_BOT_TOKEN:'',
   TELEGRAM_CHAT_ID:'',
-  SMTP_PASS:''
+  SMTP_PASS:'',
+  ADMIN_EMAIL:'paper-rc-'+randomBytes(6).toString('hex')+'@example.invalid',
+  ADMIN_INITIAL_PASSWORD:randomBytes(32).toString('hex'),
+  ADMIN_NAME:'Paper Staging Disposable Admin'
 };
 for(const s of secrets)delete env[s];
 let logs='';
 let child;
 const append=(data)=>{logs=(logs+String(data)).slice(-7000);};
-const probe=async(path,method='GET')=>{
+const probe=async(path,method='GET',payload=null,token=null)=>{
+  const headers={};
+  if(method==='POST')headers['Content-Type']='application/json';
+  if(token)headers.Authorization='Bearer '+token;
   const r=await fetch('http://127.0.0.1:3000'+path,{
-    method,
-    headers:method==='POST'?{'Content-Type':'application/json'}:undefined,
-    body:method==='POST'?'{}':undefined,
-    signal:AbortSignal.timeout(2000)
+    method,headers,
+    body:method==='POST'?JSON.stringify(payload??{}):undefined,
+    signal:AbortSignal.timeout(2500)
   });
   return {status:r.status,
     body:await r.text()};
@@ -113,8 +118,68 @@ try{
   const mut=await probe('/api/ema15m/live-positions/close','POST');
   if(mut.status!==401&&mut.status!==403)
     throw Error('PAPER_RC_UNAUTHENTICATED_BROKER_EXIT_NOT_REJECTED');
-  console.log('PAPER_RC1_SMOKE_SUCCESS: built backend, UI, practice provider, '+
-    'health, staging flag, denied broker auth and unauthenticated live routes');
+  // Use disposable, CI-generated staging administrator credentials to
+  // verify a REAL authenticated paper workflow, never real broker execution.
+  const login=await probe('/api/auth/login','POST',{
+    email:env.ADMIN_EMAIL,password:env.ADMIN_INITIAL_PASSWORD
+  });
+  if(login.status!==200)throw Error('PAPER_RC_TEMP_ADMIN_LOGIN_FAILED: '+login.status);
+  const session=JSON.parse(login.body);
+  if(session.success!==true||session.user?.role!=='SUPERADMIN'||
+     typeof session.token!=='string')
+    throw Error('PAPER_RC_AUTHENTICATED_SESSION_INVALID');
+  const token=session.token;
+  const account=await probe('/api/auth/me','GET',null,token);
+  if(account.status!==200||
+     JSON.parse(account.body).authenticated!==true)
+    throw Error('PAPER_RC_AUTHENTICATED_ME_FAILED');
+  const beforePaper=await probe('/api/paper-trading/portfolio','GET',null,token);
+  if(beforePaper.status!==200||
+     !Array.isArray(JSON.parse(beforePaper.body).positions))
+    throw Error('PAPER_RC_PAPER_PORTFOLIO_LOAD_FAILED');
+  const opened=await probe('/api/paper-trading/start','POST',{
+    strategyName:'RC1 isolated paper smoke',
+    symbol:'NIFTY',
+    legs:[{strikePrice:25000,type:'CE',action:'BUY',
+      quantity:1,lotSize:50,currentLtp:100,
+      product:'NRML',expiry:'CURRENT'}]
+  },token);
+  if(opened.status!==200)
+    throw Error('PAPER_RC_PAPER_OPEN_FAILED: '+opened.status+
+      ' '+opened.body.slice(0,500));
+  const entry=JSON.parse(opened.body);
+  if(entry.success!==true||entry.positions?.length!==1||
+     entry.positions[0].status!=='OPEN'||
+     entry.positions[0].quantity!==50)
+    throw Error('PAPER_RC_PAPER_OPEN_POSITION_INVALID');
+  const paperPositionId=entry.positions[0].id;
+  const afterOpen=await probe('/api/paper-trading/portfolio','GET',null,token);
+  const portfolioOpen=JSON.parse(afterOpen.body);
+  if(afterOpen.status!==200||
+     !portfolioOpen.positions.some(p=>p.id===paperPositionId&&p.status==='OPEN'))
+    throw Error('PAPER_RC_PAPER_PORTFOLIO_OPEN_NOT_RECORDED');
+  const close=await probe('/api/paper-trading/close/'+
+    encodeURIComponent(paperPositionId),'POST',{
+      exitPrice:110,reason:'RC1 synthetic paper close'
+    },token);
+  if(close.status!==200)
+    throw Error('PAPER_RC_PAPER_CLOSE_FAILED: '+close.status);
+  const closed=JSON.parse(close.body);
+  if(closed.success!==true||
+     !closed.portfolio?.closedPositions?.some(p=>
+       p.id===paperPositionId&&p.status==='CLOSED'))
+    throw Error('PAPER_RC_PAPER_CLOSE_NOT_RECORDED');
+  if(closed.portfolio.positions.some(p=>p.id===paperPositionId))
+    throw Error('PAPER_RC_CLOSED_PAPER_POSITION_REMAINS_OPEN');
+  // Authenticating as SUPERADMIN does NOT remove paper-staging broker auth denial.
+  const elevated=await probe('/api/upstox/set-token','POST',{
+    accessToken:'FAKE-NO-BROKER-TOKEN'
+  },token);
+  if(elevated.status!==403)
+    throw Error('PAPER_RC_AUTHENTICATED_BROKER_TOKEN_ROUTE_BYPASS');
+  console.log('PAPER_RC1_SMOKE_SUCCESS: built backend+React, practice provider, '+
+    'health, staging deny, disposable admin login, virtual paper BUY/close/ledger '+
+    'and authenticated Upstox token-route denial');
 }finally{
   if(child&&child.exitCode===null)child.kill('SIGTERM');
   await sleep(350);
