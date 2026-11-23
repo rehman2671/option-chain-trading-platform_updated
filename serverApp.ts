@@ -305,23 +305,25 @@ setInterval(() => {
 }, 5000);
 
 async function startServer() {
-  // Before any persistent DB open, route registration, WebSocket or cron:
-  // refuse staging startup if an .env or injected Upstox credential can
-  // turn a simulated demo into a broker-connected trading process.
-  // This release branch is paper-staging ONLY, regardless of launch
-  // command (npm start/dev, NODE_ENV missing, injected broker token).
-  // Never fall back to the general-purpose live-capable server mode.
-  // The strict admission verifies NODE_ENV=production, practice provider,
-  // ZERO broker credentials and the explicit paper staging flag.
-  const paperStaging=assertPaperStagingAdmission(process.env);
-  // Each staging deploy must provide an explicit external data directory.
-  // Do NOT bootstrap the SQLite database inside the bundled application.
-  const stagingDbDir=process.env.PAPER_STAGING_DB_DIR!;
-  fs.mkdirSync(stagingDbDir,{recursive:true,mode:0o700});
-  const dirStat=fs.lstatSync(stagingDbDir);
-  if(!dirStat.isDirectory()||dirStat.isSymbolicLink())
-    throw Error('PAPER_STAGING_DB_DIRECTORY_INVALID');
-  fs.accessSync(stagingDbDir,fs.constants.R_OK|fs.constants.W_OK|fs.constants.X_OK);
+  // Main/Google AI Studio application keeps its ordinary startup path.
+  // Paper staging is EXPLICIT only, or enforced by the locked image
+  // entrypoint. The broker-disabled Docker entrypoint forcibly sets
+  // PAPER_RC_LOCKED=1 before loading this module; a hosting env override
+  // cannot accidentally turn that image into a live trading server.
+  // Validate admission BEFORE opening SQLite, HTTP, background jobs or WS.
+  const paperStaging = (
+    process.env.PAPER_STAGING_MODE === '1' ||
+    process.env.PAPER_RC_LOCKED === '1'
+  ) ? assertPaperStagingAdmission(process.env) : null;
+  if(paperStaging){
+    // Staging data is explicitly external to the application bundle.
+    const stagingDbDir=process.env.PAPER_STAGING_DB_DIR!;
+    fs.mkdirSync(stagingDbDir,{recursive:true,mode:0o700});
+    const dirStat=fs.lstatSync(stagingDbDir);
+    if(!dirStat.isDirectory()||dirStat.isSymbolicLink())
+      throw Error('PAPER_STAGING_DB_DIRECTORY_INVALID');
+    fs.accessSync(stagingDbDir,fs.constants.R_OK|fs.constants.W_OK|fs.constants.X_OK);
+  }
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
 
