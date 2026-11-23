@@ -12,6 +12,7 @@ import {
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
+import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
 import {resolveUniqueBrokerNetPosition}
   from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
 import {
@@ -652,10 +653,17 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
-  /** Adapter-declared last executed trade LTP, NOT executable bid/ask. */
+  /**
+   * Adapter-declared Upstox D5 option depth + LTP, NOT a native stop ACK,
+   * protected exchange order or guaranteed executable best-bid volume.
+   */
   public async getLiveOptionQuote(instrumentKey: string): Promise<{
     price:number;exchangeTimestamp:string;instrumentKey:string;
-    source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'
+    source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP';
+    bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5';
+    snapshotTimestamp:string;
+    bestBidPrice:number;bestBidQuantity:number;
+    bestAskPrice:number;bestAskQuantity:number;
   } | null> {
     const session=this.captureRiskReadIdentity();
     if (!session || !/^(?:NSE_FO|BSE_FO)\|[A-Za-z0-9_-]{1,240}$/.test(instrumentKey))
@@ -685,9 +693,34 @@ export class UpstoxProvider implements IMarketDataProvider {
          !Number.isSafeInteger(timestamp)||timestamp<946684800000||
          timestamp>=4102444800000||
          timestamp>now+5000||now-timestamp>30000)return null;
+      // Full quote V3: timestamp is the quote SNAPSHOT, unlike
+      // last_trade_time (which is the most recent executed trade).
+      const snapshot=parseStrictQuoteSnapshotTime(quote?.timestamp);
+      if(snapshot===null||snapshot>now+3000||now-snapshot>10_000||
+         timestamp>snapshot+2000)return null;
+      const bids=quote?.depth?.buy,asks=quote?.depth?.sell;
+      if(!Array.isArray(bids)||!Array.isArray(asks)||
+         bids.length<1||asks.length<1||bids.length>5||asks.length>5)
+        return null;
+      const bestBid=bids[0],bestAsk=asks[0];
+      if(typeof bestBid?.price!=='number'||
+         typeof bestAsk?.price!=='number'||
+         !Number.isFinite(bestBid.price)||
+         !Number.isFinite(bestAsk.price)||
+         bestBid.price<=0||bestAsk.price<=0||
+         bestBid.price>bestAsk.price||
+         typeof bestBid.quantity!=='number'||
+         typeof bestAsk.quantity!=='number'||
+         !Number.isSafeInteger(bestBid.quantity)||
+         !Number.isSafeInteger(bestAsk.quantity)||
+         bestBid.quantity<=0||bestAsk.quantity<=0)return null;
       if(!this.currentRiskReadIdentity(session))return null;
       return {price,exchangeTimestamp:new Date(timestamp).toISOString(),
-        instrumentKey,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
+        instrumentKey,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP',
+        bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5',
+        snapshotTimestamp:new Date(snapshot).toISOString(),
+        bestBidPrice:bestBid.price,bestBidQuantity:bestBid.quantity,
+        bestAskPrice:bestAsk.price,bestAskQuantity:bestAsk.quantity};
     } catch {
       console.warn('[UPSTOX] Exact live option last-trade quote unavailable');
       return null;

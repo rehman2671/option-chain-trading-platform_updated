@@ -25,7 +25,7 @@ import { assessBrokerRemainingSellQuantity } from './adaptiveLiveSellQuantityGua
 import {assessPostClaimExitJournal,reviewPostClaimBrokerSell}
   from './adaptivePostClaimSellRevalidation.js';
 import {assessExitPlacementAck} from './adaptiveLiveExitSettlementAudit.js';
-import {assessExactLiveOptionQuote} from './adaptiveLiveOptionQuoteFence.js';
+import {assessSellableOptionDepthReadOnly} from './adaptiveSellableOptionDepthReadOnly.js';
 import {
   assessEmaLiveProductGate,assessEmaAutomaticLiveEntryPreflight,
   assessEmaBrokerExitProductGate,isMisLiveAutoExitCandidate,
@@ -658,15 +658,19 @@ export class LiveExecutionService {
         console.warn('[EMA LIVE] Broker quote read error; no auto SELL');
         continue;
       }
-      const quoteCheck=assessExactLiveOptionQuote(
-        quote,pos.brokerInstrumentKey,Date.now()
+      // A fresh LAST TRADED premium is NOT a sellable bid. Evaluate
+      // MIS auto SL/TP/trailing only from observed whole-position best
+      // BUY depth (the quote price at which a SELL might execute).
+      // This is indicative only; book can disappear before any order.
+      const quoteCheck=assessSellableOptionDepthReadOnly(
+        quote,pos.brokerInstrumentKey,Date.now(),qty
       );
-      if(!quoteCheck.accepted||quoteCheck.price===null){
-        console.warn('[EMA LIVE] Skipping SL/TP evaluation: exact live option LTP unverified ('+
-          quoteCheck.reason+')');
+      if(!quoteCheck.accepted||quoteCheck.observedSellBid===null){
+        console.warn('[EMA LIVE] Skipping MIS automatic SELL: exact bid depth/liquidity unverified ('+
+          quoteCheck.reason+'). Human broker risk review required.');
         continue;
       }
-      const currentOptionPrice=quoteCheck.price;
+      const currentOptionPrice=quoteCheck.observedSellBid;
 
       const grossPnl = StrategyRules.calculateOptionGrossPnl(entryPrice, currentOptionPrice, qty);
       const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, pos.brokerage || 40);

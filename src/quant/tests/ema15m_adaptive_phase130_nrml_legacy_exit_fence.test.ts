@@ -120,7 +120,11 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
     let quotes=0;
     provider.getLiveOptionQuote=async(key:string)=>{
       quotes++;return {price:150,exchangeTimestamp:new Date().toISOString(),
-        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
+        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP',
+        bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5',
+        snapshotTimestamp:new Date().toISOString(),
+        bestBidPrice:150,bestBidQuantity:100,
+        bestAskPrice:151,bestAskQuantity:100};
     };
     mock.method(dbEngine,'getOpenEmaLivePositions',()=>positions);
     mock.method(dbEngine,'getEmaNotificationSettings',()=>({
@@ -155,7 +159,11 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
     let quotes=0;const exits:string[]=[];
     provider.getLiveOptionQuote=async(key:string)=>{
       quotes++;return {price:150,exchangeTimestamp:new Date().toISOString(),
-        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP'};
+        instrumentKey:key,source:'UPSTOX_FULL_MARKET_QUOTE_V3_LTP',
+        bookSource:'UPSTOX_FULL_MARKET_QUOTE_V3_DEPTH_D5',
+        snapshotTimestamp:new Date().toISOString(),
+        bestBidPrice:150,bestBidQuantity:100,
+        bestAskPrice:151,bestAskQuantity:100};
     };
     mock.method(dbEngine,'getOpenEmaLivePositions',()=>positions);
     mock.method(dbEngine,'getEmaNotificationSettings',()=>({
