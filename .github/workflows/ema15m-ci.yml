@@ -128,6 +128,7 @@ on:
       - 'research/adaptive-v2-phase125-dual-native-buy-trade-snapshot-drift'
       - 'research/adaptive-v2-phase126-dual-account-sell-gtt-census'
       - 'research/adaptive-v2-phase127-braided-order-gtt-position-census'
+      - 'research/adaptive-v2-phase128-halt-only-incident-triage'
   pull_request:
     branches:
       - main
@@ -257,6 +258,7 @@ on:
       - 'research/adaptive-v2-phase125-dual-native-buy-trade-snapshot-drift'
       - 'research/adaptive-v2-phase126-dual-account-sell-gtt-census'
       - 'research/adaptive-v2-phase127-braided-order-gtt-position-census'
+      - 'research/adaptive-v2-phase128-halt-only-incident-triage'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks
