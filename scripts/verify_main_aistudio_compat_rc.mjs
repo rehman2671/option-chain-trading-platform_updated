@@ -6,7 +6,7 @@
  * Requires: npm run build.
  */
 import {spawn} from 'node:child_process';
-import {existsSync,cpSync,mkdtempSync,rmSync} from 'node:fs';
+import {existsSync,cpSync,mkdtempSync,rmSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {randomBytes} from 'node:crypto';
@@ -28,6 +28,9 @@ const dir=mkdtempSync(join(tmpdir(),'main-aistudio-practice-'));
 const port=43139;
 cpSync(resolve(root,'dist'),join(dir,'dist'),{recursive:true});
 cpSync(resolve(root,'server.ts'),join(dir,'server.ts'));
+// Resolve npm package imports from the actual installed workspace while
+// keeping SQLite runtime files isolated in this disposable directory.
+symlinkSync(resolve(root,'node_modules'),join(dir,'node_modules'),'dir');
 if(existsSync(resolve(root,'assets')))
   cpSync(resolve(root,'assets'),join(dir,'assets'),{recursive:true});
 const env={
