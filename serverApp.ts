@@ -299,9 +299,12 @@ async function startServer() {
   // Before any persistent DB open, route registration, WebSocket or cron:
   // refuse staging startup if an .env or injected Upstox credential can
   // turn a simulated demo into a broker-connected trading process.
-  const paperStaging=process.env.PAPER_STAGING_MODE==='1'
-    ? assertPaperStagingAdmission(process.env)
-    : null;
+  // This RC must NEVER boot as a broker-connected production service
+  // merely because the deployment forgot PAPER_STAGING_MODE=1.
+  const paperStaging=process.env.NODE_ENV==='production'||
+    process.env.PAPER_STAGING_MODE==='1'
+      ? assertPaperStagingAdmission(process.env)
+      : null;
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
 
