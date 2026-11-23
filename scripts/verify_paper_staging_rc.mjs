@@ -118,6 +118,17 @@ try{
   const mut=await probe('/api/ema15m/live-positions/close','POST');
   if(mut.status!==401&&mut.status!==403)
     throw Error('PAPER_RC_UNAUTHENTICATED_BROKER_EXIT_NOT_REJECTED');
+  // Guest access to the shared anonymous paper portfolio is not
+  // acceptable in an isolated staging tenant. Recheck both read+write.
+  const guestPortfolio=await probe('/api/paper-trading/portfolio');
+  const guestOrder=await probe('/api/paper-trading/start','POST',{
+    strategyName:'REJECT_GUEST',
+    legs:[{strikePrice:25000,type:'CE',action:'BUY',
+      quantity:1,lotSize:50,currentLtp:100}]
+  });
+  if(guestPortfolio.status!==401||guestOrder.status!==401)
+    throw Error('PAPER_RC_GUEST_PAPER_LEDGER_OR_ORDER_NOT_AUTHENTICATED');
+
   // Use disposable, CI-generated staging administrator credentials to
   // verify a REAL authenticated paper workflow, never real broker execution.
   const login=await probe('/api/auth/login','POST',{
