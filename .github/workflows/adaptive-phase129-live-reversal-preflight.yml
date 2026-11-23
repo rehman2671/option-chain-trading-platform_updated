@@ -28,6 +28,7 @@ jobs:
         run: |
           npx tsx --test --test-concurrency=1 \
             src/quant/tests/ema15m_adaptive_phase129_live_preflight_reversal_interlock.test.ts \
+            src/quant/tests/ema15m_adaptive_phase129_real_service_reversal_no_broker.test.ts \
             src/quant/tests/ema15m_adaptive_phase128_offline_nrml_halt_only_triage.test.ts \
             src/quant/tests/ema15m_adaptive_phase127_braided_order_gtt_position_reads.test.ts \
             src/quant/tests/ema15m_adaptive_phase126_dual_account_sell_gtt_census.test.ts \
