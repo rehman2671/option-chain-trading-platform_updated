@@ -1,6 +1,8 @@
 # Paper/Staging RC1 integration freeze
 
-**Status: DRAFT integration candidate. Not deployed, not merged to main, not licensed option market evidence, and not a LIVE NRML release.**
+**Current integration status (2026-11-24): SOURCE MERGED TO MAIN, NOT DEPLOYED OR AUTHORISED FOR LIVE NRML.** PR #138 merged as commit `6f51407c8912df13962abf32a18b86561ede7520`. Its exact head `5b210937419c62b0d971129ec2c6dccbd017bf43` passed EMA15M invariant safety, full regression, production build (Actions run 45281359700), and paper/Google AI Studio compatibility + container restart checks (Actions run 45281359711). These are CI checks, not an external operator staging/browser, durable Cloud Run SQLite, licensed exchange market-data, real broker fill/GTT or profitable-trading certification. Issues #17–#22 remain open; automatic LIVE NRML BUY/SELL stays blocked. Main-branch push CI is being enabled separately so post-merge changes also receive these checks.
+
+**Historical RC candidate status below refers to the state before the approved source merge; do not treat it as the current main-branch status.**
 
 ## Starting point
 
