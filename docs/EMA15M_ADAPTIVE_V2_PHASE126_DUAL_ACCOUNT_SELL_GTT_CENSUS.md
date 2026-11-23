@@ -17,6 +17,7 @@ New pure TypeScript module: src/server/engine/ema15m/adaptiveDualAccountSellGttC
 - Reject an extra same-option GTT parent even if another product or apparently terminal, since another child/order may have been generated.
 - Reject duplicate current native order IDs, missing/ambiguous NRML positive whole-lot net, other-product same-contract orders/positions, other active/pending/filled BUY or SELL and unknown statuses. A terminal canceled/rejected/expired order with zero fills and zero pending can be observed without proving historical absence.
 - If the original BUY does not appear in today's current-day orderbook, report an explicit UNKNOWN; never pretend the old BUY or its protection has been disproven or independently confirmed.
+- If the original BUY appears in today's current-day book but its operator-reported per-trade exchange_timestamp parses to a DIFFERENT IST local date, quarantine the apparent old entry/current-day mismatch. This is a conservative source contradiction, not independent NSE/BSE session authentication.
 - Only after account-census checks, re-run Phase125. A matching same-second BUY/GTT clock stays unresolved. Even a clean two-pass current-day census is NOT a durable historical protection record.
 
 ## Unchanged release blockers
