@@ -3,6 +3,7 @@ name: Paper staging RC1 integration smoke (NO live broker)
 on:
   push:
     branches:
+      - main
       - release/paper-staging-rc1-integration
   pull_request:
     branches:
