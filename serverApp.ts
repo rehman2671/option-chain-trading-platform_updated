@@ -9,6 +9,7 @@ dotenv.config();
 
 import express from 'express';
 import path from 'path';
+import fs from 'node:fs';
 import { createServer as createViteServer } from 'vite';
 import { dbEngine } from './src/server/db.js';
 import { globalMarketFeed } from './src/server/engine/marketFeed.js';
@@ -76,7 +77,15 @@ import { getAdaptiveResearchPreview, type AdaptiveInstrument } from './src/serve
 
 const app = express();
 app.set('trust proxy', 1);
-const PORT = 3000;
+// Container hosting assigns PORT. Reject ambiguous or invalid port values.
+const PORT = (() => {
+  const raw=process.env.PORT?.trim() || '3000';
+  if(!/^\d{1,5}$/.test(raw))throw Error('INVALID_SERVER_LISTEN_PORT');
+  const parsed=Number(raw);
+  if(!Number.isSafeInteger(parsed)||parsed<1||parsed>65535)
+    throw Error('INVALID_SERVER_LISTEN_PORT');
+  return parsed;
+})();
 
 app.use(express.json());
 app.use(cookieParser());
@@ -305,6 +314,14 @@ async function startServer() {
   // The strict admission verifies NODE_ENV=production, practice provider,
   // ZERO broker credentials and the explicit paper staging flag.
   const paperStaging=assertPaperStagingAdmission(process.env);
+  // Each staging deploy must provide an explicit external data directory.
+  // Do NOT bootstrap the SQLite database inside the bundled application.
+  const stagingDbDir=process.env.PAPER_STAGING_DB_DIR!;
+  fs.mkdirSync(stagingDbDir,{recursive:true,mode:0o700});
+  const dirStat=fs.lstatSync(stagingDbDir);
+  if(!dirStat.isDirectory()||dirStat.isSymbolicLink())
+    throw Error('PAPER_STAGING_DB_DIRECTORY_INVALID');
+  fs.accessSync(stagingDbDir,fs.constants.R_OK|fs.constants.W_OK|fs.constants.X_OK);
   // Initialize Auto-Indexed SQLite Database Engine
   await dbEngine.initialize();
 
