@@ -337,6 +337,13 @@ async function startServer() {
     next();
   });
 
+  // In a shared paper staging tenant, guest identity would otherwise
+  // write to a shared (userId=null) virtual portfolio. Require an actual
+  // authenticated user for every paper account mutation/read in RC mode.
+  if(paperStaging){
+    app.use('/api/paper-trading',requireAuth as any);
+  }
+
   // Health check
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
