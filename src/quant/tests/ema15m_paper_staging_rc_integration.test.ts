@@ -100,6 +100,26 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
       else process.env.PAPER_STAGING_MODE=prior;
     }
   });
+  it('immutable Docker lock denies direct broker calls even if staging flag is cleared',async()=>{
+    const priorMode=process.env.PAPER_STAGING_MODE;
+    const priorLock=process.env.PAPER_RC_LOCKED;
+    process.env.PAPER_STAGING_MODE='0';
+    process.env.PAPER_RC_LOCKED='1';
+    try{
+      const broker=new UpstoxProvider();
+      await assert.rejects(broker.placeOrder({
+        quantity:50,product:'NRML',instrumentToken:'NSE_FO|DENIED',
+        action:'BUY'
+      }),/PAPER_STAGING_BROKER_ORDER_DISABLED/);
+      assert.equal((await performUpstoxTOTPLogin()).success,false);
+      assert.equal((await setManualAccessToken('FAKE-LOCKED')).success,false);
+    }finally{
+      if(priorMode===undefined)delete process.env.PAPER_STAGING_MODE;
+      else process.env.PAPER_STAGING_MODE=priorMode;
+      if(priorLock===undefined)delete process.env.PAPER_RC_LOCKED;
+      else process.env.PAPER_RC_LOCKED=priorLock;
+    }
+  });
   it('runtime entry blocks token routes BEFORE Upstox callbacks and cron',()=>{
     const app=readFileSync('serverApp.ts','utf8');
     const start=app.indexOf('async function startServer() {');
