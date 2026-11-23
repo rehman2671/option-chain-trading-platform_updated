@@ -130,6 +130,7 @@ on:
       - 'research/adaptive-v2-phase127-braided-order-gtt-position-census'
       - 'research/adaptive-v2-phase128-halt-only-incident-triage'
       - 'research/adaptive-v2-phase129-live-entry-preflight-before-reversal'
+      - 'research/adaptive-v2-phase130-nrml-legacy-exit-routing-fence'
   pull_request:
     branches:
       - main
@@ -261,6 +262,7 @@ on:
       - 'research/adaptive-v2-phase127-braided-order-gtt-position-census'
       - 'research/adaptive-v2-phase128-halt-only-incident-triage'
       - 'research/adaptive-v2-phase129-live-entry-preflight-before-reversal'
+      - 'research/adaptive-v2-phase130-nrml-legacy-exit-routing-fence'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks

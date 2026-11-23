@@ -112,6 +112,39 @@ export function normalizeEmaLiveProductSettings(
   };
 }
 
+/**
+ * Existing legacy EMA live position SELL is a real broker order, even
+ * when called by a "manual" route or when the entry came from an
+ * earlier deployed version. Block NRML/unknown product here until
+ * independently approved CLOSE-ONLY, existing-long net and GTT-child
+ * reconciliation have been integrated in a separate release.
+ *
+ * Operators can reconcile/close an actual long in their broker's own
+ * authenticated interface. This is NOT a broker instruction.
+ */
+export function assessEmaBrokerExitProductGate(
+  product:unknown
+):{allowed:boolean;reason:string|null}{
+  if(product==='MIS')return {allowed:true,reason:null};
+  if(product==='NRML')
+    return {allowed:false,
+      reason:'NRML broker SELL blocked: independently verified existing long, '+
+        'close-only/no-short, outstanding GTT and child SELL reconciliation '+
+        'and manual broker release are required (issue #20).'};
+  return {allowed:false,
+    reason:'Unknown live position product; broker SELL blocked, no MIS fallback.'};
+}
+
+/** Legacy EMA SL/target/trailing polling is MIS-only until the independent
+ * NRML positional order/stop lifecycle receives a separate release. */
+export function isMisLiveAutoExitCandidate(
+  position:unknown
+):boolean{
+  if(!position||typeof position!=='object')return false;
+  const p=position as {productType?:unknown;status?:unknown};
+  return p.productType==='MIS'&&p.status==='OPEN';
+}
+
 /** The 15:15 intraday job must NEVER square off an NRML position. */
 export function isMisForcedSquareOffEligible(
   position:unknown
