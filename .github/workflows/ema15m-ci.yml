@@ -126,6 +126,7 @@ on:
       - 'research/adaptive-v2-phase123-multifill-entry-cohort-reconciliation'
       - 'research/adaptive-v2-phase124-native-trade-exchange-clock-provenance'
       - 'research/adaptive-v2-phase125-dual-native-buy-trade-snapshot-drift'
+      - 'research/adaptive-v2-phase126-dual-account-sell-gtt-census'
   pull_request:
     branches:
       - main
@@ -253,6 +254,7 @@ on:
       - 'research/adaptive-v2-phase123-multifill-entry-cohort-reconciliation'
       - 'research/adaptive-v2-phase124-native-trade-exchange-clock-provenance'
       - 'research/adaptive-v2-phase125-dual-native-buy-trade-snapshot-drift'
+      - 'research/adaptive-v2-phase126-dual-account-sell-gtt-census'
   workflow_dispatch:
 
 # Superseded commits must not monopolize runners; PR and push checks
