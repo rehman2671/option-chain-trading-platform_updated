@@ -104,8 +104,10 @@ describe('Paper-only staging release-candidate startup and broker denial',()=>{
     const manual=app.indexOf("app.post('/api/upstox/set-token'",start);
     const autos=app.indexOf("app.post('/api/upstox/auto-login'",start);
     assert.ok(start>=0&&admission>start&&admission<db);
-    assert.match(app,/paperStaging=process\.env\.NODE_ENV==='production'\|\|/);
-    assert.match(app,/process\.env\.PAPER_STAGING_MODE==='1'/);
+    // RC is NEVER live capable, including npm start with NODE_ENV unset.
+    // Admission must not depend on the current execution environment.
+    assert.match(app,/const paperStaging=assertPaperStagingAdmission\(process\.env\);/);
+    assert.equal(app.includes("paperStaging=process.env.NODE_ENV==='production'"),false);
     assert.ok(routes>db&&routes<login&&routes<manual&&routes<autos);
     const paperGuard=app.indexOf("app.use('/api/paper-trading',requireAuth as any)",start);
     const paperRead=app.indexOf("app.get('/api/paper-trading/portfolio'",start);
