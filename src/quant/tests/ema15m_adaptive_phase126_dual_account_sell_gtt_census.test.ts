@@ -217,7 +217,8 @@ describe('Phase126 full-account current-day SELL/GTT and original BUY census',()
     const x=fixture();const c:Record<string,unknown>=gtt();
     c.self=c; x.first.allGttOrders=[c];
     const r=run(x);
-    assert.equal(r.state,'ACCOUNT_GTT_CENSUS_CHANGED_BETWEEN_READS');
+    assert.equal(r.state,
+      'ACCOUNT_CENSUS_GTT_ARRAY_MISSING_MALFORMED_OR_UNBOUNDED');
   });
   it('duplicate same or unrelated GTT id fails before pretending active census',()=>{
     const x=fixture();
