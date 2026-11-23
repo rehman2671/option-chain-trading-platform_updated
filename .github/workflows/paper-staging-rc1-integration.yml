@@ -57,3 +57,61 @@ jobs:
         run: NODE_ENV=production npm run build
       - name: Isolated production-mode HTTP smoke (practice, no credentials or network broker orders)
         run: npm run smoke:paper-staging
+
+  paper-staging-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build nonroot paper-only container without account state
+        run: docker build --file Dockerfile.paper-staging --tag paper-rc1:ci .
+      - name: Boot isolated container, virtual trade, restart on same data volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          volume="paper-rc1-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          name="paper-rc1-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create "$volume" >/dev/null
+          cleanup() {
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          jwt="$(openssl rand -hex 48)"
+          pass="$(openssl rand -hex 24)"
+          export PAPER_RC_ADMIN_EMAIL="paper-rc-docker@example.invalid"
+          export PAPER_RC_ADMIN_PASSWORD="$pass"
+          export PAPER_RC_RESULT_PATH="$RUNNER_TEMP/paper-rc-container-position-id"
+          export PAPER_RC_CONTAINER_URL='http://127.0.0.1:43138'
+          run_container() {
+            docker run -d --name "$name" \
+              --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+              -v "$volume:/data" -p 127.0.0.1:43138:3000 \
+              -e NODE_ENV=production -e PAPER_STAGING_MODE=1 \
+              -e DATA_PROVIDER=practice -e PAPER_STAGING_DB_DIR=/data \
+              -e JWT_SECRET="$jwt" -e ADMIN_EMAIL="$PAPER_RC_ADMIN_EMAIL" \
+              -e ADMIN_INITIAL_PASSWORD="$pass" \
+              paper-rc1:ci >/dev/null
+          }
+          wait_ready() {
+            for i in $(seq 1 80); do
+              if curl --fail --silent --max-time 2 "$PAPER_RC_CONTAINER_URL/api/release/status" >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            docker logs "$name" --tail 80 || true
+            return 1
+          }
+          run_container
+          wait_ready
+          docker exec "$name" node -e "const f=require('fs');const s=f.statSync('/data/option_platform.sqlite');if(!s.isFile())process.exit(1)"
+          node scripts/verify_paper_staging_container.mjs
+          docker stop "$name" >/dev/null
+          run_container
+          wait_ready
+          node scripts/verify_paper_staging_container.mjs
