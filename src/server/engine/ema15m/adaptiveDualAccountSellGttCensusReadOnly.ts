@@ -161,7 +161,12 @@ function parseGtts(x:unknown):Parsed{
     if(map.has(g.gtt_order_id))
       return {map:null,rows:null,duplicate:true};
     let fp:string;
-    try{fp=fingerprint(g);}catch{
+    try{
+      const raw=JSON.stringify(g);
+      if(raw.length>20000)
+        return {map:null,rows:null,duplicate:false};
+      fp=fingerprint(g);
+    }catch{
       return {map:null,rows:null,duplicate:false};
     }
     if(fp.length>20000)
