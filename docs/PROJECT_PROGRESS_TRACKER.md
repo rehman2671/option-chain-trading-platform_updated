@@ -4,33 +4,34 @@ Updated 2026-11-24. Canonical scope: [Master project plan](PROJECT_MASTER_PLAN.m
 
 ## Verified repository baseline
 
-- Main: `52f5e862c2f6232b0dc0b7863b5d42bbe2fb7b95`; Telegram PR #143 merged. Combined main CI: [EMA15M 45441084767](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45441084767) SUCCESS; [Paper staging 45441084850](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45441084850) SUCCESS.
-- Active repair: [PR #144](https://github.com/rehman2671/option-chain-trading-platform_updated/pull/144), branch `repair/mega01-critical-platform`. Initial head f956a101 failed both workflow runs; corrective commits recorded in the detailed ledger. Latest branch changes await exact-head verification; no merge approval yet.
-- Hosted Google AI Studio deployment, durable database and Telegram device receipt not verified. No broker order submitted or hosting changes performed.
+- Main `0d7dec455addc2c13271c5869c8eb6439d786fc3`: [PR #144](https://github.com/rehman2671/option-chain-trading-platform_updated/pull/144) merged after exact-head 8c65a26485c29435f70eb98d3d96c9056c02c8a9 CI success: [EMA15M 45449638093](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45449638093), [paper staging 45449638090](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45449638090). Post-merge main runs 45455201591 and 45455201647 in progress at checkpoint.
+- [PR #145](https://github.com/rehman2671/option-chain-trading-platform_updated/pull/145), head de17df2a58bb49e8c172928ecfbbd5143f2ac520: paper staging 45451535534 passed; EMA15M 45451535514 running. Quant candidate evidence and held scheduler execution; not merged.
+- [PR #146](https://github.com/rehman2671/option-chain-trading-platform_updated/pull/146), head 6d6cac78f0e65d67c8a085bbbe1505fb25c7c024: paper staging 45453341738 passed; EMA15M 45453341488 running. Broker risk and read-only reconciliation evidence; not merged.
+- Current independent risk-control batch on repair/mega01-risk-controls-tracker: supervisor reset secret no longer persisted; reset must persist and read back before releasing local halt; disarm preserves position-bearing state; no fictitious broker cancellation/exit actions. New regression test, pending CI. No real orders or hosting changes.
 
 ## Mega-phase dashboard
 
-Counts track acceptance against the new 250-task plan, not all historical development.
+Counts describe planned task scope, not production certification.
 
-| Phase | Scope | Implemented awaiting verification | Partial | Not yet addressed under plan | Accepted |
+| Phase | Scope | Scoped implementation merged with PR CI | Partial across active branches | Outstanding | Full acceptance |
 |---|---:|---:|---:|---:|---:|
-| P01 Critical platform repair | 50 | 12 | 29 | 9 | 0 |
-| P02 Market data and reliability | 50 | Not assessed | Not assessed | Not assessed | 0 |
-| P03 Paper trading and research | 50 | Not assessed | Not assessed | Not assessed | 0 |
-| P04 Adaptive positional | 50 | Not assessed | Not assessed | Not assessed | 0 |
-| P05 Integration and release | 50 | Not assessed | Not assessed | Not assessed | 0 |
+| P01 Critical platform repair | 50 | 12 | 37 | 1 | Pending combined and individual gates |
+| P02 Market data and reliability | 50 | Not assessed | Not assessed | Not assessed | Pending |
+| P03 Paper trading and research | 50 | Not assessed | Not assessed | Not assessed | Pending |
+| P04 Adaptive positional | 50 | Not assessed | Not assessed | Not assessed | Pending |
+| P05 Integration and release | 50 | Not assessed | Not assessed | Not assessed | Pending |
 
-P01 implemented IDs: 07,08,09,11,12,26,34,41,45,46,47,48. Partial: 01–06,10,13–25 except 22–24,27–30,38–40,42–44,49–50. Outstanding: 22,23,24,31,32,33,35,36,37. See detailed ledger for exact mapping. P01-13 advanced from outstanding to partial after atomic manual paper group creation and rollback test. No task accepted until its own evidence gate is verified.
+Merged scoped IDs: 07,08,09,11,12,26,34,41,45,46,47,48. Main alone still has 29 partial and 9 outstanding; proposed combined scope moves 22,23,24,31,32,33,35,36 to partial after #145/#146. P01-37 remains outstanding. No full phase acceptance. P01-30/40 strengthened by current risk-control batch; already counted partial. Do not count the same task twice.
 
 ## Execution and integration priorities
 
 | Priority | Work | State |
 |---|---|---|
-| P0 | Resolve CI failures without weakening gates | Fixes committed; rerun required |
-| P0 | Legacy live route containment, user/account safety | PR #144, pending verification |
-| P0 | Durable unified execution, actual capital/Greeks, contract IDs and fill reconciliation | Outstanding/partial, preserve legacy quarantine |
-| P0 | Atomic paper operations beyond manual group creation, reserve capital/idempotency | Partial |
-| P1 | Telegram deployed runtime, quote accuracy and persistence | Existing source baseline merged; hosted validation pending |
+| P0 | Combined main CI and pending PR integration | In progress; no premature merge |
+| P0 | Supervisor reset secret and local halt integrity | Repair branch pending CI; rotate prior reset credential and review protected historical DB/backups |
+| P0 | Unified gateway, durable intent, atomic reservation, actual Greek/capital evidence | Partial/outstanding; keep legacy live quarantine |
+| P0 | Broker reconciliation evidence | #146 pending; no automated offset or account-flat assertion |
+| P1 | Google AI Studio runtime, Telegram, storage | Actual hosted acceptance pending |
 
 ## External evidence (not a reason to stall independent source repair)
 
