@@ -220,6 +220,13 @@ describe('Phase130 broker NRML SELL and automatic exit route denied until separa
       assert.equal(exits,0);
       assert.equal(claims,0);
       assert.equal(risk,0);
+      // The new replay lookup must fail closed before any otherwise eligible MIS reversal.
+      previous.productType='MIS';
+      mock.method(dbEngine,'hasEmaLiveSignalAttempt',()=>{throw Error('FIXTURE_DB_UNAVAILABLE');});
+      const unavailable=await svc.attemptLiveSignal(signal,contract,100,'PH130-USER');
+      assert.equal(unavailable.status,'PRE_TRADE_REJECTED');
+      assert.match(unavailable.rejectionReason||'',/Durable signal replay evidence unavailable/);
+      assert.equal(exits,0);assert.equal(claims,0);assert.equal(risk,0);
     }finally{mock.restoreAll();}
   });
 

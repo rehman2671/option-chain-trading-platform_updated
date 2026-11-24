@@ -12,6 +12,7 @@ import { StrategyRules } from './strategyRules.js';
 import { ResolvedContract } from './contractResolver.js';
 import { SessionCalendar } from './sessionCalendar.js';
 import { tradeReviewEngine } from '../../../quant/learning/tradeReviewEngine.js';
+import { executePaperSignalOnce } from './paperSignalReplayGuard.js';
 
 export class PaperExecutionService {
   private static instance: PaperExecutionService;
@@ -33,6 +34,20 @@ export class PaperExecutionService {
     contract: ResolvedContract,
     estimatedEntryPrice: number
   ): Promise<{ status: 'FILLED_SIMULATED' | 'HELD' | 'FAILED'; trade?: EmaPaperTrade; message: string }> {
+    try {
+      return executePaperSignalOnce(dbEngine.getRawDatabase(),signal,()=>
+        this.executeClaimedPaperSignal(signal,contract,estimatedEntryPrice));
+    } catch {
+      return {status:'FAILED',message:'Paper signal ledger unavailable'};
+    }
+  }
+
+  private executeClaimedPaperSignal(
+    signal: Ema15mSignal, contract: ResolvedContract, estimatedEntryPrice: number
+  ): {status:'FILLED_SIMULATED'|'HELD'|'FAILED';trade?:EmaPaperTrade;message:string} {
+    if(!Number.isFinite(estimatedEntryPrice)||estimatedEntryPrice<=0||
+       !Number.isSafeInteger(contract.lotSize)||contract.lotSize<=0)
+      return {status:'FAILED',message:'Invalid paper premium or quantity'};
     const timestampStr = new Date().toISOString();
     const inst = signal.instrument;
     const newDirection: 'LONG' | 'SHORT' = signal.signalType === 'BULLISH' ? 'LONG' : 'SHORT';
@@ -43,6 +58,7 @@ export class PaperExecutionService {
       const existingOpen = dbEngine.getOpenEmaPaperTradeByInstrument(inst);
 
       if (existingOpen) {
+        if (existingOpen.productType!=='MIS') return {status:'HELD',trade:existingOpen,message:'Existing non-MIS paper position requires separate positional management'};
         if (existingOpen.direction !== newDirection) {
           // Opposite Crossover Reversal: close the opposing paper trade
           const exitPrice = existingOpen.currentPrice || existingOpen.entryPrice;
