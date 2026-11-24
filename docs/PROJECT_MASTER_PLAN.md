@@ -81,3 +81,7 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 ## Owner binding and runtime recovery checkpoint — 2026-11-25 IST
 
 #152 merged with both exact-head workflows successful; #151 closed as superseded. Main 050e0acdac18c9f812ebb72eb9a116a589721cd7. #153 repaired paper staging passed; full/invariant CI pending. New [owner binding and recovery batch](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) integrates normal runtime SQLite schema, explicit deployment-owned account mapping, owner-only authenticated recovery and unresolved account quarantine. No live dispatch/release authority. Existing 250-task scope and Google AI Studio architecture unchanged.
+
+## Authenticated candidate journal integration — 2026-11-25 IST
+
+#153 passed both exact-head workflows but conflicts with latest main documents. Consolidate its native broker and projected risk code with #154 owner-bound runtime recovery on the same #154 base, retaining all source/tests and detailed ledgers. [Authenticated candidate journal](MEGA_PHASE_01_AUTHENTICATED_CANDIDATE_JOURNAL.md) joins explicit server policy, active session, exact listing, projected risk and immutable receipt with atomic reservation. #154 regression still running. No scope expansion or live dispatch. Five phases/250 tasks unchanged; main 12 scoped merged, 38 partial, zero untouched.
