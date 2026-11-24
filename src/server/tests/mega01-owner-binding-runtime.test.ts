@@ -61,3 +61,48 @@ test('actual runtime schema and recovery adapter preserve owner scope and reject
   else process.env.BROKER_PREPARATION_OWNER_MAP=priorMapping;
  }
 });
+
+test('HTTP recovery requires original authenticated session and ignores client account overrides',async()=>{
+ const {default:express}=await import('express');
+ const {authRouter,setAuthCookie}=await import('../auth.js');
+ const {activeProvider}=await import('../engine/providers/index.js');
+ const provider=activeProvider as unknown as Record<string,unknown>;
+ const beforeStatus=provider.getLiveConnectionStatus,beforeEpoch=provider.getBrokerAuthEpoch;
+ const db=new Database(':memory:');
+ const engine=dbEngine as unknown as {db:Database.Database|null};
+ const prior=engine.db,priorMapping=process.env.BROKER_PREPARATION_OWNER_MAP;
+ const app=express();
+ app.use('/api/auth',authRouter);
+ const server=app.listen(0,'127.0.0.1');
+ try{
+  await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});
+  const address=server.address();
+  if(!address||typeof address==='string')throw Error('Fixture HTTP address unavailable');
+  const url='http://127.0.0.1:'+address.port+'/api/auth/broker-preparation/recovery';
+  engine.db=db;
+  db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT,role TEXT,is_active INTEGER,session_version INTEGER)');
+  db.prepare('INSERT INTO users VALUES(?,?,?,?,?)').run('owner-a','owner-a@example.invalid','OPERATOR',1,2);
+  db.prepare('INSERT INTO users VALUES(?,?,?,?,?)').run('owner-b','owner-b@example.invalid','OPERATOR',1,2);
+  initEntryPreparationJournal(db);
+  process.env.BROKER_PREPARATION_OWNER_MAP=mapping;
+  provider.getLiveConnectionStatus=()=>({isConnected:true,userId:'acct-a'});
+  provider.getBrokerAuthEpoch=()=>3;
+  const token=(id:string)=>{const user=dbEngine.findUserById(id);assert.ok(user);return setAuthCookie({cookie:()=>{}} as unknown as import('express').Response,user);};
+  const a=token('owner-a'),b=token('owner-b');
+  const get=(t?:string)=>fetch(url+'?accountId=acct-b&ownerId=owner-b',{headers:t?{Authorization:'Bearer '+t}:{}});
+  assert.equal((await get()).status,401);
+  assert.equal((await get(b)).status,403);
+  const ok=await get(a);assert.equal(ok.status,200);assert.equal(ok.headers.get('cache-control'),'no-store');
+  assert.equal((await ok.json()).status,'EMPTY');
+  db.prepare('UPDATE users SET session_version=3 WHERE id=?').run('owner-a');
+  assert.equal((await get(a)).status,401);
+  const updated=token('owner-a');provider.getLiveConnectionStatus=()=>({isConnected:false});
+  assert.equal((await get(updated)).status,503);
+ }finally{
+  provider.getLiveConnectionStatus=beforeStatus;provider.getBrokerAuthEpoch=beforeEpoch;
+  engine.db=prior;db.close();
+  if(priorMapping===undefined)delete process.env.BROKER_PREPARATION_OWNER_MAP;
+  else process.env.BROKER_PREPARATION_OWNER_MAP=priorMapping;
+  server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));
+ }
+});
