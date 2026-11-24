@@ -13,6 +13,7 @@ import {
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import {assessBrokerCapitalReleaseReview,type ReleaseReview} from '../../release/brokerCapitalReleaseReview.js';
 import {buildBoundBrokerEntryEvidence,validBrokerEntryIdentity,type BoundBrokerEntryEvidence,type BrokerEntryIdentity} from '../../release/boundBrokerEntryEvidence.js';
 import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
 import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
@@ -904,6 +905,21 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Caller must independently authenticate ownership of the persisted intent.
    * No order POST, retry, offset or position closure is authorized.
    */
+  public async getBrokerCapitalReleaseReview(expectedAccount:string,expectedEpoch:number,intent:OrderIntentEvidence):Promise<ReleaseReview>{
+    const unknown:ReleaseReview={status:'UNKNOWN',reason:'ACCOUNT_SESSION_OR_READS_UNAVAILABLE',capitalReleaseAuthorized:false,retryAuthorized:false,accountFlatCertified:false};
+    const session=this.captureRiskReadIdentity();
+    if(!session||session.accountId!==expectedAccount||session.authEpoch!==expectedEpoch||!validOrderIntent(intent))return unknown;
+    const frozen={...intent};const startedAt=Date.now();
+    try{
+      const [detail,trades,positions,orders,gtt]=await Promise.all([this.getOrderDetails(frozen.orderId),this.getOrderTrades(frozen.orderId),
+        this.getVerifiedNrmlPositionRows(),this.getOrderBook(),this.getGttOrders()]);
+      if(!this.currentRiskReadIdentity(session))return unknown;
+      const receivedAt=Date.now();
+      return assessBrokerCapitalReleaseReview({accountId:session.accountId,authEpoch:session.authEpoch,intent:frozen,
+        startedAt,receivedAt,detail,trades,positions,orders,gtt},expectedAccount,expectedEpoch,receivedAt);
+    }catch{return unknown;}
+  }
+
   public async getVerifiedOrderReconciliation(intent: OrderIntentEvidence): Promise<OrderEvidence> {
     const frozen={...intent};
     const unavailable=()=>reconcileOrderEvidence(frozen,null,null);
