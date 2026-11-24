@@ -2,6 +2,7 @@ name: EMA15M safety checks
 on:
   push:
     branches:
+      - main
       - codex
       - 'research/adaptive-v2-historical-comparison'
       - 'research/adaptive-v2-evidence-capture'
