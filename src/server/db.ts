@@ -681,8 +681,9 @@ class DatabaseEngine {
     if (!this.db) return;
     try {
       const uId = userId || (pos as any).userId || null;
-      const existing = this.db.prepare(`SELECT id FROM paper_positions WHERE id = ?`).get(pos.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM paper_positions WHERE id = ?`).get(pos.id) as {id:string;user_id:string|null}|undefined;
       if (existing) {
+        if (existing.user_id !== uId) throw Error('PAPER_POSITION_OWNER_MISMATCH');
         this.db.prepare(
           `UPDATE paper_positions SET current_price = ?, pnl = ?, stop_loss = ?, target_price = ?, status = ?, closed_at = ?, exit_price = ?, close_reason = ?, leg_label = ?, lot_size = ?, user_id = COALESCE(?, user_id) WHERE id = ?`
         ).run(
@@ -745,7 +746,7 @@ class DatabaseEngine {
       let info;
       if (userId) {
         info = this.db.prepare(
-          `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN' AND (user_id = ? OR user_id IS NULL)`
+          `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN' AND user_id = ?`
         ).run(now, exitPrice, closePnl, reason, id, userId);
       } else {
         info = this.db.prepare(
@@ -777,7 +778,7 @@ class DatabaseEngine {
     try {
       const now = new Date().toISOString();
       const openPositions = this.db.prepare(
-        `SELECT * FROM paper_positions WHERE strategy_group_id = ? AND status = 'OPEN' ${userId ? 'AND (user_id = ? OR user_id IS NULL)' : ''}`
+        `SELECT * FROM paper_positions WHERE strategy_group_id = ? AND status = 'OPEN' ${userId ? 'AND user_id = ?' : ''}`
       ).all(...(userId ? [groupId, userId] : [groupId])) as any[];
 
       let info;
@@ -789,7 +790,7 @@ class DatabaseEngine {
                exit_price = current_price, 
                pnl = CASE WHEN action = 'BUY' THEN ROUND((current_price - entry_price) * quantity, 2) ELSE ROUND((entry_price - current_price) * quantity, 2) END,
                close_reason = ? 
-           WHERE strategy_group_id = ? AND status = 'OPEN' AND (user_id = ? OR user_id IS NULL)`
+           WHERE strategy_group_id = ? AND status = 'OPEN' AND user_id = ?`
         ).run(now, reason, groupId, userId);
       } else {
         info = this.db.prepare(
@@ -839,11 +840,17 @@ class DatabaseEngine {
   /**
    * Clear paper trading positions from SQLite (by user_id if provided)
    */
+  /** Strictly account-scoped API reset; never includes anonymous or other users. */
+  public clearUserPaperPositions(userId: string): number {
+    if (!this.db || typeof userId !== 'string' || !userId.trim()) throw Error('PAPER_RESET_ACCOUNT_REQUIRED');
+    return this.db.prepare('DELETE FROM paper_positions WHERE user_id = ?').run(userId).changes;
+  }
+
   public clearAllPaperPositions(userId?: string | null): void {
     if (!this.db) return;
     try {
       if (userId) {
-        this.db.prepare(`DELETE FROM paper_positions WHERE user_id = ? OR user_id IS NULL`).run(userId);
+        this.db.prepare(`DELETE FROM paper_positions WHERE user_id = ?`).run(userId);
       } else {
         this.db.prepare(`DELETE FROM paper_positions`).run();
       }
@@ -865,7 +872,7 @@ class DatabaseEngine {
         rows = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, expiry, user_id 
            FROM paper_positions 
-           WHERE status = 'OPEN' AND (user_id = ? OR user_id IS NULL)
+           WHERE status = 'OPEN' AND user_id = ?
            ORDER BY opened_at DESC`
         ).all(userId) as any[];
       } else {
@@ -971,7 +978,7 @@ class DatabaseEngine {
         rows = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
            FROM paper_positions 
-           WHERE user_id = ? OR user_id IS NULL 
+           WHERE user_id = ? 
            ORDER BY opened_at DESC 
            LIMIT ? OFFSET ?`
         ).all(userId, clampedLimit, safeOffset) as any[];
@@ -1035,7 +1042,7 @@ class DatabaseEngine {
         row = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
            FROM paper_positions 
-           WHERE id = ? AND (user_id = ? OR user_id IS NULL)`
+           WHERE id = ? AND user_id = ?`
         ).get(id, userId);
       } else {
         row = this.db.prepare(
@@ -2561,7 +2568,8 @@ class DatabaseEngine {
     if (!this.db) return;
     try {
       const uId = userId || strat.userId || null;
-      const existing = this.db.prepare(`SELECT id FROM autonomous_strategies WHERE id = ?`).get(strat.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM autonomous_strategies WHERE id = ?`).get(strat.id) as {id:string;user_id:string|null}|undefined;
+      if (existing && existing.user_id !== uId) throw Error('AUTONOMOUS_STRATEGY_OWNER_MISMATCH');
       const legsJson = JSON.stringify(strat.legs || []);
       const entryRulesJson = JSON.stringify(strat.entryRules || {});
       const adjRulesJson = strat.adjustmentRules ? JSON.stringify(strat.adjustmentRules) : null;
@@ -2844,7 +2852,7 @@ class DatabaseEngine {
           this.db.prepare(`
             UPDATE users
             SET email = lower(?), name = ?, role = ?, email_verified = 1,
-                password_hash = ?, is_active = 1
+                password_hash = ?
             WHERE id = ?
           `).run(email, name, account.role, passwordHash, existing.id);
         } else {
