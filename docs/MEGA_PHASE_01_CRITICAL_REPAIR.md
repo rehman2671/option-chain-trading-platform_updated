@@ -69,3 +69,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 ## Runtime recovery continuation — 2026-11-25 IST
 
 #152 merged with both exact-head workflows passed; #151 closed as superseded. #153 repaired paper staging passed, full regression pending. [Owner binding and runtime recovery](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) records new runtime schema initialization, authenticated owner-only recovery endpoint, account-wide unresolved reservation quarantine, regression fixtures and configuration constraints. Main counts 12 scoped merged / 38 partial / 0 untouched. No full phase acceptance or authorization to dispatch/release. This checkpoint supersedes earlier pending #152 status.
+
+## Combined candidate risk and owner-bound journal continuation — 2026-11-25 IST
+
+#153 exact-head CI passed but documentation conflict prevents independent merge; combined branch on #154 head preserves both packages and test history (all #153 source/test changes copied, detailed reports retained). #154 paper staging and production build passed, full/invariant running. [Authenticated candidate journal](MEGA_PHASE_01_AUTHENTICATED_CANDIDATE_JOURNAL.md) adds server-only risk policy, original-session binding, exact candidate receipt and atomic reservation, rollback and restart tests. One unresolved preparation per account pending independent release. This is non-dispatch internal integration, no live order authority. Main remains 12 scoped merged / 38 partial / 0 untouched. No full acceptance; fresh combined CI required.
