@@ -237,12 +237,6 @@ export class LiveExecutionService {
       };
     }
 
-    // A replay of an already attempted signal must not trigger reversal SELL either.
-    if (dbEngine.hasEmaLiveSignalAttempt(signal.id)) return {
-      enabled:true,status:'HELD',requestedQuantity:quantity,filledQuantity:0,
-      positionCreated:false,message:'Prior durable live signal attempt exists; no automatic replay.'
-    };
-
     // 1. Check if an active live position already exists on this instrument
     const existingLivePos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
     if (existingLivePos) {
@@ -261,6 +255,20 @@ export class LiveExecutionService {
           message: existingExitGate.reason || 'Existing NRML position requires broker reconciliation.'
         };
       }
+    }
+
+    // Reject ineligible existing products first, then require the durable
+    // replay lookup before either reversal SELL or replacement BUY.
+    try {
+      if (dbEngine.hasEmaLiveSignalAttempt(signal.id)) return {
+        enabled:true,status:'HELD',requestedQuantity:quantity,filledQuantity:0,
+        positionCreated:false,message:'Prior durable live signal attempt exists; no automatic replay.'
+      };
+    } catch {
+      return refuseAutomaticEntry('Durable signal replay evidence unavailable; no automatic reversal or entry.');
+    }
+
+    if (existingLivePos) {
       const isOpposite = (signal.signalType === 'BULLISH' && existingLivePos.optionType === 'PE') ||
                          (signal.signalType === 'BEARISH' && existingLivePos.optionType === 'CE');
 
