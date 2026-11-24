@@ -11,6 +11,8 @@ import {
   OptionContractQuote
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
+import {exactCivilDate,nativeTradeTimestamp,parseNativeOptionChain} from './nativeMarketDataValidation.js';
+import {brokerNumber} from '../../release/brokerAccountRiskEvidence.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
 import {underlyingKeys,validListedOptionRequest,verifyExactListedOption,type ListedOptionRequest,type ListedOptionEvidence} from '../../release/exactListedOptionEvidence.js';
@@ -106,88 +108,38 @@ export class UpstoxProvider implements IMarketDataProvider {
   }
 
   public async connect(): Promise<ProviderHealthStatus> {
-    // Invalidate a pinned historical session BEFORE changing credentials.
-    this.historicalFoAuthEpoch++;
-    this.apiKey = process.env.UPSTOX_API_KEY || '';
-    this.accessToken = process.env.UPSTOX_ACCESS_TOKEN || process.env.UPSTOX_TOKEN || '';
-
-    // Initialize practice fallback as backup
-    await this.practiceFallback.connect();
-
-    if (!this.accessToken) {
-      this.isConnected = false;
-      this.historicalFoAuthEpoch++;
-      this.statusMessage = 'Upstox Token not set in .env. Real-time calibrated NSE/MCX Practice Mode active.';
-      return {
-        mode: 'LIVE',
-        connected: false,
-        message: this.statusMessage,
-        subSources: {
-          upstoxBroker: { connected: false, message: this.statusMessage }
-        }
-      };
+    const epoch=++this.historicalFoAuthEpoch;
+    // Immediately revoke previous identity. A slow prior connect may never
+    // restore an older account/token after a newer connection attempt.
+    this.isConnected=false;this.userId='';this.userName='';
+    this.apiKey=process.env.UPSTOX_API_KEY||'';
+    const token=process.env.UPSTOX_ACCESS_TOKEN||process.env.UPSTOX_TOKEN||'';
+    this.accessToken=token;
+    const result=():ProviderHealthStatus=>({mode:'LIVE',connected:this.isConnected,message:this.statusMessage,
+      subSources:{upstoxBroker:{connected:this.isConnected,message:this.statusMessage}}});
+    this.statusMessage='Upstox profile verification pending';
+    try{
+      await this.practiceFallback.connect();
+      if(this.historicalFoAuthEpoch!==epoch||this.accessToken!==token)return result();
+      if(!token){this.statusMessage='Upstox token unavailable; modeled fallback only';return result();}
+      const res=await fetch('https://api.upstox.com/v2/user/profile',{
+        signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+token,Accept:'application/json'}});
+      if(this.historicalFoAuthEpoch!==epoch||this.accessToken!==token)return result();
+      if(!res.ok){this.statusMessage='Upstox profile unavailable (HTTP '+res.status+')';return result();}
+      const json:any=await res.json();
+      if(this.historicalFoAuthEpoch!==epoch||this.accessToken!==token)return result();
+      if(json?.status!=='success'||typeof json.data?.user_id!=='string'||!json.data.user_id.trim()){
+        this.statusMessage='Upstox profile identity not verified';return result();
+      }
+      this.userId=json.data.user_id;this.userName=typeof json.data.user_name==='string'?json.data.user_name:this.userId;
+      this.isConnected=true;this.statusMessage='Upstox profile authenticated';
+      return result();
+    }catch{
+      if(this.historicalFoAuthEpoch===epoch&&this.accessToken===token){
+        this.isConnected=false;this.statusMessage='Upstox profile verification unavailable';
+      }
+      return result();
     }
-
-    try {
-      const res = await fetch('https://api.upstox.com/v2/user/profile', {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!res.ok) {
-        if (res.status === 401) {
-          this.isConnected = false;
-          this.historicalFoAuthEpoch++;
-          this.statusMessage = 'Upstox session expired or invalid (HTTP 401). Real-time calibrated market feed active.';
-          console.warn(`[UPSTOX PROVIDER] ${this.statusMessage}`);
-          return {
-            mode: 'LIVE',
-            connected: false,
-            message: this.statusMessage,
-            subSources: {
-              upstoxBroker: { connected: false, message: this.statusMessage }
-            }
-          };
-        }
-        const errText = await res.text();
-        throw new Error(`Upstox HTTP ${res.status}: ${errText}`);
-      }
-
-      const json: any = await res.json();
-      if (json.status === 'success' && json.data) {
-        this.isConnected = true;
-        this.userId = json.data.user_id || '';
-        this.userName = json.data.user_name || this.userId;
-        this.statusMessage = `Connected to Upstox API v2 (${this.userName} - ${this.userId})`;
-        console.log(`[UPSTOX PROVIDER] Successfully authenticated as ${this.userName}`);
-      } else {
-        this.isConnected = false;
-        this.statusMessage = `Upstox auth warning: ${json.errors?.[0]?.message || 'Invalid session'}`;
-        console.warn(`[UPSTOX PROVIDER] ${this.statusMessage}`);
-      }
-    } catch (err: any) {
-      this.isConnected = false;
-      this.statusMessage = `Upstox feed notice: ${err.message || err}. Real-time backup feed active.`;
-      console.warn('[UPSTOX PROVIDER] Notice:', this.statusMessage);
-    }
-
-    // The async authentication result also invalidates a historical
-    // snapshot that began while profile verification was pending.
-    this.historicalFoAuthEpoch++;
-    return {
-      mode: 'LIVE',
-      connected: this.isConnected,
-      message: this.statusMessage,
-      subSources: {
-        upstoxBroker: {
-          connected: this.isConnected,
-          lastRefresh: new Date().toISOString(),
-          message: this.statusMessage
-        }
-      }
-    };
   }
 
   public async getUnderlyingQuotes(symbols: string[]): Promise<Map<string, UnderlyingQuote>> {
@@ -237,7 +189,7 @@ export class UpstoxProvider implements IMarketDataProvider {
               }
             }
 
-            if (quote && typeof quote.last_price === 'number' && quote.last_price > 0) {
+            if (quote && typeof quote.last_price === 'number' && Number.isFinite(quote.last_price) && quote.last_price > 0) {
               resultMap.set(sym, {
                 symbol: sym,
                 spot: quote.last_price,
@@ -246,10 +198,7 @@ export class UpstoxProvider implements IMarketDataProvider {
                 available: true,
                 timestamp: new Date().toISOString(),
                 source: 'UPSTOX_LIVE',
-                exchangeTimestamp: Number.isFinite(Number(quote.last_trade_time)) &&
-                  Number(quote.last_trade_time) > 0
-                  ? new Date(Number(quote.last_trade_time)).toISOString()
-                  : undefined
+                exchangeTimestamp: nativeTradeTimestamp(quote.last_trade_time,Date.now())
               });
             }
           }
@@ -281,144 +230,40 @@ export class UpstoxProvider implements IMarketDataProvider {
     expiry: string,
     strikes: number[]
   ): Promise<Map<string, { ce: OptionContractQuote; pe: OptionContractQuote }>> {
-    let resultMap = new Map<string, { ce: OptionContractQuote; pe: OptionContractQuote }>();
-
-    // If Upstox isn't authenticated or is a commodity, delegate to calibrated fallback
-    if (!this.isConnected || !this.accessToken || COMMODITY_SYMBOLS.has(symbol)) {
-      return this.practiceFallback.getOptionChainQuotes(symbol, expiry, strikes);
-    }
-
-    try {
-      const instKey = this.symbolInstrumentKeyMap[symbol] || `NSE_INDEX|${symbol}`;
-      let formattedExpiry = expiry;
-      if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-        const d = new Date(expiry);
-        if (!isNaN(d.getTime())) {
-          formattedExpiry = d.toISOString().split('T')[0];
+    const empty=()=>new Map<string,{ce:OptionContractQuote;pe:OptionContractQuote}>();
+    if(!exactCivilDate(expiry)||!Array.isArray(strikes)||strikes.some(x=>!Number.isFinite(x)||x<=0))return empty();
+    const session=this.captureRiskReadIdentity();
+    const instKey=this.symbolInstrumentKeyMap[symbol];
+    if(!session||!instKey||COMMODITY_SYMBOLS.has(symbol))return this.practiceFallback.getOptionChainQuotes(symbol,expiry,strikes);
+    try{
+      const res=await fetch('https://api.upstox.com/v2/option/chain?instrument_key='+encodeURIComponent(instKey)+'&expiry_date='+encodeURIComponent(expiry),{
+        signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+session.bearerToken,Accept:'application/json'}});
+      if(res.ok&&this.currentRiskReadIdentity(session)){
+        const raw=await res.json();
+        if(this.currentRiskReadIdentity(session)){
+          const result=parseNativeOptionChain(raw,instKey,expiry,strikes,Date.now());
+          if(result.size>0)return result;
         }
       }
-
-      // 1st Try: query with specific formattedExpiry
-      let url = `https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(instKey)}${formattedExpiry ? `&expiry_date=${formattedExpiry}` : ''}`;
-      let res = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      // 2nd Try: If specific expiry returns 400 or empty, try without expiry_date parameter (defaults to nearest active)
-      if (!res.ok) {
-        url = `https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(instKey)}`;
-        res = await fetch(url, {
-          headers: {
-            'Authorization': `Bearer ${this.accessToken}`,
-            'Accept': 'application/json'
-          }
-        });
-      }
-
-      if (res.ok) {
-        const json: any = await res.json();
-        const chainItems: any[] = json?.data || [];
-
-        const targetStrikeSet = new Set(strikes.map(s => Math.round(s)));
-
-        for (const item of chainItems) {
-          const strike = Math.round(item.strike_price || 0);
-          if (targetStrikeSet.size > 0 && !targetStrikeSet.has(strike)) {
-            continue;
-          }
-
-          const call = item.call_options || {};
-          const put = item.put_options || {};
-
-          const callData = call.market_data || {};
-          const putData = put.market_data || {};
-
-          const callGreeks = call.option_greeks || {};
-          const putGreeks = put.option_greeks || {};
-
-          const ceQuote: OptionContractQuote = {
-            strikePrice: strike,
-            optionType: 'CE',
-            ltp: Number(callData.ltp) || 0,
-            oi: Number(callData.oi) || 0,
-            volume: Number(callData.volume) || 0,
-            changeInOI: Number(callData.oi || 0) - Number(callData.prev_oi || callData.oi || 0),
-            pChangeInOI: callData.prev_oi && callData.prev_oi > 0
-              ? Number((((callData.oi - callData.prev_oi) / callData.prev_oi) * 100).toFixed(2))
-              : 0,
-            iv: Number(callGreeks.iv) || 0,
-            bidPrice: callData.bid_price ? Number(callData.bid_price) : undefined,
-            askPrice: callData.ask_price ? Number(callData.ask_price) : undefined,
-            ltpAvailable: typeof callData.ltp === 'number' && callData.ltp > 0,
-            oiAvailable: typeof callData.oi === 'number',
-            volumeAvailable: typeof callData.volume === 'number',
-            changeInOIAvailable: true,
-            ivAvailable: typeof callGreeks.iv === 'number' && callGreeks.iv > 0
-          };
-
-          const peQuote: OptionContractQuote = {
-            strikePrice: strike,
-            optionType: 'PE',
-            ltp: Number(putData.ltp) || 0,
-            oi: Number(putData.oi) || 0,
-            volume: Number(putData.volume) || 0,
-            changeInOI: Number(putData.oi || 0) - Number(putData.prev_oi || putData.oi || 0),
-            pChangeInOI: putData.prev_oi && putData.prev_oi > 0
-              ? Number((((putData.oi - putData.prev_oi) / putData.prev_oi) * 100).toFixed(2))
-              : 0,
-            iv: Number(putGreeks.iv) || 0,
-            bidPrice: putData.bid_price ? Number(putData.bid_price) : undefined,
-            askPrice: putData.ask_price ? Number(putData.ask_price) : undefined,
-            ltpAvailable: typeof putData.ltp === 'number' && putData.ltp > 0,
-            oiAvailable: typeof putData.oi === 'number',
-            volumeAvailable: typeof putData.volume === 'number',
-            changeInOIAvailable: true,
-            ivAvailable: typeof putGreeks.iv === 'number' && putGreeks.iv > 0
-          };
-
-          resultMap.set(strike.toString(), { ce: ceQuote, pe: peQuote });
-        }
-      }
-    } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getOptionChainQuotes error:', err.message || err);
-    }
-
-    // If Upstox returned no chain rows or failed, fallback to Practice generator so UI is populated
-    if (resultMap.size === 0) {
-      resultMap = await this.practiceFallback.getOptionChainQuotes(symbol, expiry, strikes);
-    }
-
-    return resultMap;
+    }catch{}
+    // Never replace a requested expiry with another live contract. Fallback
+    // is explicitly modeled by PracticeModeProvider and has no live authority.
+    return this.practiceFallback.getOptionChainQuotes(symbol,expiry,strikes);
   }
 
   public async getAvailableMargin(): Promise<{ available: number; source: 'LIVE' | 'PRACTICE' }> {
-    if (!this.isConnected || !this.accessToken) {
-      return { available: 1000000, source: 'PRACTICE' };
-    }
-
-    try {
-      const res = await fetch('https://api.upstox.com/v2/user/get-funds-and-margin', {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      if (res.ok) {
-        const json: any = await res.json();
-        const equityMargin = json?.data?.equity?.available_margin || json?.data?.sec?.available_margin;
-        if (typeof equityMargin === 'number') {
-          return { available: equityMargin, source: 'LIVE' };
-        }
+    const session=this.captureRiskReadIdentity();
+    if(!session)return {available:1000000,source:'PRACTICE'};
+    try{
+      const res=await fetch('https://api.upstox.com/v2/user/get-funds-and-margin',{
+        signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+session.bearerToken,Accept:'application/json'}});
+      if(res.ok&&this.currentRiskReadIdentity(session)){
+        const raw:any=await res.json();
+        const value=brokerNumber(raw?.data?.equity?.available_margin);
+        if(this.currentRiskReadIdentity(session)&&raw?.status==='success'&&value!==null&&value>=0)return {available:value,source:'LIVE'};
       }
-    } catch (err: any) {
-      console.error('[UPSTOX PROVIDER] getAvailableMargin error:', err.message || err);
-    }
-
-    return { available: 1000000, source: 'PRACTICE' };
+    }catch{}
+    return {available:1000000,source:'PRACTICE'};
   }
 
   /**
