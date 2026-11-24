@@ -40,10 +40,27 @@ export class DrawdownController {
   public evaluateDrawdown(currentCapital: number, peakCapital?: number, userId?: string | null): DrawdownControlStatus {
     const key = this.resolveKey(userId);
     let userState = this.userStates.get(key);
+    // Nonfinite or missing peak evidence must never become a safe numeric tier.
+    // Retain the last valid observation and latch a halt; do not invent a new peak.
+    if (!Number.isFinite(currentCapital) || (peakCapital !== undefined &&
+        (!Number.isFinite(peakCapital) || peakCapital <= 0)) ||
+        (!userState && peakCapital === undefined && currentCapital <= 0)) {
+      if (!userState) {
+        userState = {peakCapital:0,currentCapital:0,isHalted:true};
+        this.userStates.set(key,userState);
+      }
+      userState.isHalted=true;
+      if(key==='GLOBAL')this.isTradingHalted=true;
+      const loss=Math.max(0,userState.peakCapital-userState.currentCapital);
+      return {tier:'CRITICAL_DD',currentDrawdownPct:userState.peakCapital>0?Math.round(loss/userState.peakCapital*1000)/10:0,
+        peakCapital:userState.peakCapital,currentCapital:userState.currentCapital,lossFromPeak:loss,
+        sizingMultiplier:0,isHalted:true,requiresManualReset:true,
+        recoveryActionPlan:'Invalid or unavailable drawdown inputs; halt latched. Last known values only; account evidence not verified.',diagnosticChecks:[]};
+    }
     if (!userState) {
       userState = {
-        peakCapital: peakCapital || currentCapital || 500000,
-        currentCapital: currentCapital || 500000,
+        peakCapital: peakCapital ?? currentCapital,
+        currentCapital,
         isHalted: false
       };
       this.userStates.set(key, userState);
@@ -86,6 +103,12 @@ export class DrawdownController {
       recoveryActionPlan = 'Moderate drawdown (-' + currentDrawdownPct.toFixed(1) + '%). Defensively halving maximum risk budget per trade.';
     }
 
+    const halted = userState.isHalted || this.isTradingHalted;
+    if (halted) {
+      sizingMultiplier=0;
+      recoveryActionPlan='Trading halt remains latched; verified recovery and authorized reset required.';
+    }
+
     // No external diagnostic evidence is collected here; never fabricate PASS results.
     const diagnosticChecks: DrawdownControlStatus['diagnosticChecks'] = [];
 
@@ -96,8 +119,8 @@ export class DrawdownController {
       currentCapital: userState.currentCapital,
       lossFromPeak,
       sizingMultiplier,
-      isHalted: userState.isHalted || this.isTradingHalted,
-      requiresManualReset: tier === 'CRITICAL_DD',
+      isHalted: halted,
+      requiresManualReset: halted,
       recoveryActionPlan,
       diagnosticChecks
     };
