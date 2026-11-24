@@ -45,3 +45,9 @@ Test coverage added: pure mode and basket validation, read-only drawdown project
 
 ## Merge rule
 Require both exact-head EMA15M safety and paper staging RC workflows complete success (including full regression and lint). Do not modify tests to bypass real safety requirements. If failed, fix or isolate within this mega phase; no arbitrary live release. After merge verify main combined CI. External release issues #17–#22 remain open.
+
+## Integration checkpoint — 2026-11-24
+
+PR #144 exact head 8c65a26485c29435f70eb98d3d96c9056c02c8a9 passed both workflow runs 45449638093 and 45449638090; merged to main 0d7dec455addc2c13271c5869c8eb6439d786fc3. The original scope table remains the historical #144 ledger. Its 12 scoped implementations/tests are merged with PR CI; main combined CI is still pending. Independent #145/#146 advance 22,23,24,31,32,33,35,36 to partial in proposed combined scope only. P01-37 requires actual complete account Greek evidence. Combined proposed counts 12 scoped merged, 37 partial, 1 outstanding, no phase acceptance. See PROJECT_PROGRESS_TRACKER.md for current statuses.
+
+Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset readback, no supervisor secret stored in operator field, truthful local halt action labels and preservation of autonomous position-bearing state when disarmed. No broker cancellation/exit or live release implied. Existing DB or backup rows may contain a former reset secret; owner should rotate QUANT_SUPERVISOR_RESET_KEY via the existing secret settings, review protected historical records and backups, and not expose credentials. No production data accessed or modified. Persistent drawdown, actual portfolio Greek inputs, unified live gateway, account isolation and atomic risk reservations remain open. Regression test added; exact-head CI required before merge.
