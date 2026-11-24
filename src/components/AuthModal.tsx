@@ -114,10 +114,10 @@ export const AuthModal: React.FC = () => {
     setSubmitting(true);
     try {
       const res = await resetPassword(resetToken, newPassword);
-      setSuccessMsg(res.message || 'Password reset successfully!');
-      setTimeout(() => {
-        setAuthModalOpen(false);
-      }, 1500);
+      setNewPassword('');
+      setConfirmPassword('');
+      setPassword('');
+      setSuccessMsg(res.message || 'Password reset successfully. Please log in.');
     } catch (err: any) {
       setError(err.message || 'Failed to reset password');
     } finally {
