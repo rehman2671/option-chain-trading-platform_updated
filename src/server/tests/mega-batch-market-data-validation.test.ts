@@ -37,3 +37,20 @@ test('replay statistics distinguish unavailable ratios and never claim validatio
  assert.equal(replayStatistics([Infinity],'seed'),null);
  assert.equal(replayStatistics([100],'seed')?.bootstrap,null);
 });
+
+test('walk-forward and Monte Carlo never manufacture evidence from missing samples',async()=>{
+ const {walkForwardEngine}=await import('../../quant/research/walkForwardEngine.js');
+ const {monteCarloEngine}=await import('../../quant/research/monteCarloEngine.js');
+ const wf=walkForwardEngine.runWalkForward('fixture',4);
+ assert.equal(wf.passed,false);assert.equal(wf.windowsCount,0);assert.equal(wf.evidenceStatus,'NO_INDEPENDENT_OOS');
+ for(const sample of [[],[1],[1,2,3,NaN]]){
+  const result=monteCarloEngine.runSimulation('fixture',2000,sample);
+  assert.equal(result.simulationsCount,0);assert.equal(result.evidenceStatus,'NO_TRADE_SAMPLE');
+ }
+ const sample=[100,-40,0,30,-20];
+ const result=monteCarloEngine.runSimulation('fixture',500,sample);
+ assert.equal(result.evidenceStatus,'INPUT_SAMPLE_BOOTSTRAP');assert.equal(result.sampleSize,5);
+ assert.deepEqual(result,monteCarloEngine.runSimulation('fixture',500,sample));
+ assert.ok(result.percentile5Pnl<=result.percentile50Pnl&&result.percentile50Pnl<=result.percentile95Pnl);
+ assert.equal(monteCarloEngine.runSimulation('fixture',10001,sample).simulationsCount,0);
+});
