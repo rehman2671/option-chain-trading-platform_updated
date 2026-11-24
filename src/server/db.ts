@@ -2985,6 +2985,25 @@ class DatabaseEngine {
     `).run(token, expiresAt, userId);
   }
 
+  /** Invalidate only the undelivered token; never clear a newer request. */
+  public clearResetTokenIfMatches(userId: string, digest: string): void {
+    if (!this.db) return;
+    this.db.prepare(`
+      UPDATE users SET reset_token = NULL, reset_token_expires_at = NULL
+      WHERE id = ? AND reset_token = ?
+    `).run(userId, digest);
+  }
+
+  /** Atomic consume + password change: a concurrent reset or disabled account cannot win. */
+  public consumeResetToken(userId: string, digest: string, passwordHash: string, now: string): boolean {
+    if (!this.db) return false;
+    return this.db.prepare(`
+      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL
+      WHERE id = ? AND reset_token = ? AND is_active = 1 AND password_hash IS NOT NULL
+        AND julianday(reset_token_expires_at) > julianday(?)
+    `).run(passwordHash, userId, digest, now).changes === 1;
+  }
+
   public updatePassword(userId: string, passwordHash: string): void {
     if (!this.db) return;
     this.db.prepare(`
