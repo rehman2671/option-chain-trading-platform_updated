@@ -232,9 +232,11 @@ export class BasketExecutionEngine {
         reconciliationNotes: 'Simulated fills matched with strategy parameters.'
       };
 
-      this.activeBaskets.set(basketId, dryRunRecord);
       dbEngine.saveBasketOrder(dryRunRecord, userId);
-      return dryRunRecord;
+      const persisted = userId ? dbEngine.getBasketOrderForUser(basketId,userId) : null;
+      if (!persisted || persisted.status!=='COMPLETED' || persisted.legs.length!==dryRunRecord.legs.length) return {...dryRunRecord,status:'FAILED',reconciliationStatus:'MISMATCH_DETECTED',reconciliationNotes:'Simulation ledger persistence unconfirmed'};
+      this.activeBaskets.set(basketId, dryRunRecord);
+      return persisted;
     }
 
     // REAL LIVE BROKER EXECUTION VIA UPSTOX API V2
