@@ -65,4 +65,21 @@ test('rollback requires opposing terminal fills and does not certify account clo
   assert.equal(result.accountFlatCertified,false);
   assert.equal(result.retryAuthorized,false);
   assert.equal(reconcileRollbackEvidence(intent,entry,{...offset,product:'D'},complete).status,'UNKNOWN');
+  assert.equal(reconcileRollbackEvidence(intent,entry,offset,{...complete,verifiedIntent:{...offset,orderId:'different'}}).status,'UNKNOWN');
+});
+
+test('provider read-only reconciliation rejects mid-read account generation change',async()=>{
+  const {UpstoxProvider}=await import('../engine/providers/UpstoxProvider.js');
+  const provider=new UpstoxProvider();
+  Object.assign(provider,{accessToken:'fixture-token',userId:'fixture-account',isConnected:true,historicalFoAuthEpoch:1});
+  provider.getOrderDetails=async()=>detail(intent,65,0,'COMPLETE');
+  provider.getOrderTrades=async()=>[trade(intent,65)];
+  assert.equal((await provider.getVerifiedOrderReconciliation(intent)).status,'FILLED');
+  provider.getOrderTrades=async()=>{
+    Object.assign(provider,{historicalFoAuthEpoch:2});
+    return [trade(intent,65)];
+  };
+  const invalid=await provider.getVerifiedOrderReconciliation(intent);
+  assert.equal(invalid.status,'UNKNOWN');
+  assert.equal(invalid.retryAuthorized,false);
 });
