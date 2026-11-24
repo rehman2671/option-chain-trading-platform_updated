@@ -56,17 +56,6 @@ export class OrderAdapter {
     const orderId = `QORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const userId = order.userId || 'GLOBAL';
 
-    const block = legacyExecutionBlock(order.mode);
-    if (block || !['BUY','SELL'].includes(order.action) || !['MARKET','LIMIT'].includes(order.orderType) ||
-        !Number.isSafeInteger(order.quantity) || order.quantity<=0 ||
-        typeof order.symbol!=='string' || !order.symbol.trim() ||
-        (order.limitPrice!==undefined && (!Number.isFinite(order.limitPrice)||order.limitPrice<=0))) {
-      const result: QuantOrderResult = {orderId,status:'REJECTED',executedPrice:0,slippage:0,
-        message:block || 'INVALID_QUANT_ORDER',timestamp};
-      this.recordOrder(order,result);
-      return result;
-    }
-
     // 0. Hard Risk Control: Unified Kill Switch check
     if (killSwitchEngine.isHalted(order.userId)) {
       const haltReason = killSwitchEngine.getHaltReason(order.userId) || 'Emergency halt active';
@@ -79,6 +68,17 @@ export class OrderAdapter {
         timestamp
       };
       this.recordOrder(order, result);
+      return result;
+    }
+
+    const block = legacyExecutionBlock(order.mode);
+    if (block || !['BUY','SELL'].includes(order.action) || !['MARKET','LIMIT'].includes(order.orderType) ||
+        !Number.isSafeInteger(order.quantity) || order.quantity<=0 ||
+        typeof order.symbol!=='string' || !order.symbol.trim() ||
+        (order.limitPrice!==undefined && (!Number.isFinite(order.limitPrice)||order.limitPrice<=0))) {
+      const result: QuantOrderResult = {orderId,status:'REJECTED',executedPrice:0,slippage:0,
+        message:block ? 'Order rejected: '+block : 'Order rejected: INVALID_QUANT_ORDER',timestamp};
+      this.recordOrder(order,result);
       return result;
     }
 
