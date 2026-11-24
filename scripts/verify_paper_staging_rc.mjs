@@ -220,6 +220,12 @@ try{
   },token);
   if(elevated.status!==403)
     throw Error('PAPER_RC_AUTHENTICATED_BROKER_TOKEN_ROUTE_BYPASS');
+  const queryCredential=await probe('/api/paper-trading/portfolio?token='+encodeURIComponent(operator.token));
+  if(queryCredential.status!==401)throw Error('MEGA01_URL_CREDENTIAL_ACCEPTED');
+  const signout=await probe('/api/auth/logout','POST',{},operator.token);
+  if(signout.status!==200)throw Error('MEGA01_LOGOUT_FAILED');
+  const replay=await probe('/api/paper-trading/portfolio','GET',null,operator.token);
+  if(replay.status!==401)throw Error('MEGA01_LOGOUT_TOKEN_REPLAY_ACCEPTED');
   console.log('PAPER_RC1_SMOKE_SUCCESS: built backend+React, practice provider, '+
     'health, staging deny, disposable admin login, virtual paper BUY/close/ledger '+
     'and authenticated Upstox token-route denial');
