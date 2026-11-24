@@ -13,6 +13,7 @@ import {
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import {underlyingKeys,validListedOptionRequest,verifyExactListedOption,type ListedOptionRequest,type ListedOptionEvidence} from '../../release/exactListedOptionEvidence.js';
 import {assessBrokerCapitalReleaseReview,type ReleaseReview} from '../../release/brokerCapitalReleaseReview.js';
 import {buildBoundBrokerEntryEvidence,validBrokerEntryIdentity,type BoundBrokerEntryEvidence,type BrokerEntryIdentity} from '../../release/boundBrokerEntryEvidence.js';
 import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
@@ -609,6 +610,24 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.error('[UPSTOX PROVIDER] placeOrder error:', err.message || err);
       throw err;
     }
+  }
+
+  /** Read-only exact option identity under the same pinned broker account.
+   * No nearest-expiry substitution or practice fallback. */
+  public async getExactListedOptionEvidence(request:ListedOptionRequest):Promise<ListedOptionEvidence|null>{
+    if(!validListedOptionRequest(request))return null;
+    const frozen={...request,identity:{...request.identity}};
+    const session=this.captureRiskReadIdentity();
+    if(!session||session.accountId!==frozen.identity.accountId||session.authEpoch!==frozen.identity.authEpoch)return null;
+    const start=Date.now();
+    try{
+      const res=await fetch('https://api.upstox.com/v2/option/contract?instrument_key='+encodeURIComponent(underlyingKeys[frozen.underlying]),{
+        headers:{Authorization:'Bearer '+session.bearerToken,Accept:'application/json'},signal:AbortSignal.timeout(5000)});
+      if(!res.ok)return null;
+      const data=await res.json();
+      if(data?.status!=='success'||!this.currentRiskReadIdentity(session))return null;
+      return verifyExactListedOption(frozen,data.data,start,Date.now());
+    }catch{return null;}
   }
 
   /** Listed, exchange-authoritative option contracts for one underlying.
