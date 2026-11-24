@@ -65,3 +65,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 ## Current integrated scope — 2026-11-25 IST
 
 #148/#149/#150 merged after successful exact-head CI. Main now has 12 scoped implementations merged and 38 partial tasks, no untouched IDs; full acceptance remains pending. Scoped IDs: 07,08,09,11,12,26,34,41,45,46,47,48. All other P01 IDs remain partial. #151 green but merge conflicts; source/tests incorporated into a replacement integration branch, subject to fresh CI. See [gateway integration](MEGA_PHASE_01_GATEWAY_INTEGRATION.md), [durable intent/auth](MEGA_PHASE_01_DURABLE_INTENT_AUTH_RECOVERY.md) and [current tracker](PROJECT_PROGRESS_TRACKER.md). Atomic preparation and reconciliation are integrated internally, but actual broker source, active gateway dispatch and capital release are not authorized. This checkpoint supersedes historical counts and status above.
+
+## Runtime recovery continuation — 2026-11-25 IST
+
+#152 merged with both exact-head workflows passed; #151 closed as superseded. #153 repaired paper staging passed, full regression pending. [Owner binding and runtime recovery](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) records new runtime schema initialization, authenticated owner-only recovery endpoint, account-wide unresolved reservation quarantine, regression fixtures and configuration constraints. Main counts 12 scoped merged / 38 partial / 0 untouched. No full phase acceptance or authorization to dispatch/release. This checkpoint supersedes earlier pending #152 status.

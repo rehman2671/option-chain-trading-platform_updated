@@ -40,6 +40,17 @@ export function prepareEntryJournal(db:Database.Database,x:PreparationInput,now:
       return result('REPLAY','Existing intent and reservation; no retry or dispatch');
     }
     if(claim.status!=='CLAIMED'||before)throw Error('INTENT_OR_RESERVATION_CONFLICT');
+    // Existing orphan/unknown reservations represent unresolved risk, not
+    // merely a reduction in available budget. Prevent new preparations for
+    // this broker account until independently reconciled, across all owners.
+    const unresolved=db.prepare(`SELECT 1 FROM capital_reservation_v1 r
+      LEFT JOIN execution_intent_v1 i ON i.account_scope=r.account_scope AND i.intent_id=r.intent_id AND i.owner_id=r.owner_id
+      WHERE r.account_scope=? AND (r.state='UNKNOWN' OR i.intent_id IS NULL)
+      UNION ALL
+      SELECT 1 FROM execution_intent_v1 i LEFT JOIN capital_reservation_v1 r
+        ON i.account_scope=r.account_scope AND i.intent_id=r.intent_id AND i.owner_id=r.owner_id
+      WHERE i.account_scope=? AND i.intent_id<>? AND r.intent_id IS NULL LIMIT 1`).get(x.accountScope,x.accountScope,x.intent.intentId);
+    if(unresolved)throw Error('ACCOUNT_RECOVERY_REQUIRED');
     const risk=readDurableDrawdown(db,x.accountScope,now);
     if(risk.status!=='OBSERVED'||risk.halted)throw Error('DRAWDOWN_EVIDENCE_BLOCKED');
     const greeks=aggregatePortfolioGreekEvidence(x.portfolio,x.accountScope,x.sessionEpoch,now);
@@ -52,7 +63,7 @@ export function prepareEntryJournal(db:Database.Database,x:PreparationInput,now:
   }).immediate();}catch(e){
     const code=e instanceof Error?e.message:'';
     return result('DENIED',['REPLAY_RESERVATION_CONFLICT','INTENT_OR_RESERVATION_CONFLICT','DRAWDOWN_EVIDENCE_BLOCKED',
-      'PORTFOLIO_EVIDENCE_BLOCKED','CAPITAL_RESERVATION_DENIED'].includes(code)?code:'PREPARATION_STORAGE_UNAVAILABLE');
+      'PORTFOLIO_EVIDENCE_BLOCKED','CAPITAL_RESERVATION_DENIED','ACCOUNT_RECOVERY_REQUIRED'].includes(code)?code:'PREPARATION_STORAGE_UNAVAILABLE');
   }
 }
 /** Reconcile a previously journaled intent and retain all reserved capital.

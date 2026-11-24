@@ -84,3 +84,21 @@ test('orphan intent or reservation is visible and never silently repaired',()=>{
   assert.equal(count(db,'execution_intent_v1'),1);assert.equal(count(db,'capital_reservation_v1'),1);
  }finally{db.close();}
 });
+
+test('unresolved reservations quarantine new preparations across owners and connections',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'gateway-account-fence-'));const path=join(dir,'db.sqlite');
+ const first=new Database(path),second=new Database(path);
+ try{
+  init(first);
+  assert.equal(prepareEntryJournal(first,fixture,now).status,'PREPARED');
+  assert.equal(recordPreparedEntryEvidence(first,fixture.intent,'order-a',null,null,now+1).status,'DENIED');
+  const blocked=prepareEntryJournal(second,other(1000),now+2);
+  assert.equal(blocked.reason,'ACCOUNT_RECOVERY_REQUIRED');
+  assert.equal(count(second,'execution_intent_v1'),1);assert.equal(count(second,'capital_reservation_v1'),1);
+  assert.equal(prepareEntryJournal(second,fixture,now+2).status,'REPLAY');
+  const b={...other(1000),accountScope:'b',intent:{...other(1000).intent,accountScope:'b'},
+   budget:{...fixture.budget,accountScope:'b'},portfolio:{...fixture.portfolio,accountScope:'b'}};
+  observeDurableDrawdown(second,{accountScope:'b',equityPaise:100000,observedAt:now},now);
+  assert.equal(prepareEntryJournal(second,b,now+2).status,'PREPARED');
+ }finally{first.close();second.close();rmSync(dir,{recursive:true,force:true});}
+});

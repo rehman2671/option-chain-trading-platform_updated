@@ -53,3 +53,10 @@ Issues [#17](https://github.com/rehman2671/option-chain-trading-platform_updated
 ## Update protocol
 
 At each substantive batch record task IDs, implementation/partial/accepted state, exact head and base, workflow URLs/conclusions, merge SHA, hosted acceptance evidence, compatibility changes and blockers. Keep README links and detailed phase ledger synchronized. A pending or failed test is not a passed test; a merged commit is not a deployed service. Do not create another phase just to retry a failing check.
+
+## Latest runtime recovery checkpoint — 2026-11-25 IST (supersedes older status)
+
+- #152 tested head 276079b98979939af4a0f8ab92f0591bb44b4695 passed EMA safety [45478233332](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45478233332) and paper staging [45478233259](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45478233259). Merged main 050e0acdac18c9f812ebb72eb9a116a589721cd7. #151 closed as superseded by #152; not separately merged. Combined main run not independently verified.
+- #153 repaired head 78b9cfa7abdbca9bfa316ac506a3cf01e89db59b passed paper staging 45482741725, EMA 45482741820 running. Latest main moved after its base; check overlap and fresh CI before merge.
+- [Runtime recovery and owner binding ledger](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md): actual DB initialization, explicit mapping and original-session authorization, owner-only read-only HTTP route, unresolved account quarantine and independent connection tests. New branch CI pending. Main task counts remain 12 scoped merged, 38 partial, 0 untouched; no full acceptance.
+- Next join #153 candidate evidence to authenticated runtime journal after verified integration, source actual Greek/NAV evidence, approved release/reset and hosted validation. No live order or hosting change. Deployment mapping optional and unconfigured by this batch; fail closed.
