@@ -1,4 +1,5 @@
 import type { BrokerRiskSnapshot } from '../engine/ema15m/brokerRiskGate.js';
+import { guardFullBrokerPositionRows } from '../engine/ema15m/adaptiveUpstoxNativeReadCardinalityGuard.js';
 
 type Row = Record<string, unknown>;
 const obj = (v: unknown): Row|null => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Row : null;
@@ -20,8 +21,12 @@ export function parseBrokerRiskResponse(funds: unknown, margin: unknown, portfol
   const requiredMargin=brokerNumber(obj(m.data)?.final_margin);
   if (availableMargin===null || availableMargin<0 || usedMargin===null || usedMargin<0 ||
       requiredMargin===null || requiredMargin<=0 || !Number.isFinite(availableMargin+usedMargin) || availableMargin+usedMargin<=0) return null;
+  // Strict account-wide identity and cardinality check; normalize documented quantity
+  // to net_quantity only when the two fields are not contradictory.
+  const rows=guardFullBrokerPositionRows(p.data);
+  if(!rows)return null;
   let portfolioPnl=0, activePositions=0;
-  for (const raw of p.data) {
+  for (const raw of rows) {
     const pos=obj(raw);
     const pnl=brokerNumber(pos?.pnl), net=brokerNumber(pos?.net_quantity);
     if (pnl===null || net===null || !Number.isSafeInteger(net)) return null;
