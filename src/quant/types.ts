@@ -503,6 +503,7 @@ export interface MonteCarloResult {
 }
 
 export interface OverfitAnalysisResult {
+  evidenceStatus?: 'NO_PERTURBATION_EVIDENCE';
   strategyId: string;
   parameterStabilityScore: number; // 0 to 100
   deflatedSharpeScore: number;
