@@ -256,16 +256,24 @@ describe('Phase118 in-flight Upstox native GET account/token/epoch fence',()=>{
       'getOrderBook','getHistoricalFoTradesPage','getOrderTrades'
     ];
     for(const name of required)assert.ok(source.includes(name),name);
-    // Phase131 adds one independently fenced full-market quote GET.
-    // Preserve the ORIGINAL 8 account/history GET checks without allowing
-    // the new quote session checks to satisfy them accidentally.
-    const quoteStart=source.indexOf('public async getLiveOptionQuote(');
-    const quoteEnd=source.indexOf('public async getGttOrders(',quoteStart);
-    assert.ok(quoteStart>=0&&quoteEnd>quoteStart);
-    const quoteBody=source.slice(quoteStart,quoteEnd);
-    const legacyBody=source.slice(0,quoteStart)+source.slice(quoteEnd);
-    assert.equal((legacyBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
-    assert.equal((legacyBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,8);
+    // Independently inspect each original method; added protective fences cannot
+    // satisfy any original method's assertions or break a global call count.
+    const methodBody=(name:string)=>{
+      const start=source.indexOf('public async '+name+'(');
+      assert.ok(start>=0,name);
+      const end=source.indexOf('\n  public ',start);
+      return source.slice(start,end<0?source.length:end);
+    };
+    for(const name of ['getVerifiedLivePositionQuantity','getVerifiedNrmlPositionRows',
+      'getGttOrders','getGttOrderDetails','getOrderDetails','getOrderBook',
+      'getHistoricalFoTradesPage','getOrderTrades']){
+      const body=methodBody(name);
+      assert.equal((body.match(/captureRiskReadIdentity\(\)/g)||[]).length,1,name);
+      assert.equal((body.match(/currentRiskReadIdentity\(session\)/g)||[]).length,1,name);
+      assert.equal((body.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,1,name);
+    }
+    const quoteBody=methodBody('getLiveOptionQuote');
+    assert.equal((quoteBody.match(/captureRiskReadIdentity\(\)/g)||[]).length,1);
     assert.equal((quoteBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,2);
     assert.equal((quoteBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,1);
     assert.equal(assessEmaLiveProductGate('NRML').allowed,false);
