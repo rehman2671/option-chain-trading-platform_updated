@@ -73,3 +73,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 ## Recovery UI and session containment — 2026-11-25 IST
 
 [Recovery UI/session ledger](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md) maps actual EMA read-only recovery panel, browser API token/cache boundary, auth result fencing and logout readback to existing P01 tasks and regression fixtures. #155 paper staging/build passed, full/invariant pending; main 12/38/0 remains unchanged. No release or live dispatch authority; hosted browser behavior and performance pending. This checkpoint supersedes old status where appropriate.
+
+## Native recovery reconciliation follow-up — 2026-11-25 IST
+
+#156 initial TypeScript TS2322 fixed, added authenticated owner-scoped native order discovery/detail/trade reconciliation and transactional metadata persistence, adverse regression fixtures; see [detailed report](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md). #155 full/invariant pending, paper staging/build passed. New #156 exact-head CI pending. Main 12/38/0 unchanged, no full acceptance. Missing or conflicting evidence retains capital. No actual dispatch, retry, release or hosted change.
