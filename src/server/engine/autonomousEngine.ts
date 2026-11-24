@@ -176,7 +176,7 @@ export class AutonomousRunnerEngine {
 
             // Never simulate closure of an existing live/unknown basket after switching provider modes.
             if (strat.status === 'IN_POSITION') {
-              const original = strat.activeBasketId ? globalBasketEngine.getBasketRecord(strat.activeBasketId) : undefined;
+              const original = strat.activeBasketId ? dbEngine.getBasketOrderForUser(strat.activeBasketId,userId) : undefined;
               if (!original || original.strategyId !== strat.id || !original.legs.length ||
                   !original.legs.every(l => l.orderId?.startsWith('sim-'))) {
                 strat.armed = false;
