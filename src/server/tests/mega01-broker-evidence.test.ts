@@ -6,7 +6,7 @@ import { reconcileOrderEvidence, reconcileRollbackEvidence, type OrderIntentEvid
 const now=Date.parse('2026-11-24T05:00:00Z');
 const funds={status:'success',data:{equity:{available_margin:290000,used_margin:10000}}};
 const margin={status:'success',data:{final_margin:1500}};
-const portfolio={status:'success',data:[{pnl:-200,net_quantity:65}]};
+const portfolio={status:'success',data:[{instrument_token:'NSE_FO|1234',product:'I',pnl:-200,quantity:65}]};
 test('broker funds evidence is bounded, explicit and never substitutes missing numbers',()=>{
   const good=parseBrokerRiskResponse(funds,margin,portfolio,now,now+1000);
   assert.ok(good);
@@ -21,7 +21,10 @@ test('broker funds evidence is bounded, explicit and never substitutes missing n
     assert.equal(parseBrokerRiskResponse({status:'success',data:{equity:{available_margin:v,used_margin:10000}}},margin,portfolio,now,now),null);
   }
   assert.equal(parseBrokerRiskResponse(funds,margin,portfolio,now,now+15001),null);
-  assert.equal(parseBrokerRiskResponse(funds,margin,{status:'success',data:[{pnl:0,net_quantity:null}]},now,now),null);
+  assert.equal(parseBrokerRiskResponse(funds,margin,{status:'success',data:[{...portfolio.data[0],net_quantity:null}]},now,now),null);
+  assert.equal(parseBrokerRiskResponse(funds,margin,{status:'success',data:[{...portfolio.data[0],net_quantity:0}]},now,now),null);
+  assert.equal(parseBrokerRiskResponse(funds,margin,{status:'success',data:[...portfolio.data,...portfolio.data]},now,now),null);
+  assert.equal(parseBrokerRiskResponse(funds,margin,{status:'success',data:[]},now,now)?.activePositions,0);
   assert.equal(parseBrokerRiskResponse(funds,{status:'success',data:{final_margin:0}},portfolio,now,now),null);
 });
 const intent:OrderIntentEvidence={orderId:'order-a',instrumentKey:'NSE_FO|1234',product:'I',side:'BUY',quantity:65,tag:'intent-a'};
