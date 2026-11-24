@@ -27,6 +27,16 @@ export class DrawdownController {
     return this.evaluateDrawdown(cap, peak, userId);
   }
 
+  /** Read-only projection; a status request must never mutate the trading halt. */
+  public readStatus(userId?: string | null): DrawdownControlStatus {
+    const copy = new DrawdownController();
+    copy.peakCapital = this.peakCapital;
+    copy.currentCapital = this.currentCapital;
+    copy.isTradingHalted = this.isTradingHalted;
+    copy.userStates = new Map([...this.userStates].map(([key,state])=>[key,{...state}]));
+    return copy.getStatus(userId);
+  }
+
   public evaluateDrawdown(currentCapital: number, peakCapital?: number, userId?: string | null): DrawdownControlStatus {
     const key = this.resolveKey(userId);
     let userState = this.userStates.get(key);
@@ -76,12 +86,8 @@ export class DrawdownController {
       recoveryActionPlan = 'Moderate drawdown (-' + currentDrawdownPct.toFixed(1) + '%). Defensively halving maximum risk budget per trade.';
     }
 
-    const diagnosticChecks = [
-      { check: 'Data Feed Latency & Quality Check', status: 'PASSED' as const },
-      { check: 'Model Calibration & Drift Verification', status: 'PASSED' as const },
-      { check: 'Market Regime Alignment Audit', status: tier === 'CRITICAL_DD' ? ('FAILED' as const) : ('PASSED' as const) },
-      { check: 'Broker Capital & Margin Reserve Integrity', status: 'PASSED' as const }
-    ];
+    // No external diagnostic evidence is collected here; never fabricate PASS results.
+    const diagnosticChecks: DrawdownControlStatus['diagnosticChecks'] = [];
 
     return {
       tier,

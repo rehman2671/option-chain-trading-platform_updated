@@ -76,9 +76,9 @@ quantRouter.use((req, res, next) => {
     'POST /kill-switch/reset', 'POST /kill-switch/halt',
     'POST /kill-switch/trigger', 'PUT /config',
     'POST /drawdown/reset', 'POST /strategies/promote',
-    'POST /strategy-lifecycle/promote'
+    'POST /strategy-lifecycle/promote', 'POST /trade-reviews'
   ]);
-  if (privilegedRoutes.has(req.method + ' ' + req.path)) {
+  if (privilegedRoutes.has(req.method + ' ' + req.path.toLowerCase().replace(/\/+$/, ''))) {
     return requireSuperAdmin(req as any, res, next);
   }
   next();
@@ -576,10 +576,8 @@ quantRouter.get('/profit-lock', (req, res) => {
 // 26. Drawdown Controller (Section 35)
 quantRouter.get('/drawdown-status', (req, res) => {
   try {
-    const currentCapital = parseFloat((req.query.currentCapital as string) || '485000');
-    const peakCapital = parseFloat((req.query.peakCapital as string) || '500000');
-    const status = drawdownController.evaluateDrawdown(currentCapital, peakCapital);
-    res.json(status);
+    const status = drawdownController.readStatus((req as any).user?.id);
+    res.json({...status,capitalEvidenceVerified:false,diagnosticsVerified:false});
   } catch (err: any) {
     res.status(500).json({ error: { code: 'DRAWDOWN_ERROR', message: err.message } });
   }
@@ -587,8 +585,9 @@ quantRouter.get('/drawdown-status', (req, res) => {
 
 quantRouter.post('/drawdown/reset', (req, res) => {
   try {
-    const { operatorId, reason } = req.body;
-    const resetSuccess = drawdownController.resetHalt(operatorId || 'operator', reason || 'Operator reset halt');
+    const operatorId = (req as any).user.id;
+    const { reason } = req.body;
+    const resetSuccess = drawdownController.resetHalt(operatorId, reason || 'Operator reset halt');
     quantAuditLogger.log({
       actor: operatorId || 'operator',
       action: 'DRAWDOWN_HALT_RESET',
@@ -596,7 +595,7 @@ quantRouter.post('/drawdown/reset', (req, res) => {
       entityId: 'PORTFOLIO',
       reason: reason || 'Manual verification passed'
     });
-    res.json({ success: resetSuccess, isHalted: false });
+    res.json({ success: resetSuccess, isHalted: drawdownController.isHalted() });
   } catch (err: any) {
     res.status(500).json({ error: { code: 'RESET_ERROR', message: err.message } });
   }
@@ -760,7 +759,7 @@ quantRouter.get(['/research-cycle/history', '/continuous-research/history', '/re
 // 36. Order Execution Submission Adapter (Section 6)
 quantRouter.post('/order-submit', async (req, res) => {
   try {
-    const result = await orderAdapter.submitOrder(req.body);
+    const result = await orderAdapter.submitOrder({...req.body,userId:(req as any).user.id});
     quantAuditLogger.log({
       actor: 'system',
       action: 'ORDER_SUBMITTED',
@@ -806,8 +805,10 @@ quantRouter.post('/settings', (req, res) => {
 
     const targetMode: QuantExecutionMode = req.body.quantExecutionMode || req.body.executionMode || currentSettings.quantExecutionMode || 'ADVISORY_ONLY';
 
-    // Strict safety gate: Activating LIVE_REAL or LIVE_PAPER requires explicit confirmation
-    if ((targetMode === 'LIVE_REAL' || targetMode === 'LIVE_PAPER') && currentSettings.quantExecutionMode !== targetMode) {
+    if (!['ADVISORY_ONLY','SHADOW','LIVE_PAPER','LIVE_REAL'].includes(targetMode)) return res.status(400).json({error:{code:'INVALID_EXECUTION_MODE'}});
+    if (targetMode === 'LIVE_REAL') return res.status(409).json({error:{code:'LEGACY_LIVE_EXECUTION_QUARANTINED'}});
+    // LIVE_REAL is quarantined above. Paper activation still requires confirmation.
+    if (targetMode === 'LIVE_PAPER' && currentSettings.quantExecutionMode !== targetMode) {
       if (!req.body.confirmRiskAcknowledged) {
         return res.status(400).json({
           error: {

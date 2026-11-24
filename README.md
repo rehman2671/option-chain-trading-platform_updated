@@ -4,6 +4,14 @@ Institutional-grade multi-asset algorithmic trading, quantitative analytics, opt
 
 ---
 
+## Project development and release control
+
+- [Master project plan — five mega phases / 250 tasks](docs/PROJECT_MASTER_PLAN.md)
+- [Current project progress and CI tracker](docs/PROJECT_PROGRESS_TRACKER.md)
+- [Mega Phase 01 critical repair acceptance and task ledger](docs/MEGA_PHASE_01_CRITICAL_REPAIR.md)
+
+Current repair scope is tracked in PR #144. Feature descriptions below describe architecture and intended capabilities, not a certification of live execution, profitability, market-data quality, atomic broker fills, or hosted uptime. Legacy live routes require approved execution safety; the NRML release interlock remains in place. Google AI Studio remains the deployment workflow. Use the progress tracker to distinguish branch implementation from merged, deployed and verified status.
+
 ## 🌟 Executive Overview
 
 DeltaChain AI is an end-to-end trading workstation combining high-frequency market data streaming, mathematical quantitative analytics, automated strategy execution, and multi-leg risk management. 
@@ -110,7 +118,7 @@ An institutional trend-following system optimized for high-probability setups:
 * **Event-Reactive Fast-Poll**: Automatically accelerates polling frequency to sub-second intervals upon detecting sudden spot price shocks.
 
 ### 7. ⚡ Basket Orders Manager
-* **Atomic Multi-Leg Routing**: Executes multi-leg combinations simultaneously to eliminate leg-out execution risk.
+* **Multi-Leg Routing**: Simulated basket workflow and legacy sequenced routing; real broker legs are not atomic and can leave residual exposure. Legacy live routing remains quarantined under the critical-repair branch until a verified gateway exists.
 * **Margin Optimization**: Leverages exchange-grade SPAN + Exposure margin calculations, reflecting cross-margin hedging benefits.
 * **Order Reconciliation**: Real-time status tracking (*PENDING*, *EXECUTED*, *REJECTED*, *CANCELLED*).
 

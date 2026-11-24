@@ -10,6 +10,8 @@ import { dbEngine } from '../db.js';
 import { globalMarketFeed } from './marketFeed.js';
 import { activeProvider } from './providers/index.js';
 import { killSwitchEngine } from '../../quant/risk/killSwitch.js';
+import { legacyExecutionBlock, validBasketLegs } from '../release/legacyExecutionContainment.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Resolves standard NSE/NFO exchange tradingsymbol for Upstox and broker gateways.
@@ -105,7 +107,7 @@ export class BasketExecutionEngine {
     userId?: string | null
   ): Promise<BasketOrderRecord> {
 
-    const basketId = `bsk-${Date.now()}`;
+    const basketId = 'bsk-'+randomUUID();
     const createdAt = new Date().toISOString();
 
     // 0. Hard Risk Control: Unified Kill Switch check
@@ -135,6 +137,18 @@ export class BasketExecutionEngine {
     const providerMode = activeProvider.getProviderMode();
     // In Practice Mode, real order execution is structurally impossible regardless of DRY_RUN env var
     const isDryRun = providerMode === 'PRACTICE' ? true : (process.env.DRY_RUN !== 'false');
+
+    const block = legacyExecutionBlock(isDryRun ? 'PAPER' : 'LIVE');
+    if (block || !validBasketLegs(legs) || !Number.isFinite(availableUserMargin) || availableUserMargin < 0 || !userId) {
+      const reason = block || 'INVALID_BASKET_OR_ACCOUNT_MARGIN';
+      const rejected: BasketOrderRecord = {id:basketId,strategyId,strategyName,symbol,status:'FAILED',
+        createdAt,completedAt:new Date().toISOString(),legs:[],marginRequired:0,
+        marginAvailable:Number.isFinite(availableUserMargin)?availableUserMargin:0,
+        reconciliationStatus:'MISMATCH_DETECTED',reconciliationNotes:reason,
+        fallbackActionTriggered:reason};
+      dbEngine.saveBasketOrder(rejected,userId);
+      return rejected;
+    }
 
     // 1. Pre-trade Margin Gate Check using broker margin API / SPAN calculation
     const marginReq = await calculateOrderAndBasketMargin({
@@ -218,9 +232,11 @@ export class BasketExecutionEngine {
         reconciliationNotes: 'Simulated fills matched with strategy parameters.'
       };
 
-      this.activeBaskets.set(basketId, dryRunRecord);
       dbEngine.saveBasketOrder(dryRunRecord, userId);
-      return dryRunRecord;
+      const persisted = userId ? dbEngine.getBasketOrderForUser(basketId,userId) : null;
+      if (!persisted || persisted.status!=='COMPLETED' || persisted.legs.length!==dryRunRecord.legs.length) return {...dryRunRecord,status:'FAILED',reconciliationStatus:'MISMATCH_DETECTED',reconciliationNotes:'Simulation ledger persistence unconfirmed'};
+      this.activeBaskets.set(basketId, dryRunRecord);
+      return persisted;
     }
 
     // REAL LIVE BROKER EXECUTION VIA UPSTOX API V2

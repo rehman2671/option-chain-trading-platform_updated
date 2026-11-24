@@ -79,6 +79,7 @@ class DatabaseEngine {
 
       // 5. Run schema migrations and indexes
       this.runMigrations();
+      this.ensureSessionVersionColumn();
       this.ensureAutoIndexes();
       this.seedQuantFeatureHistoryIfEmpty();
       this.syncConfiguredUsersFromEnv();
@@ -591,9 +592,10 @@ class DatabaseEngine {
     try {
       const uId = userId || (basket as any).userId || null;
       const legsJson = JSON.stringify(basket.legs || []);
-      const existing = this.db.prepare(`SELECT id FROM basket_orders WHERE id = ?`).get(basket.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM basket_orders WHERE id = ?`).get(basket.id) as {id:string;user_id:string|null}|undefined;
 
       if (existing) {
+        if (existing.user_id!==uId) throw Error('BASKET_OWNER_MISMATCH');
         this.db.prepare(
           `UPDATE basket_orders SET status = ?, margin_required = ?, margin_available = ?, fallback_action = ?, reconciliation_status = ?, legs_json = ?, user_id = COALESCE(?, user_id) WHERE id = ?`
         ).run(
@@ -634,6 +636,17 @@ class DatabaseEngine {
   /**
    * Load all basket orders from SQLite
    */
+  /** Durable, owner-scoped basket lookup for restart and fill readback. */
+  public getBasketOrderForUser(id:string,userId:string): BasketOrderRecord|null {
+    if (!this.db || !userId) return null;
+    const row=this.db.prepare('SELECT * FROM basket_orders WHERE id=? AND user_id=?').get(id,userId) as any;
+    if (!row) return null;
+    return {id:row.id,strategyId:row.strategy_id,strategyName:row.strategy_name,symbol:row.symbol,
+      status:row.status,marginRequired:row.margin_required,marginAvailable:row.margin_available,
+      fallbackActionTriggered:row.fallback_action||undefined,reconciliationStatus:row.reconciliation_status,
+      legs:JSON.parse(row.legs_json||'[]'),createdAt:row.created_at};
+  }
+
   public loadAllBasketOrders(userId?: string | null, limit?: number, offset?: number): BasketOrderRecord[] {
     if (!this.db) return [];
     try {
@@ -677,12 +690,32 @@ class DatabaseEngine {
   /**
    * Save or update a paper trading position in SQLite
    */
+  /** Atomically create new account-owned paper legs; never overwrite an existing position. */
+  public createPaperPositionsAtomically(positions: PaperPosition[], userId: string): void {
+    if (!this.db || !userId?.trim() || positions.length===0 || positions.length>20) throw Error('INVALID_PAPER_BATCH');
+    const db=this.db;
+    db.transaction(()=>{
+      const existing=db.prepare('SELECT id FROM paper_positions WHERE id=?');
+      const read=db.prepare('SELECT user_id,status,quantity,entry_price FROM paper_positions WHERE id=?');
+      for (const pos of positions) {
+        if (!pos.id || existing.get(pos.id) || pos.status!=='OPEN' ||
+            !Number.isSafeInteger(pos.quantity) || pos.quantity<=0 ||
+            !Number.isFinite(pos.entryPrice) || pos.entryPrice<=0) throw Error('INVALID_OR_DUPLICATE_PAPER_LEG');
+        this.savePaperPosition(pos,userId);
+        const saved=read.get(pos.id) as {user_id:string;status:string;quantity:number;entry_price:number}|undefined;
+        if (!saved || saved.user_id!==userId || saved.status!=='OPEN' ||
+            saved.quantity!==pos.quantity || saved.entry_price!==pos.entryPrice) throw Error('PAPER_BATCH_WRITE_UNCONFIRMED');
+      }
+    }).immediate();
+  }
+
   public savePaperPosition(pos: PaperPosition, userId?: string | null): void {
     if (!this.db) return;
     try {
       const uId = userId || (pos as any).userId || null;
-      const existing = this.db.prepare(`SELECT id FROM paper_positions WHERE id = ?`).get(pos.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM paper_positions WHERE id = ?`).get(pos.id) as {id:string;user_id:string|null}|undefined;
       if (existing) {
+        if (existing.user_id !== uId) throw Error('PAPER_POSITION_OWNER_MISMATCH');
         this.db.prepare(
           `UPDATE paper_positions SET current_price = ?, pnl = ?, stop_loss = ?, target_price = ?, status = ?, closed_at = ?, exit_price = ?, close_reason = ?, leg_label = ?, lot_size = ?, user_id = COALESCE(?, user_id) WHERE id = ?`
         ).run(
@@ -745,7 +778,7 @@ class DatabaseEngine {
       let info;
       if (userId) {
         info = this.db.prepare(
-          `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN' AND (user_id = ? OR user_id IS NULL)`
+          `UPDATE paper_positions SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl = ?, close_reason = ? WHERE id = ? AND status = 'OPEN' AND user_id = ?`
         ).run(now, exitPrice, closePnl, reason, id, userId);
       } else {
         info = this.db.prepare(
@@ -777,7 +810,7 @@ class DatabaseEngine {
     try {
       const now = new Date().toISOString();
       const openPositions = this.db.prepare(
-        `SELECT * FROM paper_positions WHERE strategy_group_id = ? AND status = 'OPEN' ${userId ? 'AND (user_id = ? OR user_id IS NULL)' : ''}`
+        `SELECT * FROM paper_positions WHERE strategy_group_id = ? AND status = 'OPEN' ${userId ? 'AND user_id = ?' : ''}`
       ).all(...(userId ? [groupId, userId] : [groupId])) as any[];
 
       let info;
@@ -789,7 +822,7 @@ class DatabaseEngine {
                exit_price = current_price, 
                pnl = CASE WHEN action = 'BUY' THEN ROUND((current_price - entry_price) * quantity, 2) ELSE ROUND((entry_price - current_price) * quantity, 2) END,
                close_reason = ? 
-           WHERE strategy_group_id = ? AND status = 'OPEN' AND (user_id = ? OR user_id IS NULL)`
+           WHERE strategy_group_id = ? AND status = 'OPEN' AND user_id = ?`
         ).run(now, reason, groupId, userId);
       } else {
         info = this.db.prepare(
@@ -839,11 +872,17 @@ class DatabaseEngine {
   /**
    * Clear paper trading positions from SQLite (by user_id if provided)
    */
+  /** Strictly account-scoped API reset; never includes anonymous or other users. */
+  public clearUserPaperPositions(userId: string): number {
+    if (!this.db || typeof userId !== 'string' || !userId.trim()) throw Error('PAPER_RESET_ACCOUNT_REQUIRED');
+    return this.db.prepare('DELETE FROM paper_positions WHERE user_id = ?').run(userId).changes;
+  }
+
   public clearAllPaperPositions(userId?: string | null): void {
     if (!this.db) return;
     try {
       if (userId) {
-        this.db.prepare(`DELETE FROM paper_positions WHERE user_id = ? OR user_id IS NULL`).run(userId);
+        this.db.prepare(`DELETE FROM paper_positions WHERE user_id = ?`).run(userId);
       } else {
         this.db.prepare(`DELETE FROM paper_positions`).run();
       }
@@ -865,7 +904,7 @@ class DatabaseEngine {
         rows = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, expiry, user_id 
            FROM paper_positions 
-           WHERE status = 'OPEN' AND (user_id = ? OR user_id IS NULL)
+           WHERE status = 'OPEN' AND user_id = ?
            ORDER BY opened_at DESC`
         ).all(userId) as any[];
       } else {
@@ -971,7 +1010,7 @@ class DatabaseEngine {
         rows = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
            FROM paper_positions 
-           WHERE user_id = ? OR user_id IS NULL 
+           WHERE user_id = ? 
            ORDER BY opened_at DESC 
            LIMIT ? OFFSET ?`
         ).all(userId, clampedLimit, safeOffset) as any[];
@@ -1035,7 +1074,7 @@ class DatabaseEngine {
         row = this.db.prepare(
           `SELECT id, strategy_group_id, leg_label, symbol, strategy_name, strike_price, option_type, action, quantity, lot_size, entry_price, current_price, pnl, stop_loss, target_price, status, opened_at, closed_at, exit_price, close_reason, expiry, user_id 
            FROM paper_positions 
-           WHERE id = ? AND (user_id = ? OR user_id IS NULL)`
+           WHERE id = ? AND user_id = ?`
         ).get(id, userId);
       } else {
         row = this.db.prepare(
@@ -2561,7 +2600,8 @@ class DatabaseEngine {
     if (!this.db) return;
     try {
       const uId = userId || strat.userId || null;
-      const existing = this.db.prepare(`SELECT id FROM autonomous_strategies WHERE id = ?`).get(strat.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM autonomous_strategies WHERE id = ?`).get(strat.id) as {id:string;user_id:string|null}|undefined;
+      if (existing && existing.user_id !== uId) throw Error('AUTONOMOUS_STRATEGY_OWNER_MISMATCH');
       const legsJson = JSON.stringify(strat.legs || []);
       const entryRulesJson = JSON.stringify(strat.entryRules || {});
       const adjRulesJson = strat.adjustmentRules ? JSON.stringify(strat.adjustmentRules) : null;
@@ -2833,18 +2873,16 @@ class DatabaseEngine {
           'SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?'
         ).get(email, account.id) as any;
 
-        // Env credentials are authoritative for this managed roster. Updating
-        // a configured password rotates any previously seeded/known password.
+        // Initial environment password bootstraps the account only. Existing
+        // password resets and administrative disablement survive restart.
         const currentHash = existing?.password_hash as string | undefined;
-        const passwordHash = currentHash && bcrypt.compareSync(password, currentHash)
-          ? currentHash
-          : bcrypt.hashSync(password, 12);
+        const passwordHash = currentHash || bcrypt.hashSync(password, 12);
 
         if (existing) {
           this.db.prepare(`
             UPDATE users
             SET email = lower(?), name = ?, role = ?, email_verified = 1,
-                password_hash = ?, is_active = 1
+                password_hash = ?
             WHERE id = ?
           `).run(email, name, account.role, passwordHash, existing.id);
         } else {
@@ -2861,24 +2899,41 @@ class DatabaseEngine {
     }
   }
 
+  private ensureSessionVersionColumn(): void {
+    if (!this.db) throw Error('DB_NOT_INITIALIZED');
+    const cols=this.db.prepare('PRAGMA table_info(users)').all() as {name:string}[];
+    if (!cols.some(c=>c.name==='session_version')) this.db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+  }
+
+  public getUserSessionVersion(userId:string): number|null {
+    if (!this.db) return null;
+    const row=this.db.prepare('SELECT session_version FROM users WHERE id=? AND is_active=1').get(userId) as {session_version:number}|undefined;
+    return row && Number.isSafeInteger(row.session_version) && row.session_version>=0 ? row.session_version : null;
+  }
+
+  public revokeUserSessions(userId:string): void {
+    if (!this.db) throw Error('DB_NOT_INITIALIZED');
+    this.db.prepare('UPDATE users SET session_version=session_version+1 WHERE id=?').run(userId);
+  }
+
   public setUserActiveStatus(userId: string, isActive: boolean): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET is_active = ? WHERE id = ?`).run(isActive ? 1 : 0, userId);
+    this.db.prepare(`UPDATE users SET is_active = ?, session_version=session_version+1 WHERE id = ?`).run(isActive ? 1 : 0, userId);
   }
 
   public setUserRole(userId: string, role: string): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(role, userId);
+    this.db.prepare(`UPDATE users SET role = ?, session_version=session_version+1 WHERE id = ?`).run(role, userId);
   }
 
   public setUserPassword(userId: string, passwordHash: string): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(passwordHash, userId);
+    this.db.prepare(`UPDATE users SET password_hash = ?, reset_token=NULL, reset_token_expires_at=NULL, session_version=session_version+1 WHERE id = ?`).run(passwordHash, userId);
   }
 
   public setUserMfaSecret(userId: string, secret: string | null, enabled: boolean): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET mfa_secret = ?, mfa_enabled = ? WHERE id = ?`).run(secret, enabled ? 1 : 0, userId);
+    this.db.prepare(`UPDATE users SET mfa_secret = ?, mfa_enabled = ?, session_version=session_version+1 WHERE id = ?`).run(secret, enabled ? 1 : 0, userId);
   }
 
   public findUserByEmail(email: string): any | null {
@@ -2998,7 +3053,7 @@ class DatabaseEngine {
   public consumeResetToken(userId: string, digest: string, passwordHash: string, now: string): boolean {
     if (!this.db) return false;
     return this.db.prepare(`
-      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL
+      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL, session_version=session_version+1
       WHERE id = ? AND reset_token = ? AND is_active = 1 AND password_hash IS NOT NULL
         AND julianday(reset_token_expires_at) > julianday(?)
     `).run(passwordHash, userId, digest, now).changes === 1;
@@ -3007,14 +3062,14 @@ class DatabaseEngine {
   public updatePassword(userId: string, passwordHash: string): void {
     if (!this.db) return;
     this.db.prepare(`
-      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL WHERE id = ?
+      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL, session_version=session_version+1 WHERE id = ?
     `).run(passwordHash, userId);
   }
 
   public updatePasswordOnAccount(userId: string, passwordHash: string): void {
     if (!this.db) return;
     this.db.prepare(`
-      UPDATE users SET password_hash = ? WHERE id = ?
+      UPDATE users SET password_hash = ?, reset_token=NULL, reset_token_expires_at=NULL, session_version=session_version+1 WHERE id = ?
     `).run(passwordHash, userId);
   }
 

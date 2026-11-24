@@ -30,6 +30,8 @@ import { StrategyRules } from './ema15m/strategyRules.js';
 import { SessionCalendar } from './ema15m/sessionCalendar.js';
 import { canIngestEmaTick, historicalSlotIsClosed } from './ema15m/alertTickClock.js';
 import { brokerOrderReconciler } from './ema15m/brokerOrderReconciler.js';
+import { signalAlertTiming } from './telegramAlertTransport.js';
+import { randomUUID } from 'node:crypto';
 
 export class Ema15mEngine {
   private static instance: Ema15mEngine | null = null;
@@ -368,6 +370,8 @@ export class Ema15mEngine {
    * Finalizes a completed 15m candle, recalculates EMA series, and detects crossover signals
    */
   public finalizeCandle(candle: Ema15mCandle, isMock: boolean = false): void {
+    // Mock fixtures must never enter the shared EMA cache, candle DB or execution ledger.
+    if (isMock) return;
     candle.isClosed = true;
 
     const inst = candle.instrument;
@@ -439,7 +443,9 @@ export class Ema15mEngine {
 
             // 1. Execute Automatic Trading (Live Upstox and/or Paper) via Execution Coordinator
             const estimatedPrice = this.getEstimatedOptionPrice(inst, selectedStrike, optionType, weeklyExpiry, signal.price, signal.signalConfirmedAt);
-            executionCoordinator.processConfirmedSignal(signal, estimatedPrice, isMock).catch(err => {
+            const timing = signalAlertTiming(signal);
+            const suppressLive = this.dataSource !== 'UPSTOX_LIVE' || timing.invalidTiming || timing.delayed;
+            executionCoordinator.processConfirmedSignal(signal, estimatedPrice, suppressLive).catch(err => {
               console.error('[EMA 15M ENGINE] Error processing trade execution:', err.message);
             });
 
@@ -1348,13 +1354,24 @@ export class Ema15mEngine {
       isClosed: true
     };
 
-    this.finalizeCandle(mockCandle, true);
-    const latestSignal = dbEngine.getLatestEma15mSignal(inst);
-
-    return {
-      candle: mockCandle,
-      signal: latestSignal || undefined
+    // Test output is isolated: no normal candle, signal, paper position or live order write.
+    const ema23 = lastEma23 + this.EMA_23_MULTIPLIER*(newClose-lastEma23);
+    const ema50 = lastEma50 + this.EMA_50_MULTIPLIER*(newClose-lastEma50);
+    mockCandle.ema23 = ema23;
+    mockCandle.ema50 = ema50;
+    const signal: Ema15mSignal = {
+      id:'mock-'+randomUUID(),instrument:inst,timeframe:'15m',signalType:targetType,
+      price:newClose,ema23,ema50,emaDifference:ema23-ema50,
+      candleTimestamp:mockSlotTime,signalConfirmedAt:mockSlotTime,createdAt:mockSlotTime,
+      notificationStatus:'SKIPPED'
     };
+    const settings=dbEngine.getEmaNotificationSettings('GLOBAL');
+    const token=settings.telegramBotToken||process.env.TELEGRAM_BOT_TOKEN;
+    const chat=settings.telegramChatId||process.env.TELEGRAM_CHAT_ID;
+    if (settings.telegramEnabled && token && chat) {
+      void globalNotificationService.sendTelegramAlert(signal,token,chat,'MOCK').catch(()=>console.warn('[EMA MOCK] Test alert failed'));
+    }
+    return {candle:mockCandle,signal};
   }
 
   /**

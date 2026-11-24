@@ -44,7 +44,10 @@ const env={
   SMTP_PASS:'',
   ADMIN_EMAIL:'paper-rc-'+randomBytes(6).toString('hex')+'@example.invalid',
   ADMIN_INITIAL_PASSWORD:randomBytes(32).toString('hex'),
-  ADMIN_NAME:'Paper Staging Disposable Admin'
+  ADMIN_NAME:'Paper Staging Disposable Admin',
+  OPERATOR_1_EMAIL:'paper-operator-'+randomBytes(6).toString('hex')+'@example.invalid',
+  OPERATOR_1_INITIAL_PASSWORD:randomBytes(32).toString('hex'),
+  OPERATOR_1_NAME:'Paper Staging Disposable Operator'
 };
 for(const s of secrets)delete env[s];
 let logs='';
@@ -133,6 +136,15 @@ try{
   if(guestPortfolio.status!==401||guestOrder.status!==401)
     throw Error('PAPER_RC_GUEST_PAPER_LEDGER_OR_ORDER_NOT_AUTHENTICATED');
 
+  for(const [route,method] of [
+    ['/api/paper-trading/reset','POST'],['/api/platform/execute-signal','POST'],
+    ['/api/db/schema','GET'],['/api/db/migrations','GET'],['/api/db/export-ddl','GET'],
+    ['/api/historical/sync-all','POST'],['/api/ai/narrate','POST'],['/api/system/margin','GET']
+  ]){
+    const rejected=await probe(route,method);
+    if(rejected.status!==401&&rejected.status!==403) throw Error('MEGA01_GUEST_SENSITIVE_ROUTE_NOT_BLOCKED '+route);
+  }
+
   // Use disposable, CI-generated staging administrator credentials to
   // verify a REAL authenticated paper workflow, never real broker execution.
   const login=await probe('/api/auth/login','POST',{
@@ -168,6 +180,17 @@ try{
      entry.positions[0].quantity!==50)
     throw Error('PAPER_RC_PAPER_OPEN_POSITION_INVALID');
   const paperPositionId=entry.positions[0].id;
+  const operatorLogin=await probe('/api/auth/login','POST',{email:env.OPERATOR_1_EMAIL,password:env.OPERATOR_1_INITIAL_PASSWORD});
+  const operator=JSON.parse(operatorLogin.body);
+  if(operatorLogin.status!==200||operator.user?.role!=='OPERATOR'||typeof operator.token!=='string')throw Error('MEGA01_OPERATOR_LOGIN_FAILED');
+  for(const [route,method] of [['/api/db/schema','GET'],['/api/ema15m/live-positions','GET'],['/api/ema15m/mock-crossover','POST'],['/api/autonomous/kill-switch/reset','POST'],['/api/ema15m/test-notification','POST']]){
+    const denied=await probe(route,method,{},operator.token);
+    if(denied.status!==403)throw Error('MEGA01_OPERATOR_PRIVILEGE_NOT_DENIED '+route);
+  }
+  const operatorReset=await probe('/api/paper-trading/reset','POST',{},operator.token);
+  if(operatorReset.status!==200)throw Error('MEGA01_OPERATOR_OWN_RESET_FAILED');
+  const operatorRead=await probe('/api/paper-trading/portfolio','GET',null,operator.token);
+  if(operatorRead.status!==200||JSON.parse(operatorRead.body).positions.some(p=>p.id===paperPositionId))throw Error('MEGA01_CROSS_ACCOUNT_READ');
   const afterOpen=await probe('/api/paper-trading/portfolio','GET',null,token);
   const portfolioOpen=JSON.parse(afterOpen.body);
   if(afterOpen.status!==200||
@@ -197,6 +220,12 @@ try{
   },token);
   if(elevated.status!==403)
     throw Error('PAPER_RC_AUTHENTICATED_BROKER_TOKEN_ROUTE_BYPASS');
+  const queryCredential=await probe('/api/paper-trading/portfolio?token='+encodeURIComponent(operator.token));
+  if(queryCredential.status!==401)throw Error('MEGA01_URL_CREDENTIAL_ACCEPTED');
+  const signout=await probe('/api/auth/logout','POST',{},operator.token);
+  if(signout.status!==200)throw Error('MEGA01_LOGOUT_FAILED');
+  const replay=await probe('/api/paper-trading/portfolio','GET',null,operator.token);
+  if(replay.status!==401)throw Error('MEGA01_LOGOUT_TOKEN_REPLAY_ACCEPTED');
   console.log('PAPER_RC1_SMOKE_SUCCESS: built backend+React, practice provider, '+
     'health, staging deny, disposable admin login, virtual paper BUY/close/ledger '+
     'and authenticated Upstox token-route denial');
