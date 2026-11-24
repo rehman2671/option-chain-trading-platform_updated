@@ -2,6 +2,10 @@
 
 **Control baseline:** 2026-11-24; 5 mega phases, 50 scoped tasks per phase, 250 planned tasks. Use the existing Google AI Studio deployment workflow. Do not add unrelated hosting, change live positions, or expand the phase count for routine fixes.
 
+## Candidate risk and recovery work — 2026-11-25 IST
+
+[Candidate-risk and broker-binding ledger](MEGA_PHASE_01_CANDIDATE_RISK_BROKER_BINDING.md) records a new independent P01 batch: account/epoch bound native funds, margin and positions, bounded candidate premium and projected Greeks, and conservative capital-release review. #152 combined CI is still running; no live authority or task acceptance. Preserve the existing 250-task scope.
+
 ## Project objectives and constraints
 
 - Repair the audited 17 module groups: auth/users, frontend, market feed, option chain/expiry, EMA15M, Telegram, paper, live Upstox, basket, autonomous, quant, risk, research, AI narration, SQLite, deployment and CI.
