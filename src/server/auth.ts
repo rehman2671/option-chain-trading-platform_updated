@@ -596,16 +596,25 @@ authRouter.post('/reset-password', authLimiter, async (req: Request, res: Respon
  * POST /api/auth/logout — Log out user and clear cookie
  */
 authRouter.post('/logout', (req: Request, res: Response) => {
-  const user=getUserFromRequest(req);
-  if (user) dbEngine.revokeUserSessions(user.id);
-  clearAuthCookie(res);
-  return res.json({ success: true, message: 'Logged out successfully' });
+  res.setHeader('Cache-Control','no-store');
+  try{
+    const principal=getVerifiedSessionPrincipal(req);
+    if(principal){
+      dbEngine.revokeUserSessions(principal.user.id);
+      const current=dbEngine.getUserSessionVersion(principal.user.id);
+      if(current===principal.sessionVersion)
+        return res.status(503).json({error:'Session revocation not confirmed.'});
+    }
+    clearAuthCookie(res);
+    return res.json({success:true,message:'Logged out successfully'});
+  }catch{return res.status(503).json({error:'Session revocation unavailable.'});}
 });
 
 /**
  * GET /api/auth/me — Get active session state
  */
 authRouter.get('/me', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control','no-store');
   const user = getUserFromRequest(req);
   if (!user) {
     return res.json({ authenticated: false, user: null, token: null });
