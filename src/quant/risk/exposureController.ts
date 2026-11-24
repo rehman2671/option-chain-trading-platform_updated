@@ -68,8 +68,8 @@ export class ExposureController {
       correlatedTradesCount: number;
     }
   ): ExposureControllerState {
-    const totalCapital = capitalState.totalCapital || 1000000;
-    const capitalAtRisk = capitalState.usedMargin || 165000;
+    const totalCapital = capitalState.totalCapital;
+    const capitalAtRisk = capitalState.usedMargin;
     const capitalAtRiskPct = Number(((capitalAtRisk / totalCapital) * 100).toFixed(1));
 
     const dailyLossPct = Number(
@@ -223,6 +223,18 @@ export class ExposureController {
     currentGreeks: { netDelta: number; netGamma: number; netTheta: number; netVega: number } = { netDelta: 10, netGamma: 0.005, netTheta: -100, netVega: 50 },
     capitalState: { totalCapital: number; usedMargin: number; dailyPnl: number; weeklyPnl: number; monthlyPnl: number; peakCapital: number; correlatedTradesCount: number } = { totalCapital: 1000000, usedMargin: 150000, dailyPnl: 0, weeklyPnl: 0, monthlyPnl: 0, peakCapital: 1000000, correlatedTradesCount: 1 }
   ): { passed: boolean; reason?: string; report?: ExposureControllerState } {
+    // Reject malformed numeric snapshots before comparisons or arithmetic can
+    // accidentally treat NaN as SAFE. This validates inputs, not provenance.
+    if (!currentGreeks || !capitalState ||
+        ![currentGreeks.netDelta, currentGreeks.netGamma, currentGreeks.netTheta, currentGreeks.netVega,
+          capitalState.totalCapital, capitalState.usedMargin, capitalState.dailyPnl,
+          capitalState.weeklyPnl, capitalState.monthlyPnl, capitalState.peakCapital,
+          capitalState.correlatedTradesCount].every(Number.isFinite) ||
+        capitalState.totalCapital <= 0 || capitalState.usedMargin < 0 ||
+        capitalState.peakCapital <= 0 || !Number.isSafeInteger(capitalState.correlatedTradesCount) ||
+        capitalState.correlatedTradesCount < 0) {
+      return { passed: false, reason: 'Order blocked by Exposure Controller: invalid risk snapshot' };
+    }
     const report = this.evaluateExposure(underlying, currentGreeks, capitalState);
     if (report.overallCompliance === 'BREACH') {
       return {
