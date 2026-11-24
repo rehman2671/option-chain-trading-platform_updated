@@ -40,3 +40,11 @@ Issues [#17](https://github.com/rehman2671/option-chain-trading-platform_updated
 ## Update protocol
 
 At each substantive batch record task IDs, implementation/partial/accepted state, exact head and base, workflow URLs/conclusions, merge SHA, hosted acceptance evidence, compatibility changes and blockers. Keep README links and detailed phase ledger synchronized. A pending or failed test is not a passed test; a merged commit is not a deployed service. Do not create another phase just to retry a failing check.
+
+## Latest verified checkpoint — 2026-11-25 IST (supersedes earlier statuses)
+
+- Main includes #143–#147; #146 merged as 70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3 after both workflows 45456973605/45456973544 passed. Combined main acceptance not verified.
+- #148 old head full regression run [45459104394](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45459104394): 2182 pass, 1 fail, Phase130 NRML rejection precedence. Repaired actual service and extended regression in commits 382d9d6379ae3f7a2f92af2625e1e2b4e16a16f7 / eb1fb725f2865f0dc23f5907be717ffd6ceb2db0; fresh CI required, no merge.
+- #149 and #150 paper staging (45461511237,45462900352) and production build passed; full regression/invariants (45461511294,45462900330) running at checkpoint. Do not reset unaffected CI.
+- [Consolidated durable intent, drawdown, and auth batch](MEGA_PHASE_01_DURABLE_INTENT_AUTH_RECOVERY.md) records exact task IDs and limitations. New ledger primitives are not yet wired to an active execution gateway. Auth changes affect login/MFA/admin routes; new regression files pending exact-head CI.
+- Main 12 scoped merged, 37 partial, 1 outstanding. Proposed combined 12/38/0 including #150. Zero full phase acceptance. No new task count claimed for previously partial work. Actual authenticated portfolio evidence, atomic dispatch/reservation integration and safe release, authorized drawdown reset and hosted Google AI Studio checks remain priorities.
