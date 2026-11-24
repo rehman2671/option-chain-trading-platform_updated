@@ -279,16 +279,24 @@ describe('Phase119 exact Upstox native GET cardinality and duplicate-ID quaranti
       'guardFullBrokerOrderBook','guardExactBrokerOrderTrades',
       'guardFullBrokerPositionRows'
     ])assert.ok(src.includes(name),name);
-    // Phase131 adds one independently fenced full-market quote GET.
-    // Preserve the ORIGINAL 8 account/history GET checks without allowing
-    // the new quote session checks to satisfy them accidentally.
-    const quoteStart=src.indexOf('public async getLiveOptionQuote(');
-    const quoteEnd=src.indexOf('public async getGttOrders(',quoteStart);
-    assert.ok(quoteStart>=0&&quoteEnd>quoteStart);
-    const quoteBody=src.slice(quoteStart,quoteEnd);
-    const legacyBody=src.slice(0,quoteStart)+src.slice(quoteEnd);
-    assert.equal((legacyBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,8);
-    assert.equal((legacyBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,8);
+    // Independently inspect each original method; added protective fences cannot
+    // satisfy any original method's assertions or break a global call count.
+    const methodBody=(name:string)=>{
+      const start=src.indexOf('public async '+name+'(');
+      assert.ok(start>=0,name);
+      const end=src.indexOf('\n  public ',start);
+      return src.slice(start,end<0?src.length:end);
+    };
+    for(const name of ['getVerifiedLivePositionQuantity','getVerifiedNrmlPositionRows',
+      'getGttOrders','getGttOrderDetails','getOrderDetails','getOrderBook',
+      'getHistoricalFoTradesPage','getOrderTrades']){
+      const body=methodBody(name);
+      assert.equal((body.match(/captureRiskReadIdentity\(\)/g)||[]).length,1,name);
+      assert.equal((body.match(/currentRiskReadIdentity\(session\)/g)||[]).length,1,name);
+      assert.equal((body.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,1,name);
+    }
+    const quoteBody=methodBody('getLiveOptionQuote');
+    assert.equal((quoteBody.match(/captureRiskReadIdentity\(\)/g)||[]).length,1);
     assert.equal((quoteBody.match(/currentRiskReadIdentity\(session\)/g)||[]).length,2);
     assert.equal((quoteBody.match(/AbortSignal\.timeout\(12_000\)/g)||[]).length,1);
     safety();
