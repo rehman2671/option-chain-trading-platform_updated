@@ -938,16 +938,20 @@ quantRouter.get('/stress-test', (req, res) => {
 quantRouter.get('/exposure-limits', (req, res) => {
   try {
     const underlying = resolveUnderlying(req);
+    // This legacy panel is a model scenario, not an account-wide broker risk report.
     const positions = positionAdapter.getActivePositions(underlying);
     let netDelta = 0;
     let netGamma = 0;
     let netTheta = 0;
     let netVega = 0;
     for (const p of positions) {
-      netDelta += (p.netDelta || 0.35) * p.quantity;
-      netGamma += (p.netGamma || 0.0015) * p.quantity;
-      netTheta += (p.netTheta || -15) * p.quantity;
-      netVega += (p.netVega || 10) * p.quantity;
+      if (![p.netDelta,p.netGamma,p.netTheta,p.netVega,p.quantity].every(Number.isFinite)) {
+        return res.status(503).json({error:{code:'EXPOSURE_MODEL_INPUT_UNAVAILABLE'},accountEvidenceVerified:false,orderAuthorized:false});
+      }
+      netDelta += p.netDelta * p.quantity;
+      netGamma += p.netGamma * p.quantity;
+      netTheta += p.netTheta * p.quantity;
+      netVega += p.netVega * p.quantity;
     }
 
     const state = exposureController.evaluateExposure(
@@ -963,7 +967,9 @@ quantRouter.get('/exposure-limits', (req, res) => {
         correlatedTradesCount: positions.length
       }
     );
-    res.json(state);
+    res.setHeader('Cache-Control','no-store');
+    res.json({...state,evidenceSource:'MODELED_SCENARIO',accountEvidenceVerified:false,
+      greekEvidenceVerified:false,capitalEvidenceVerified:false,orderAuthorized:false});
   } catch (err: any) {
     res.status(500).json({ error: { code: 'EXPOSURE_ERROR', message: err.message } });
   }

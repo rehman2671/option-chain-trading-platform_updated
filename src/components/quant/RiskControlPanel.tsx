@@ -72,7 +72,11 @@ export const RiskControlPanel: React.FC<RiskControlPanelProps> = ({ underlying }
       ]);
 
       if (stressRes.ok) setStressReport(await stressRes.json());
-      if (expRes.ok) setExposureState(await expRes.json());
+      if (expRes.ok) {
+        const report=await expRes.json();
+        setExposureState(report?.evidenceSource==='MODELED_SCENARIO' && report.accountEvidenceVerified===false &&
+          report.greekEvidenceVerified===false && report.capitalEvidenceVerified===false && Array.isArray(report.limits) ? report : null);
+      } else setExposureState(null);
       if (ksRes.ok) setKillSwitchState(await ksRes.json());
       if (settingsRes.ok) {
         const sData = await settingsRes.json();
@@ -716,20 +720,19 @@ export const RiskControlPanel: React.FC<RiskControlPanelProps> = ({ underlying }
               <span>Portfolio Exposure & Greek Ceilings (Section 26)</span>
             </h3>
             <p className="text-slate-400 text-xs mt-0.5">
-              Strict bounds on aggregate Delta, Gamma, Vega, Theta, and Capital at Risk (Max 20%).
+              Model-only scenario for Delta, Gamma, Vega, Theta and capital-at-risk limits. Actual broker portfolio Greeks and capital are unverified.
             </p>
           </div>
           <span
             className={`px-3 py-1 rounded-full text-xs font-bold border ${
-              exposureState?.overallCompliance === 'COMPLIANT'
-                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+              'bg-amber-500/10 text-amber-300 border-amber-500/30'
             }`}
           >
-            COMPLIANCE: {exposureState?.overallCompliance || 'COMPLIANT'}
+            ACCOUNT RISK: UNVERIFIED
           </span>
         </div>
 
+        <p className="text-xs text-amber-300" role="status">{exposureState ? 'Illustrative model values only. Do not use as approval to place an order.' : 'Exposure model unavailable; no account compliance result is established.'}</p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           {exposureState?.limits.map((limit, idx) => (
             <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-2">
@@ -744,7 +747,7 @@ export const RiskControlPanel: React.FC<RiskControlPanelProps> = ({ underlying }
                       : 'bg-rose-500/10 text-rose-400'
                   }`}
                 >
-                  {limit.status}
+                  MODEL {limit.status}
                 </span>
               </div>
               <div className="flex items-baseline justify-between">

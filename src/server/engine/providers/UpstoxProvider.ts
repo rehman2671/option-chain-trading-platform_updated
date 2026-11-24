@@ -12,6 +12,8 @@ import {
 } from './types.js';
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
+import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
 import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
 import {resolveUniqueBrokerNetPosition}
   from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
@@ -423,56 +425,28 @@ export class UpstoxProvider implements IMarketDataProvider {
   public async getEmaBrokerRiskSnapshot(
     instrumentKey: string, quantity: number, product: 'MIS' | 'NRML'
   ): Promise<BrokerRiskSnapshot | null> {
-    if (!this.isConnected || !this.accessToken ||
-        !instrumentKey || !Number.isInteger(quantity) || quantity <= 0) return null;
-    const headers = {
-      Authorization: 'Bearer ' + this.accessToken,
-      Accept: 'application/json'
-    };
+    const session=this.captureRiskReadIdentity();
+    if (!session || !/^(NSE_FO|BSE_FO)\|[0-9]+$/.test(instrumentKey) ||
+        !Number.isSafeInteger(quantity) || quantity<=0 || !['MIS','NRML'].includes(product)) return null;
+    const startedAt=Date.now();
+    const headers={Authorization:'Bearer '+session.bearerToken,Accept:'application/json'};
+    const signal=AbortSignal.timeout(12000);
     try {
-      const [fundsRes, marginRes, positionsRes] = await Promise.all([
-        fetch('https://api.upstox.com/v2/user/get-funds-and-margin', { headers }),
-        fetch('https://api.upstox.com/v2/charges/margin', {
-          method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instruments: [{
-            instrument_key: instrumentKey, quantity, transaction_type: 'BUY',
-            product: product === 'MIS' ? 'I' : 'D'
-          }] })
+      const [fundsRes,marginRes,positionsRes]=await Promise.all([
+        fetch('https://api.upstox.com/v2/user/get-funds-and-margin',{headers,signal}),
+        fetch('https://api.upstox.com/v2/charges/margin',{
+          method:'POST',headers:{...headers,'Content-Type':'application/json'},signal,
+          body:JSON.stringify({instruments:[{instrument_key:instrumentKey,quantity,
+            transaction_type:'BUY',product:product==='MIS'?'I':'D'}]})
         }),
-        fetch('https://api.upstox.com/v2/portfolio/short-term-positions', { headers })
+        fetch('https://api.upstox.com/v2/portfolio/short-term-positions',{headers,signal})
       ]);
-      if (!fundsRes.ok || !marginRes.ok || !positionsRes.ok) {
-        console.warn('[EMA BROKER RISK] Upstox live account API unavailable:', fundsRes.status, marginRes.status, positionsRes.status);
-        return null;
-      }
-      const [funds, margin, portfolio]: any[] = await Promise.all([
-        fundsRes.json(), marginRes.json(), positionsRes.json()
-      ]);
-      if (funds?.status !== 'success' || margin?.status !== 'success' ||
-          portfolio?.status !== 'success' || !Array.isArray(portfolio?.data)) return null;
-      const availableMargin = Number(funds?.data?.equity?.available_margin);
-      const usedMargin = Number(funds?.data?.equity?.used_margin);
-      const requiredMargin = Number(margin?.data?.final_margin);
-      if (![availableMargin, usedMargin, requiredMargin].every(Number.isFinite)) return null;
-      let portfolioPnl = 0;
-      let activePositions = 0;
-      for (const p of portfolio.data) {
-        if (p?.pnl === null || p?.pnl === undefined ||
-            p?.net_quantity === null || p?.net_quantity === undefined) return null;
-        const pnl = Number(p.pnl);
-        const netQuantity = Number(p.net_quantity);
-        if (!Number.isFinite(pnl) || !Number.isInteger(netQuantity)) return null;
-        portfolioPnl += pnl;
-        if (netQuantity !== 0) activePositions++;
-      }
-      return {
-        source: 'UPSTOX_LIVE',
-        checkedAt: new Date().toISOString(),
-        availableMargin, usedMargin, requiredMargin, portfolioPnl, activePositions
-      };
-    } catch (err: any) {
-      console.warn('[EMA BROKER RISK] Live broker account lookup failed:', err?.message || String(err));
+      if(!fundsRes.ok||!marginRes.ok||!positionsRes.ok||!this.currentRiskReadIdentity(session))return null;
+      const [funds,margin,portfolio]=await Promise.all([fundsRes.json(),marginRes.json(),positionsRes.json()]);
+      if(!this.currentRiskReadIdentity(session))return null;
+      return parseBrokerRiskResponse(funds,margin,portfolio,startedAt,Date.now());
+    } catch {
+      console.warn('[EMA BROKER RISK] Verified broker account evidence unavailable');
       return null;
     }
   }
@@ -898,6 +872,26 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.warn('[UPSTOX] Read-only order trades unavailable');
       return null;
     }
+  }
+
+  /** Read-only evidence for a durable, previously submitted intent.
+   * Caller must independently authenticate ownership of the persisted intent.
+   * No order POST, retry, offset or position closure is authorized.
+   */
+  public async getVerifiedOrderReconciliation(intent: OrderIntentEvidence): Promise<OrderEvidence> {
+    const frozen={...intent};
+    const unavailable=()=>reconcileOrderEvidence(frozen,null,null);
+    if(!validOrderIntent(frozen))return unavailable();
+    const session=this.captureRiskReadIdentity();
+    if(!session)return unavailable();
+    const start=Date.now();
+    try {
+      const [detail,trades]=await Promise.all([
+        this.getOrderDetails(frozen.orderId),this.getOrderTrades(frozen.orderId)
+      ]);
+      if(!this.currentRiskReadIdentity(session)||Date.now()-start>15000||Date.now()<start)return unavailable();
+      return reconcileOrderEvidence(frozen,detail,trades);
+    }catch{return unavailable();}
   }
 
   public async getOrderHistory(orderId: string): Promise<any[]> {
