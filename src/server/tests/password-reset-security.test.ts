@@ -35,3 +35,34 @@ test('only canonical random tokens are accepted; stored digests differ from raw 
     assert.equal(hashPasswordResetToken(invalid), null);
   }
 });
+
+test('SQLite reset token is consumed once and rejects expired, replaced or disabled identities', async () => {
+  const { dbEngine } = await import('../db.js');
+  await dbEngine.initialize();
+  const db = dbEngine.getRawDatabase();
+  const id = 'test-reset-' + createPasswordResetToken().token;
+  const now = new Date().toISOString();
+  const future = new Date(Date.now() + 60000).toISOString();
+  const past = new Date(Date.now() - 60000).toISOString();
+  const a = createPasswordResetToken();
+  const b = createPasswordResetToken();
+  db.prepare('INSERT INTO users (id, email, name, role, is_active, password_hash, email_verified, created_at) VALUES (?, ?, ?, ?, 1, ?, 1, ?)').run(id, id + '@example.invalid', 'Test', 'OPERATOR', 'original-hash', now);
+  try {
+    dbEngine.setResetToken(id, a.digest, future);
+    dbEngine.setResetToken(id, b.digest, future);
+    dbEngine.clearResetTokenIfMatches(id, a.digest);
+    assert.equal(dbEngine.consumeResetToken(id, a.digest, 'rejected', now), false);
+    assert.equal(dbEngine.consumeResetToken(id, b.digest, 'new-hash', now), true);
+    assert.equal(dbEngine.consumeResetToken(id, b.digest, 'replayed', now), false);
+    assert.equal(dbEngine.findUserByEmail(id + '@example.invalid').password_hash, 'new-hash');
+    dbEngine.setResetToken(id, a.digest, past);
+    assert.equal(dbEngine.consumeResetToken(id, a.digest, 'expired', now), false);
+    dbEngine.setResetToken(id, a.digest, future);
+    dbEngine.setUserActiveStatus(id, false);
+    assert.equal(dbEngine.consumeResetToken(id, a.digest, 'disabled', now), false);
+    dbEngine.clearResetTokenIfMatches(id, a.digest);
+    assert.equal(dbEngine.findUserByResetToken(a.digest), null);
+  } finally {
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  }
+});
