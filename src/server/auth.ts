@@ -650,3 +650,30 @@ authRouter.get('/broker-preparation/recovery',async(req:Request,res:Response)=>{
     return res.json(result);
   }catch{return res.status(503).json({error:'Broker preparation recovery unavailable.'});}
 });
+
+
+/** Owner-triggered reconciliation changes only local journal metadata.
+ * The broker order ID is derived from a persisted intent or unique native
+ * order-book tag; all native calls are read-only. No release/retry. */
+const recoveryLimiter=rateLimit({windowMs:60000,max:6,standardHeaders:true,legacyHeaders:false});
+authRouter.post('/broker-preparation/recovery/:intentId/reconcile',recoveryLimiter,async(req:Request,res:Response)=>{
+  res.setHeader('Cache-Control','no-store');
+  const original=getVerifiedSessionPrincipal(req);
+  if(!original)return res.status(401).json({error:'Authentication required.'});
+  const intentId=req.params.intentId;
+  if(typeof intentId!=='string'||!/^[A-Za-z0-9:_-]{1,128}$/.test(intentId))return res.status(400).json({error:'Invalid intent identity.'});
+  try{
+    const {activeProvider}=await import('./engine/providers/index.js');
+    const current=getVerifiedSessionPrincipal(req);
+    if(!current||current.user.id!==original.user.id||current.sessionVersion!==original.sessionVersion)
+      return res.status(401).json({error:'Authentication required.'});
+    const provider=activeProvider as unknown as import('./release/ownerOrderRecovery.js').OwnerRecoveryProvider;
+    if(!['getLiveConnectionStatus','getBrokerAuthEpoch','getOrderBook','getOrderDetails','getOrderTrades'].every(k=>typeof (provider as unknown as Record<string,unknown>)[k]==='function'))
+      return res.status(503).json({error:'Native recovery unavailable.'});
+    const result=await dbEngine.reconcileAuthorizedBrokerPreparation({userId:current.user.id,sessionVersion:current.sessionVersion},provider,intentId);
+    const after=getVerifiedSessionPrincipal(req);
+    if(!after||after.user.id!==original.user.id||after.sessionVersion!==original.sessionVersion)return res.status(401).json({error:'Authentication required.'});
+    if(result.status==='DENIED')return res.status(403).json({error:'Recovery target unavailable.'});
+    return res.json(result);
+  }catch{return res.status(503).json({error:'Recovery unavailable; capital retained.'});}
+});
