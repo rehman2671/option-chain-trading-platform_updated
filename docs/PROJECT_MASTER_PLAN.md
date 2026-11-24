@@ -74,6 +74,6 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 3. If CI fails, identify actual failure, repair and retest. Do not waive checks or claim a future merge. Isolate independently safe work if needed. External blockers only stop their dependent release gate; no fake source data or broker evidence.
 4. Issues #17–#22 remain the separate external evidence track (licensed data, calendar/masters, independent validation, broker NRML protection, OOS, actual AI Studio operations). CI success is source acceptance, not proof of profitable trading, device delivery or hosted durability.
 
-## Current implementation checkpoint — 2026-11-24
+## Current implementation checkpoint — 2026-11-25 (IST)
 
-P01 remains the active phase. PR #144 merged after exact-head CI success; #145 and #146 remain independent pending CI branches, and the risk-control follow-up repairs reset credential persistence and false local halt action claims. The master scope stays 250 tasks; authoritative current counts, workflow evidence and remaining gates are in [PROJECT_PROGRESS_TRACKER.md](PROJECT_PROGRESS_TRACKER.md). No new phase or hosted/live release authorized. Reconcile the tracker after each verified merge, not by restarting another branch's in-flight CI.
+P01 remains active; #143–#145 and #147 are merged. #146 and #148 remain independently pending full regression. Next repair on repair/mega01-exposure-input-integrity rejects malformed explicit numerical risk snapshots and preserves zero margin; synthetic default callers and actual portfolio evidence remain unverified. The master scope remains 250 tasks. Refer to [PROJECT_PROGRESS_TRACKER.md](PROJECT_PROGRESS_TRACKER.md) for current CI and task counts. No live release or hosting change authorized.
