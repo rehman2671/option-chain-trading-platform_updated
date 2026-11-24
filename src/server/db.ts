@@ -4,7 +4,8 @@
  */
 
 import Database from 'better-sqlite3';
-import {initEntryPreparationJournal,inspectPreparedEntries} from './release/entryPreparationJournal.js';
+import {inspectPreparedEntries} from './release/entryPreparationJournal.js';
+import {initAuthenticatedCandidateJournal,prepareAuthenticatedCandidate,type AuthenticatedCandidateInput} from './release/authenticatedCandidateJournal.js';
 import {resolveServerBrokerOwnerBinding,type VerifiedPrincipal,type NativeConnectionIdentity} from './release/serverBrokerOwnerBinding.js';
 import fs from 'fs';
 import path from 'path';
@@ -82,7 +83,7 @@ class DatabaseEngine {
       // 5. Run schema migrations and indexes
       this.runMigrations();
       this.ensureSessionVersionColumn();
-      initEntryPreparationJournal(this.db);
+      initAuthenticatedCandidateJournal(this.db);
       this.ensureAutoIndexes();
       this.seedQuantFeatureHistoryIfEmpty();
       this.syncConfiguredUsersFromEnv();
@@ -2919,6 +2920,14 @@ class DatabaseEngine {
       if(!binding)return null;
       return inspectPreparedEntries(this.db!,binding.accountId,binding.ownerId);
     })();}catch{return null;}
+  }
+
+  /** Internal non-dispatch adapter. Never call with HTTP request-body evidence.
+   * Trusted upstream evidence collection and live gateway integration remain
+   * required. Original principal is rechecked inside the SQLite transaction. */
+  public prepareAuthorizedBrokerCandidate(principal:VerifiedPrincipal,connection:NativeConnectionIdentity,input:AuthenticatedCandidateInput,now:number){
+    if(!this.db)return {status:'DENIED' as const,reason:'CANDIDATE_JOURNAL_UNAVAILABLE',orderAuthorized:false as const,capitalReleaseAuthorized:false as const};
+    return prepareAuthenticatedCandidate(this.db,principal,connection,input,now);
   }
 
   public getUserSessionVersion(userId:string): number|null {
