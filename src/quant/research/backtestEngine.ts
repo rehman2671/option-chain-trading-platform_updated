@@ -9,6 +9,7 @@
  */
 
 import { BacktestResult, StrategyDefinition } from '../types.js';
+import {replayStatistics} from './replayStatistics.js';
 import { dbEngine } from '../../server/db.js';
 import {
   evaluateStrategyEntry,
@@ -75,13 +76,13 @@ export class BacktestEngine {
       const optRow = rawDb.prepare(`
         SELECT MIN(market_ts) as min_ts, MAX(market_ts) as max_ts, COUNT(*) as cnt
         FROM quant_option_chain_snapshots
-        WHERE underlying = ? OR underlying = 'NIFTY'
+        WHERE underlying = ?
       `).get(underlying) as any;
 
       const cndRow = rawDb.prepare(`
         SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt
         FROM ema_15m_candles
-        WHERE instrument = ? OR instrument = 'NIFTY'
+        WHERE instrument = ?
       `).get(underlying) as any;
 
       const optMin = optRow?.min_ts || '';
@@ -93,8 +94,8 @@ export class BacktestEngine {
       const cndCnt = cndRow?.cnt || 0;
 
       const dates = [optMin, optMax, cndMin, cndMax].filter(Boolean).sort();
-      const minDate = dates[0] || '2026-08-17';
-      const maxDate = dates[dates.length - 1] || new Date().toISOString();
+      const minDate = dates[0] || '';
+      const maxDate = dates[dates.length - 1] || '';
 
       return {
         hasOptionSnapshots: optCnt > 0,
@@ -127,6 +128,9 @@ export class BacktestEngine {
     const underlying = (strategy as any).symbol || (strategy as any).underlying || (strategy.id.includes('bank') ? 'BANKNIFTY' : 'NIFTY');
     const availability = this.getHistoricalDataAvailability(underlying);
 
+    if (!Number.isFinite(initialCapital)||initialCapital<=0||!Number.isFinite(Date.parse(periodStart))||!Number.isFinite(Date.parse(periodEnd))||Date.parse(periodEnd)<Date.parse(periodStart)) {
+      return this.buildInsufficientDataResult(backtestId,strategy,periodStart,periodEnd,'Invalid replay dates or starting capital',availability.minDate,availability.maxDate);
+    }
     if (!rawDb) {
       return this.buildInsufficientDataResult(
         backtestId, strategy, periodStart, periodEnd,
@@ -628,62 +632,20 @@ export class BacktestEngine {
     peakCapital: number,
     availability: any
   ): BacktestResult {
-    const sampleSize = trades.length;
-    const totalNetPnl = Number((totalGrossPnl - totalCosts).toFixed(2));
-    const winRate = sampleSize > 0 ? Number(((winCount / sampleSize) * 100).toFixed(1)) : 0;
-    const lossRate = Number((100 - winRate).toFixed(1));
-
-    const winTrades = trades.filter(t => t.netPnl > 0);
-    const lossTrades = trades.filter(t => t.netPnl <= 0);
-
-    const avgWin = winTrades.length > 0
-      ? winTrades.reduce((a, b) => a + b.netPnl, 0) / winTrades.length
-      : 0;
-    const avgLoss = lossTrades.length > 0
-      ? Math.abs(lossTrades.reduce((a, b) => a + b.netPnl, 0) / lossTrades.length)
-      : 1;
-
-    const profitFactor = lossTrades.length > 0 && avgLoss > 0
-      ? Number((winTrades.reduce((a, b) => a + b.netPnl, 0) / (avgLoss * lossTrades.length)).toFixed(2))
-      : winTrades.length > 0 ? 3.0 : 0;
-
-    const expectancyR = sampleSize > 0
-      ? Number(((winRate / 100) * (avgWin / (avgLoss || 1)) - (lossRate / 100)).toFixed(2))
-      : 0;
-
-    // Sharpe Ratio from trade returns
-    const meanReturn = sampleSize > 0 ? totalNetPnl / sampleSize : 0;
-    const variance = sampleSize > 1
-      ? trades.reduce((acc, t) => acc + Math.pow(t.netPnl - meanReturn, 2), 0) / (sampleSize - 1)
-      : 1;
-    const stdDev = Math.sqrt(variance) || 1;
-    const sharpeRatio = Number(((meanReturn / stdDev) * Math.sqrt(Math.min(252, sampleSize))).toFixed(2));
-    const sortinoRatio = Number((sharpeRatio * 1.25).toFixed(2));
-    const calmarRatio = maxDrawdown > 0 ? Number(((totalNetPnl / peakCapital * 100) / maxDrawdown).toFixed(2)) : 1.5;
-
-    // Monte Carlo bootstrap 2,000 permutations from the real trade returns
-    let mcP5 = totalNetPnl * 0.7;
-    let mcP50 = totalNetPnl;
-    let mcP95 = totalNetPnl * 1.3;
-
-    if (sampleSize >= 4) {
-      const mcSims: number[] = [];
-      const returns = trades.map(t => t.netPnl);
-      for (let s = 0; s < 500; s++) {
-        let simPnl = 0;
-        for (let i = 0; i < sampleSize; i++) {
-          simPnl += returns[Math.floor(Math.random() * sampleSize)];
-        }
-        mcSims.push(simPnl);
-      }
-      mcSims.sort((a, b) => a - b);
-      mcP5 = mcSims[Math.floor(mcSims.length * 0.05)];
-      mcP50 = mcSims[Math.floor(mcSims.length * 0.50)];
-      mcP95 = mcSims[Math.floor(mcSims.length * 0.95)];
-    }
-
-    const passedGates = sampleSize >= 5 && profitFactor >= 1.2 && sharpeRatio >= 0.8 && maxDrawdown <= 25.0;
-
+    const stats=replayStatistics(trades.map(t=>t.netPnl),JSON.stringify([strategy.id,strategy.version,periodStart,periodEnd]));
+    if(!stats||!Number.isFinite(maxDrawdown)||!Number.isFinite(peakCapital)||peakCapital<=0)
+      return this.buildInsufficientDataResult(backtestId,strategy,periodStart,periodEnd,'Invalid replay statistics',availability.minDate,availability.maxDate);
+    // Legacy numeric API fields use 0 for unavailable ratios. They are not
+    // positive evidence. No untouched OOS or validated cost model is supplied.
+    const round=(n:number|null,d=2)=>n===null?0:Number(n.toFixed(d));
+    const {sampleSize,avgWin,avgLoss}=stats;
+    const totalNetPnl=stats.total;
+    const winRate=round(stats.winRate,1),lossRate=round(stats.lossRate,1);
+    const profitFactor=round(stats.profitFactor),expectancyR=round(stats.expectancyR);
+    const sharpeRatio=round(stats.ratio),sortinoRatio=round(stats.sortino);
+    const calmarRatio=0; // annualized return unavailable
+    const [mcP5,mcP50,mcP95]=stats.bootstrap??[0,0,0];
+    const passedGates=false;
     const result: BacktestResult = {
       id: backtestId,
       strategyId: strategy.id,
@@ -712,15 +674,15 @@ export class BacktestEngine {
       avgWin: Math.round(avgWin),
       avgLoss: Math.round(avgLoss),
       consecutiveLossesMax: maxConsecutiveLosses,
-      walkForwardPassed: true,
-      oosSharpe: Number((sharpeRatio * 0.88).toFixed(2)),
+      walkForwardPassed: false,
+      oosSharpe: 0,
       monteCarloP5: Math.round(mcP5),
       monteCarloP50: Math.round(mcP50),
       monteCarloP95: Math.round(mcP95),
-      overfitWarning: false,
-      deflatedSharpeScore: Number((sharpeRatio * 0.85).toFixed(2)),
+      overfitWarning: true,
+      deflatedSharpeScore: 0,
       passedGates,
-      failureReason: passedGates ? undefined : 'Failed one or more statistical quality gates (sample size, profit factor, or drawdown)',
+      failureReason: 'Descriptive replay only; independent OOS, validated costs, provenance and annualized metrics not established. Undefined ratios use legacy zero sentinel.',
       trades: trades.slice(-50)
     };
 
@@ -751,8 +713,8 @@ export class BacktestEngine {
       dataSource: 'INSUFFICIENT_HISTORICAL_DATA',
       status: 'INSUFFICIENT_HISTORICAL_DATA',
       availableDataRange: {
-        minDate: minDate || '2026-08-17',
-        maxDate: maxDate || '2026-09-14'
+        minDate: minDate || '',
+        maxDate: maxDate || ''
       },
       sampleSize: 0,
       winRate: 0,
