@@ -33,11 +33,11 @@ export function reconcileOrderEvidence(i:OrderIntentEvidence,detail:unknown,trad
   if(!Array.isArray(trades)||trades.length>5000)return unknown('TRADE_BOOK_UNAVAILABLE');
   let qty=0,value=0;
   const seen=new Set<string>();
-  const numericToken=i.instrumentKey.split('|')[1];
+  // Numeric-only legacy exchange tokens lack independently proven segment mapping.
   for(const raw of trades){
     const t=row(raw);
     if(!t||t.order_id!==i.orderId||t.product!==i.product||t.transaction_type!==i.side||
-      (t.instrument_token!==i.instrumentKey&&t.instrument_token!==numericToken)||
+      t.instrument_token!==i.instrumentKey||
       !id(t.trade_id)||seen.has(t.trade_id)||!id(t.exchange_order_id))return unknown('TRADE_IDENTITY_UNVERIFIED');
     seen.add(t.trade_id);
     const n=t.quantity,price=brokerNumber(t.average_price);
