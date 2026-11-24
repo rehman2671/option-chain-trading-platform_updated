@@ -16,7 +16,6 @@ import { activeProvider } from '../../server/engine/providers/index.js';
 import { readQuantCandidateEvidence, type QuantEvidenceResult } from '../data/quantCandidateEvidence.js';
 import { killSwitchEngine } from '../risk/killSwitch.js';
 import { drawdownController } from '../risk/drawdownController.js';
-import { exposureController } from '../risk/exposureController.js';
 import { quantAuditLogger } from '../audit/auditLogger.js';
 import { getComputedMarketContext } from '../context/marketContext.js';
 import { QuantUnderlying, QuantExecutionMode, QuantDecisionOutput } from '../types.js';
@@ -257,10 +256,9 @@ export class QuantScheduler {
    * Executes a scheduled decision cycle for a user and optionally routes to order execution based on execution mode.
    * STRICT SAFETY RULES:
    * - If executionMode is ADVISORY_ONLY: only the decision is evaluated and recorded. NO orders are sent.
-   * - If executionMode is SHADOW: orders are routed to orderAdapter with mode: 'SHADOW'.
-   * - If executionMode is LIVE_PAPER: orders are routed to orderAdapter with mode: 'PAPER'.
-   * - If executionMode is LIVE_REAL: orders are routed to orderAdapter with mode: 'LIVE'.
-   * - In ALL modes, kill switch, drawdown controller, and exposure controller are enforced.
+   * - Other modes retain the configured intent, but return read-only candidate evidence.
+   * - No automatic order until structured leg sides, account risk and reconciliation are verified.
+   * - Kill switch and drawdown checks still precede the decision cycle.
    */
   public async runQuantDecisionExecutionCycle(
     userId?: string | null,
