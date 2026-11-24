@@ -2,6 +2,10 @@
 
 Updated 2026-11-25 (IST). Canonical scope: [Master project plan](PROJECT_MASTER_PLAN.md). Detailed critical repair ledger: [Mega Phase 01](MEGA_PHASE_01_CRITICAL_REPAIR.md).
 
+## Current candidate-risk checkpoint — 2026-11-25 IST
+
+Main d6ea6154f038c1635cc2eab89e665b1e7dd9faef includes #148 (45463825163 / 45463824992), #149 (45461511294 / 45461511237) and #150 (45462900330 / 45462900352), all exact-head workflows passed. Main task counts: 12 scoped merged / 38 partial / 0 untouched, no full acceptance; supersedes earlier historical counts. #151 green but conflicting, carried into #152. #152 head 276079b98979939af4a0f8ab92f0591bb44b4695: paper staging [45478233259](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45478233259) and production build passed, full and invariant regression [45478233332](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45478233332) running. New independent candidate risk batch adds native account binding, projected premium/margin/Greeks and read-only recovery review; [detailed ledger](MEGA_PHASE_01_CANDIDATE_RISK_BROKER_BINDING.md). New CI pending; no actual broker orders, capital release or hosting changes. Actual listed marks, account-owner authorization, active gateway and safe release pending.
+
 ## Verified repository baseline
 
 - #143 Telegram operational monitoring merged: 52f5e862c2f6232b0dc0b7863b5d42bbe2fb7b95.
