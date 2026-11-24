@@ -6,7 +6,7 @@ type Limits={netDelta:number;netGamma:number;netTheta:number;netVega:number;gros
 export interface ProjectedEntryInput {
   broker:BoundBrokerEntryEvidence;
   expected:BrokerEntryIdentity;
-  sessionEpoch:string;
+  sessionEpoch:string; // decimal string of the pinned native auth epoch
   // Must originate from trusted listed option identity and normalized per-unit marks.
   currentMarks:GreekMark[]; candidateMark:GreekMark;
   // Bounded long option BUY only. Worst-case premium at limit + explicit fee bound.
@@ -30,7 +30,7 @@ export function evaluateProjectedEntryRisk(x:ProjectedEntryInput,now:number):Res
   if(!x||!x.broker||!validBrokerEntryIdentity(x.expected)||!validBrokerEntryIdentity(x.broker.identity)||
     !sameIdentity(x.broker.identity,x.expected)||x.broker.source!=='UPSTOX_ACCOUNT_READS'||
     !Number.isSafeInteger(now)||!fresh(x.broker.observedAt,now)||!fresh(x.broker.receivedAt,now)||
-    x.broker.receivedAt<x.broker.observedAt||typeof x.sessionEpoch!=='string'||!x.sessionEpoch||
+    x.broker.receivedAt<x.broker.observedAt||x.sessionEpoch!==String(x.expected.authEpoch)||
     !positive(x.limitPricePaise)||!nonnegative(x.maxFeesPaise)||!positive(x.maxDailyLossPaise)||
     !Array.isArray(x.currentMarks)||!x.candidateMark||x.candidateMark.instrumentKey!==x.expected.instrumentKey||
     !x.limits||!Array.isArray(x.broker.reportedOptionPositions))return deny('CANDIDATE_EVIDENCE_INVALID');
