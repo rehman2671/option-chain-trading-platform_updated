@@ -69,6 +69,10 @@ export async function reconcileOwnerPreparedOrder(db:Database.Database,principal
   const interim=connection(provider);
   if(!interim.isConnected||interim.userId!==initial.intent.accountScope||interim.authEpoch!==initial.authEpoch)
    return out('UNKNOWN','BROKER_SESSION_CHANGED');
+  const mid=clock();
+  if(!Number.isSafeInteger(mid)||mid<start||mid-start>15000)return out('UNKNOWN','RECOVERY_EVIDENCE_STALE');
+  const stillOwned=db.transaction(()=>target(db,principal,interim,intentId,mid))();
+  if(!stillOwned||JSON.stringify(stillOwned)!==JSON.stringify(initial))return out('DENIED','RECOVERY_TARGET_OR_SESSION_CHANGED');
   const expected:OrderIntentEvidence={orderId,instrumentKey:initial.intent.instrumentKey,product:initial.intent.product,
    side:initial.intent.side,quantity:initial.intent.quantity,tag:initial.intent.tag};
   const [detail,trades]=await Promise.all([provider.getOrderDetails(orderId),provider.getOrderTrades(orderId)]);
