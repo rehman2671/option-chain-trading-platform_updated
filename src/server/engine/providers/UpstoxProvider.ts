@@ -139,6 +139,8 @@ export class UpstoxProvider implements IMarketDataProvider {
         this.isConnected=false;this.statusMessage='Upstox profile verification unavailable';
       }
       return result();
+    }finally{
+      if(this.historicalFoAuthEpoch===epoch&&this.accessToken===token)this.historicalFoAuthEpoch++;
     }
   }
 
@@ -146,12 +148,13 @@ export class UpstoxProvider implements IMarketDataProvider {
     const resultMap = new Map<string, UnderlyingQuote>();
 
     // If Upstox isn't authenticated, use calibrated Practice feed
-    if (!this.isConnected || !this.accessToken) {
+    const session=this.captureRiskReadIdentity();
+    if (!session) {
       return this.practiceFallback.getUnderlyingQuotes(symbols);
     }
 
     // Separate symbols into equity/indices (supported by Upstox market-quote) and commodities
-    const equitySymbols = symbols.filter(s => !COMMODITY_SYMBOLS.has(s));
+    const equitySymbols = [...new Set(symbols.filter(s => !COMMODITY_SYMBOLS.has(s)&&Object.hasOwn(this.symbolInstrumentKeyMap,s)))];
 
     if (equitySymbols.length > 0) {
       try {
@@ -163,14 +166,14 @@ export class UpstoxProvider implements IMarketDataProvider {
         const res = await fetch(url, {
           signal: AbortSignal.timeout(5000),
           headers: {
-            'Authorization': `Bearer ${this.accessToken}`,
+            'Authorization': `Bearer ${session.bearerToken}`,
             'Accept': 'application/json'
           }
         });
 
-        if (res.ok) {
+        if (res.ok && this.currentRiskReadIdentity(session)) {
           const json: any = await res.json();
-          const quotesData = json?.data || {};
+          const quotesData = json?.status==='success'&&this.currentRiskReadIdentity(session)?json.data||{}:{};
 
           for (const sym of equitySymbols) {
             const upstoxKey = this.symbolInstrumentKeyMap[sym] || `NSE_EQ|${sym}`;
@@ -179,7 +182,7 @@ export class UpstoxProvider implements IMarketDataProvider {
               ? ['BSE_INDEX|SENSEX', 'BSE_INDEX:SENSEX', 'BSE_INDEX|Sensex', 'BSE_INDEX:Sensex', 'BSE_INDEX|BSE SENSEX', 'BSE_INDEX:BSE SENSEX', 'SENSEX', 'Sensex']
               : [];
 
-            let quote = quotesData[upstoxKey] || quotesData[keyWithColon] || quotesData[upstoxKey.split('|')[1]];
+            let quote = quotesData[upstoxKey] || quotesData[keyWithColon];
             if (!quote && altSensexKeys.length > 0) {
               for (const k of altSensexKeys) {
                 if (quotesData[k]) {
@@ -189,12 +192,12 @@ export class UpstoxProvider implements IMarketDataProvider {
               }
             }
 
-            if (quote && typeof quote.last_price === 'number' && Number.isFinite(quote.last_price) && quote.last_price > 0) {
+            if (quote && (!quote.instrument_token || quote.instrument_token===upstoxKey) && typeof quote.last_price === 'number' && Number.isFinite(quote.last_price) && quote.last_price > 0) {
               resultMap.set(sym, {
                 symbol: sym,
                 spot: quote.last_price,
-                prevClose: quote.ohlc?.close || quote.last_price,
-                volume: quote.volume || 0,
+                prevClose: typeof quote.ohlc?.close==='number'&&Number.isFinite(quote.ohlc.close)&&quote.ohlc.close>0?quote.ohlc.close:quote.last_price,
+                volume: Number.isSafeInteger(quote.volume)&&quote.volume>=0?quote.volume:0,
                 available: true,
                 timestamp: new Date().toISOString(),
                 source: 'UPSTOX_LIVE',
@@ -210,6 +213,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       }
     }
 
+    if(!this.currentRiskReadIdentity(session))resultMap.clear();
     // Fill missing symbols (including commodities and any unreturned symbols) from calibrated fallback
     const missingSymbols = symbols.filter(s => !resultMap.has(s) || !resultMap.get(s)?.available || (resultMap.get(s)?.spot || 0) <= 0);
     if (missingSymbols.length > 0) {
@@ -222,6 +226,7 @@ export class UpstoxProvider implements IMarketDataProvider {
       }
     }
 
+    if(!this.currentRiskReadIdentity(session))return this.practiceFallback.getUnderlyingQuotes(symbols);
     return resultMap;
   }
 
