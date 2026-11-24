@@ -30,7 +30,7 @@ test('broker native rows retain exact candidate identity and never hide unsuppor
 test('candidate premium plus fee bound and projected net/gross risk use signed units',()=>{
  const r=evaluateProjectedEntryRisk(fixture(),now+1);
  assert.equal(r.status,'WITHIN_INPUT_LIMITS');
- if(r.status!=='WITHIN_INPUT_LIMITS')throw Error(r.reason);
+
  assert.equal(r.maxPremiumAndFeesPaise,326000);
  assert.equal(r.reservationPaise,326000);
  assert.equal(r.projected.NIFTY.netDelta,20);
