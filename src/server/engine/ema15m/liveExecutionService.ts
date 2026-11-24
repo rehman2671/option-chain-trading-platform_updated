@@ -237,6 +237,12 @@ export class LiveExecutionService {
       };
     }
 
+    // A replay of an already attempted signal must not trigger reversal SELL either.
+    if (dbEngine.hasEmaLiveSignalAttempt(signal.id)) return {
+      enabled:true,status:'HELD',requestedQuantity:quantity,filledQuantity:0,
+      positionCreated:false,message:'Prior durable live signal attempt exists; no automatic replay.'
+    };
+
     // 1. Check if an active live position already exists on this instrument
     const existingLivePos = dbEngine.getOpenEmaLivePositionByInstrument(inst);
     if (existingLivePos) {
