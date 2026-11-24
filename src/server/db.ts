@@ -690,6 +690,25 @@ class DatabaseEngine {
   /**
    * Save or update a paper trading position in SQLite
    */
+  /** Atomically create new account-owned paper legs; never overwrite an existing position. */
+  public createPaperPositionsAtomically(positions: PaperPosition[], userId: string): void {
+    if (!this.db || !userId?.trim() || positions.length===0 || positions.length>20) throw Error('INVALID_PAPER_BATCH');
+    const db=this.db;
+    db.transaction(()=>{
+      const existing=db.prepare('SELECT id FROM paper_positions WHERE id=?');
+      const read=db.prepare('SELECT user_id,status,quantity,entry_price FROM paper_positions WHERE id=?');
+      for (const pos of positions) {
+        if (!pos.id || existing.get(pos.id) || pos.status!=='OPEN' ||
+            !Number.isSafeInteger(pos.quantity) || pos.quantity<=0 ||
+            !Number.isFinite(pos.entryPrice) || pos.entryPrice<=0) throw Error('INVALID_OR_DUPLICATE_PAPER_LEG');
+        this.savePaperPosition(pos,userId);
+        const saved=read.get(pos.id) as {user_id:string;status:string;quantity:number;entry_price:number}|undefined;
+        if (!saved || saved.user_id!==userId || saved.status!=='OPEN' ||
+            saved.quantity!==pos.quantity || saved.entry_price!==pos.entryPrice) throw Error('PAPER_BATCH_WRITE_UNCONFIRMED');
+      }
+    }).immediate();
+  }
+
   public savePaperPosition(pos: PaperPosition, userId?: string | null): void {
     if (!this.db) return;
     try {
