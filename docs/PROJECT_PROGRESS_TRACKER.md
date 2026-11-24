@@ -37,6 +37,13 @@ Merged scoped IDs: 07,08,09,11,12,26,34,41,45,46,47,48. Main alone still has 29 
 
 Issues [#17](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/17) licensed option archive, [#18](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/18) calendar/master evidence, [#19](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/19) independent validation, [#20](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/20) broker NRML protection, [#21](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/21) genuine OOS performance, [#22](https://github.com/rehman2671/option-chain-trading-platform_updated/issues/22) hosted acceptance remain open.
 
+## Latest checkpoint — 2026-11-25 IST (supersedes older status above)
+
+- #146 merged to main `70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3`, exact head `6bc37098aafdcfdff0ae4e77a1680cad62bffcf0`: [EMA full safety 45456973605](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45456973605) and [paper staging 45456973544](https://github.com/rehman2671/option-chain-trading-platform_updated/actions/runs/45456973544) passed. Combined main CI not yet confirmed.
+- #145 and #147 previously merged; #148 head 1e3c23b0e3a21b04c180e8340396f0c95f0f6451 paper staging 45459104564 passed, EMA 45459104394 running. #149 head 6d3132904990c902111231c727fdb33b6d15b8b9 paper staging 45461511237 passed, EMA 45461511294 running. No premature merge or reset of their CI.
+- Main: 12 scoped merged with PR CI; 37 partial; 1 outstanding (P01-37). New consolidated batch has portfolio Greek aggregate prerequisite, atomic reservation, drawdown/hard metric validation, legacy dispatch removal, exchange ID consistency and tests. Proposed combined scope 12/38/0; P01-37 is only partial once merged. No full acceptance. [Detailed scope, remaining gates and test evidence](MEGA_PHASE_01_PORTFOLIO_RESERVATION_RISK.md).
+- Priorities: authenticate actual position/Greek/capital snapshots; integrate reservation with durable intent and safe release; persistent drawdown; finish CI and main integration; preserve actual exposure and live safety gates. All three canonical docs updated in proposed branch; no deployment.
+
 ## Update protocol
 
 At each substantive batch record task IDs, implementation/partial/accepted state, exact head and base, workflow URLs/conclusions, merge SHA, hosted acceptance evidence, compatibility changes and blockers. Keep README links and detailed phase ledger synchronized. A pending or failed test is not a passed test; a merged commit is not a deployed service. Do not create another phase just to retry a failing check.
