@@ -27,6 +27,7 @@ import { startTelegramMonitor, getTelegramMonitorStatus } from './src/server/eng
 import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
+import { browserMutationAllowed } from './src/server/release/browserMutationGuard.js';
 import { authRouter, attachUser, getUserFromRequest, requireAuth, requireSuperAdmin } from './src/server/auth.js';
 import { quantRouter } from './src/quant/api/quantRouter.js';
 import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron, setManualAccessToken } from './src/server/engine/upstoxAuthService.js';
@@ -91,6 +92,12 @@ const PORT = (() => {
 
 app.use(express.json());
 app.use(cookieParser());
+app.use('/api',(req,res,next)=>{
+  if (!browserMutationAllowed({method:req.method,hasSessionCookie:!!(req.cookies?.session_token||req.cookies?.auth_token),
+    origin:req.get('origin'),fetchSite:req.get('sec-fetch-site'),requestOrigin:req.protocol+'://'+req.get('host')}))
+    return res.status(403).json({error:'Cross-origin cookie mutation denied'});
+  next();
+});
 app.use(attachUser);
 app.use('/api/auth', authRouter);
 // Quant actions and EMA trade/account data require a verified login.
