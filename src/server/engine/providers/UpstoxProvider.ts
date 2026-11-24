@@ -13,6 +13,7 @@ import {
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
 import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
 import {resolveUniqueBrokerNetPosition}
   from '../ema15m/adaptiveUniqueBrokerPositionEvidence.js';
@@ -870,6 +871,26 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.warn('[UPSTOX] Read-only order trades unavailable');
       return null;
     }
+  }
+
+  /** Read-only evidence for a durable, previously submitted intent.
+   * Caller must independently authenticate ownership of the persisted intent.
+   * No order POST, retry, offset or position closure is authorized.
+   */
+  public async getVerifiedOrderReconciliation(intent: OrderIntentEvidence): Promise<OrderEvidence> {
+    const frozen={...intent};
+    const unavailable=()=>reconcileOrderEvidence(frozen,null,null);
+    if(!validOrderIntent(frozen))return unavailable();
+    const session=this.captureRiskReadIdentity();
+    if(!session)return unavailable();
+    const start=Date.now();
+    try {
+      const [detail,trades]=await Promise.all([
+        this.getOrderDetails(frozen.orderId),this.getOrderTrades(frozen.orderId)
+      ]);
+      if(!this.currentRiskReadIdentity(session)||Date.now()-start>15000||Date.now()<start)return unavailable();
+      return reconcileOrderEvidence(frozen,detail,trades);
+    }catch{return unavailable();}
   }
 
   public async getOrderHistory(orderId: string): Promise<any[]> {
