@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import {createHash} from 'node:crypto';
 import {resolveServerBrokerOwnerBinding,type VerifiedPrincipal,type NativeConnectionIdentity} from './serverBrokerOwnerBinding.js';
 import {readServerPreparationPolicy} from './serverPreparationPolicy.js';
 import {assessCandidateEvidenceBundle} from './candidateEvidenceBundle.js';
@@ -20,15 +21,16 @@ export function initAuthenticatedCandidateJournal(db:Database.Database):void{
   initEntryPreparationJournal(db);
   db.exec(`CREATE TABLE IF NOT EXISTS candidate_preparation_v1(
    account_scope TEXT NOT NULL,intent_id TEXT NOT NULL,owner_id TEXT NOT NULL,
-   policy_version TEXT NOT NULL,auth_epoch INTEGER NOT NULL,session_version INTEGER NOT NULL,
+   policy_version TEXT NOT NULL,policy_hash TEXT NOT NULL,auth_epoch INTEGER NOT NULL,session_version INTEGER NOT NULL,
    instrument_key TEXT NOT NULL,product TEXT NOT NULL,quantity INTEGER NOT NULL,
-   tag TEXT NOT NULL,expiry TEXT NOT NULL,limit_paise INTEGER NOT NULL,fee_paise INTEGER NOT NULL,
+   tag TEXT NOT NULL,expiry TEXT NOT NULL,underlying TEXT NOT NULL,option_type TEXT NOT NULL,strike REAL NOT NULL,
+   lot_size INTEGER NOT NULL,tick_paise INTEGER NOT NULL,limit_paise INTEGER NOT NULL,fee_paise INTEGER NOT NULL,
    reserved_paise INTEGER NOT NULL,observed_at INTEGER NOT NULL,
    PRIMARY KEY(account_scope,intent_id)
   )`);
  }).immediate();
 }
-type Receipt={owner_id:string;policy_version:string;auth_epoch:number;session_version:number;instrument_key:string;product:string;quantity:number;tag:string;expiry:string;limit_paise:number;fee_paise:number;reserved_paise:number;observed_at:number};
+type Receipt={owner_id:string;policy_version:string;policy_hash:string;auth_epoch:number;session_version:number;instrument_key:string;product:string;quantity:number;tag:string;expiry:string;underlying:string;option_type:string;strike:number;lot_size:number;tick_paise:number;limit_paise:number;fee_paise:number;reserved_paise:number;observed_at:number};
 /** Internal synchronous preparation adapter; never expose as a client mutation.
  * Caller must supply original authenticated principal, currently connected native
  * identity, and independently trusted normalized Greeks/listing/funds.
@@ -50,12 +52,19 @@ export function prepareAuthenticatedCandidate(db:Database.Database,principal:Ver
   const review=assessCandidateEvidenceBundle({ownerId:binding.ownerId,binding,listing:x.listing,risk},now);
   if(review.status==='DENIED')return out('DENIED',review.reason);
   const i=risk.expected;
-  const receipt:Receipt={owner_id:binding.ownerId,policy_version:policy.policyVersion,auth_epoch:binding.authEpoch,
+  // Canonical hash also detects changed risk limits under a reused version label.
+  const sortedLimits=Object.entries(policy.limits).sort(([a],[b])=>a.localeCompare(b)).map(([name,limits])=>
+    [name,Object.entries(limits??{}).sort(([a],[b])=>a.localeCompare(b))]);
+  const policyHash=createHash('sha256').update(JSON.stringify([policy.policyVersion,policy.maxFeesPaise,policy.maxDailyLossPaise,sortedLimits])).digest('hex');
+  const receipt:Receipt={owner_id:binding.ownerId,policy_version:policy.policyVersion,policy_hash:policyHash,auth_epoch:binding.authEpoch,
    session_version:principal.sessionVersion,instrument_key:i.instrumentKey,product:i.product,quantity:i.quantity,tag:x.tag,
-   expiry:x.listing.request.expiry,limit_paise:risk.limitPricePaise,fee_paise:policy.maxFeesPaise,
+   expiry:x.listing.request.expiry,underlying:x.listing.request.underlying,option_type:x.listing.request.optionType,
+   strike:x.listing.request.strike,lot_size:x.listing.lotSize,tick_paise:x.listing.tickSizePaise,
+   limit_paise:risk.limitPricePaise,fee_paise:policy.maxFeesPaise,
    reserved_paise:review.reservationPaise,observed_at:risk.broker.observedAt};
   const existing=db.prepare('SELECT * FROM candidate_preparation_v1 WHERE account_scope=? AND intent_id=?').get(binding.accountId,x.intentId) as Receipt|undefined;
   if(existing){
+   if(receipt.observed_at<existing.observed_at)return out('DENIED','OUT_OF_ORDER_CANDIDATE_EVIDENCE');
    // Replay can never authorize dispatch; changed price, session, policy or
    // amount is a different candidate, not permission to overwrite a claim.
    for(const key of Object.keys(receipt) as (keyof Receipt)[]){
@@ -79,10 +88,12 @@ export function prepareAuthenticatedCandidate(db:Database.Database,principal:Ver
   if(journal.status==='DENIED')return out('DENIED',journal.reason);
   if(existing){if(journal.status!=='REPLAY')throw Error('INCONSISTENT_CANDIDATE_REPLAY');return out('REPLAY','Existing bounded candidate; no retry or dispatch');}
   if(journal.status!=='PREPARED')throw Error('UNEXPECTED_JOURNAL_REPLAY');
-  const saved=db.prepare(`INSERT INTO candidate_preparation_v1(account_scope,intent_id,owner_id,policy_version,auth_epoch,
-    session_version,instrument_key,product,quantity,tag,expiry,limit_paise,fee_paise,reserved_paise,observed_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(binding.accountId,x.intentId,receipt.owner_id,receipt.policy_version,receipt.auth_epoch,
+  const saved=db.prepare(`INSERT INTO candidate_preparation_v1(account_scope,intent_id,owner_id,policy_version,policy_hash,auth_epoch,
+    session_version,instrument_key,product,quantity,tag,expiry,underlying,option_type,strike,lot_size,tick_paise,
+    limit_paise,fee_paise,reserved_paise,observed_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(binding.accountId,x.intentId,receipt.owner_id,receipt.policy_version,receipt.policy_hash,receipt.auth_epoch,
     receipt.session_version,receipt.instrument_key,receipt.product,receipt.quantity,receipt.tag,receipt.expiry,
+    receipt.underlying,receipt.option_type,receipt.strike,receipt.lot_size,receipt.tick_paise,
     receipt.limit_paise,receipt.fee_paise,receipt.reserved_paise,receipt.observed_at);
   const actual=db.prepare('SELECT * FROM candidate_preparation_v1 WHERE account_scope=? AND intent_id=?').get(binding.accountId,x.intentId) as Receipt|undefined;
   if(saved.changes!==1||!actual||!(Object.keys(receipt) as (keyof Receipt)[]).every(k=>actual[k]===receipt[k]))throw Error('RECEIPT_UNCONFIRMED');
