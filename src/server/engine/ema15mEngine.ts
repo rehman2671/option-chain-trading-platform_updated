@@ -85,7 +85,8 @@ export class Ema15mEngine {
     void this.reconcileBrokerSafely();
 
     for (const inst of this.INSTRUMENTS) {
-      let candles = dbEngine.getEma15mCandles(inst, 2000);
+      let candles = dbEngine.getEma15mCandles(inst, 2000)
+        .filter(c => c.isClosed && historicalSlotIsClosed(c.timestamp, Date.now()));
       const isFlatVolume = candles.length > 0 && candles.slice(0, 20).every(c => c.volume === 15000 || !c.volume);
       const lastCandle = candles[candles.length - 1];
       const isStale = !lastCandle || (Date.now() - new Date(lastCandle.timestamp).getTime() > 24 * 60 * 60 * 1000);
@@ -152,7 +153,8 @@ export class Ema15mEngine {
     }
 
     // If fetch failed, return existing stored candles without generating fake ones
-    const existing = dbEngine.getEma15mCandles(inst, count);
+    const existing = dbEngine.getEma15mCandles(inst, count)
+      .filter(c => c.isClosed && historicalSlotIsClosed(c.timestamp, Date.now()));
     if (existing.length > 0) {
       this.recalculateAllIndicators(existing);
       this.candleCache.set(inst, existing);
@@ -242,12 +244,13 @@ export class Ema15mEngine {
 
     const eventMs = timestamp.getTime();
     const history = this.candleCache.get(instrument) || [];
-    // Late/out-of-order ticks must not reopen a closed candle or roll spot P&L backwards.
-    if (!canIngestEmaTick(eventMs, Date.now(), this.lastEmaTickMs.get(instrument), history[history.length - 1]?.timestamp)) return;
+    // An out-of-order tick must not roll spot P&L or forming candle backwards.
+    if (!canIngestEmaTick(eventMs, Date.now(), this.lastEmaTickMs.get(instrument), undefined)) return;
     this.lastEmaTickMs.set(instrument, eventMs);
 
-    // 1. Immediately update live mark-to-market P&L on all OPEN paper positions for this instrument via batching
+    // Preserve independent risk/position monitoring even if history already contains this slot.
     this.updateOpenPaperTrades(instrument, price);
+    if (!canIngestEmaTick(eventMs, Date.now(), undefined, history[history.length - 1]?.timestamp)) return;
 
     const currentSlotTime = this.get15mSlotBoundary(timestamp);
     const active = this.activeCandles.get(instrument);
