@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { legacyExecutionBlock, validBasketLegs, basketFullyFilled } from '../release/legacyExecutionContainment.js';
+import { browserMutationAllowed } from '../release/browserMutationGuard.js';
 import { DrawdownController } from '../../quant/risk/drawdownController.js';
 import type { StrategyLeg, BasketOrderRecord } from '../../types.js';
 
@@ -59,4 +60,35 @@ test('account-scoped reset never clears another or anonymous paper row',async()=
     assert.ok(dbEngine.getPaperPositionById(b,b));
     assert.ok(dbEngine.getPaperPositionById(anon));
   } finally {db.prepare('DELETE FROM paper_positions WHERE id IN (?,?,?)').run(a,b,anon);}
+});
+
+test('cookie mutations enforce same origin without denying non-cookie bearer callers',()=>{
+  const base={method:'POST',hasSessionCookie:true,requestOrigin:'https://app.example.invalid'};
+  assert.equal(browserMutationAllowed({...base,origin:base.requestOrigin}),true);
+  assert.equal(browserMutationAllowed({...base,origin:'https://other.example.invalid'}),false);
+  assert.equal(browserMutationAllowed({...base,origin:'null'}),false);
+  assert.equal(browserMutationAllowed({...base,fetchSite:'cross-site'}),false);
+  assert.equal(browserMutationAllowed({...base,hasSessionCookie:false,origin:'https://other.example.invalid'}),true);
+  assert.equal(browserMutationAllowed({...base,method:'GET',origin:'https://other.example.invalid'}),true);
+});
+test('password, status, MFA and logout-style revocation invalidate prior session versions',async()=>{
+  const {dbEngine}=await import('../db.js');
+  const {randomUUID}=await import('node:crypto');
+  await dbEngine.initialize();
+  const db=dbEngine.getRawDatabase();
+  const id='test-session-'+randomUUID();
+  db.prepare("INSERT INTO users(id,email,name,role,is_active,password_hash,email_verified) VALUES(?,?,?,'OPERATOR',1,?,1)").run(id,id+'@example.invalid','Fixture','hash');
+  try{
+    assert.equal(dbEngine.getUserSessionVersion(id),0);
+    dbEngine.setUserPassword(id,'new-hash');
+    assert.equal(dbEngine.getUserSessionVersion(id),1);
+    dbEngine.setUserMfaSecret(id,null,false);
+    assert.equal(dbEngine.getUserSessionVersion(id),2);
+    dbEngine.setUserActiveStatus(id,false);
+    assert.equal(dbEngine.getUserSessionVersion(id),null);
+    dbEngine.setUserActiveStatus(id,true);
+    assert.equal(dbEngine.getUserSessionVersion(id),4);
+    dbEngine.revokeUserSessions(id);
+    assert.equal(dbEngine.getUserSessionVersion(id),5);
+  }finally{db.prepare('DELETE FROM users WHERE id=?').run(id);}
 });
