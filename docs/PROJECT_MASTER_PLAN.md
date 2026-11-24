@@ -77,3 +77,7 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 ## Current implementation checkpoint — 2026-11-24
 
 P01 remains the active phase. PR #144 merged after exact-head CI success; #145 and #146 remain independent pending CI branches, and the risk-control follow-up repairs reset credential persistence and false local halt action claims. The master scope stays 250 tasks; authoritative current counts, workflow evidence and remaining gates are in [PROJECT_PROGRESS_TRACKER.md](PROJECT_PROGRESS_TRACKER.md). No new phase or hosted/live release authorized. Reconcile the tracker after each verified merge, not by restarting another branch's in-flight CI.
+
+## Latest continuation checkpoint — 2026-11-25 IST
+
+P01 remains the active phase; 250 total task scope unchanged. #146 merged; #148 full regression failure diagnosed and repaired on its own branch; #149/#150 are pending full CI. New consolidated batch adds durable intent and drawdown ledgers plus auth/admin mutation integrity, not a new gateway or live release. See [durable intent and auth recovery ledger](MEGA_PHASE_01_DURABLE_INTENT_AUTH_RECOVERY.md). Integrate and reconcile all three canonical documents once pending branches merge. This supersedes earlier status statements.
