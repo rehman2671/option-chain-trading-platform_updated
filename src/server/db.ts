@@ -4240,6 +4240,12 @@ class DatabaseEngine {
    * Atomic SQLite claim for ONE active EMA BUY per instrument. BEGIN IMMEDIATE
    * serializes concurrent workers using the same durable SQLite database.
    */
+  public hasEmaLiveSignalAttempt(signalId:string): boolean {
+    if (!this.db) throw Error('EMA_LIVE_DATABASE_UNAVAILABLE: hasEmaLiveSignalAttempt');
+    if (!signalId) return true;
+    return !!this.db.prepare('SELECT id FROM ema_live_order_attempts WHERE signal_id=? LIMIT 1').get(signalId);
+  }
+
   public claimEmaLiveEntryAttempt(attempt: EmaLiveOrderAttempt): boolean {
     const db = this.db;
     if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveEntryAttempt');
