@@ -63,7 +63,7 @@ export function clearAuthCookie(res: Response) {
 /**
  * Extract authenticated user from request cookie or header
  */
-export function getUserFromRequest(req: Request, allowFallback: boolean = false): User | null {
+function getVerifiedSessionPrincipal(req:Request):{user:User;sessionVersion:number}|null {
   try {
     let token = req.cookies?.session_token || req.cookies?.auth_token;
     if (!token && req.headers.authorization?.startsWith('Bearer ')) {
@@ -83,7 +83,7 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
           if (user.isActive === false || user.is_active === 0) {
             return null;
           }
-          return user;
+          return {user,sessionVersion:decoded.sv};
         }
       }
     }
@@ -94,6 +94,10 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
   } catch (err) {
     return null;
   }
+}
+
+export function getUserFromRequest(req:Request,allowFallback:boolean=false):User|null {
+  return getVerifiedSessionPrincipal(req)?.user??null;
 }
 
 /**
@@ -609,4 +613,31 @@ authRouter.get('/me', (req: Request, res: Response) => {
   res.setHeader('Cache-Control','no-store');
   const token = setAuthCookie(res, user);
   return res.json({ authenticated: true, user, token });
+});
+
+
+/** Owner-only, read-only preparation recovery. No client-provided account
+ * identifiers, no order calls and no release or retry actions. */
+authRouter.get('/broker-preparation/recovery',async(req:Request,res:Response)=>{
+  res.setHeader('Cache-Control','no-store');
+  if(!getVerifiedSessionPrincipal(req))return res.status(401).json({error:'Authentication required.'});
+  try{
+    const {activeProvider}=await import('./engine/providers/index.js');
+    const provider=activeProvider as unknown as {
+      getLiveConnectionStatus?:()=>{isConnected:boolean;userId?:string};
+      getBrokerAuthEpoch?:()=>number;
+    };
+    // Reverify the original session after asynchronous import.
+    const principal=getVerifiedSessionPrincipal(req);
+    if(!principal)return res.status(401).json({error:'Authentication required.'});
+    if(typeof provider.getLiveConnectionStatus!=='function'||typeof provider.getBrokerAuthEpoch!=='function')
+      return res.status(503).json({error:'Verified broker connection unavailable.'});
+    const connection=provider.getLiveConnectionStatus();
+    const epoch=provider.getBrokerAuthEpoch();
+    if(!connection.isConnected)return res.status(503).json({error:'Verified broker connection unavailable.'});
+    const result=dbEngine.inspectAuthorizedBrokerPreparation({userId:principal.user.id,sessionVersion:principal.sessionVersion},
+      {isConnected:connection.isConnected,userId:connection.userId,authEpoch:epoch},Date.now());
+    if(!result)return res.status(403).json({error:'Broker preparation access not established.'});
+    return res.json(result);
+  }catch{return res.status(503).json({error:'Broker preparation recovery unavailable.'});}
 });
