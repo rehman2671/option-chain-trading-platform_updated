@@ -219,6 +219,16 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(!JSON.stringify(saved).includes(TEST_RESET_SECRET));
   });
 
+  it('malformed hard-control observations latch a local halt without replacing valid metrics',()=>{
+    const valid={dailyLossPct:1,drawdownPct:2,leverageRatio:1,openPositionsCount:1};
+    killSwitchEngine.evaluateHardControls(valid,TEST_USER);
+    const result=killSwitchEngine.evaluateHardControls({...valid,leverageRatio:NaN},TEST_USER);
+    assert.equal(result.isTradingHalted,true);
+    assert.equal(result.currentLeverageRatio,1);
+    assert.equal(killSwitchEngine.isHalted(TEST_USER),true);
+    assert.equal(killSwitchEngine.isHalted('unrelated-fixture'),false);
+  });
+
   it('10. Verifies authorized Kill Switch reset unlocks execution safely', async () => {
     // Halt
     killSwitchEngine.manualEmergencyKill('TEST_SUITE', TEST_USER, 'Temporary halt');
