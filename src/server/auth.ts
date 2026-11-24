@@ -602,7 +602,7 @@ authRouter.post('/logout', (req: Request, res: Response) => {
     if(principal){
       dbEngine.revokeUserSessions(principal.user.id);
       const current=dbEngine.getUserSessionVersion(principal.user.id);
-      if(current===principal.sessionVersion)
+      if(current===null||current<=principal.sessionVersion)
         return res.status(503).json({error:'Session revocation not confirmed.'});
     }
     clearAuthCookie(res);
