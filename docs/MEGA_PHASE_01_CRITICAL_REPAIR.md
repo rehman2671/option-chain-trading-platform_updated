@@ -69,3 +69,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 ## Runtime recovery continuation — 2026-11-25 IST
 
 #152 merged with both exact-head workflows passed; #151 closed as superseded. #153 repaired paper staging passed, full regression pending. [Owner binding and runtime recovery](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) records new runtime schema initialization, authenticated owner-only recovery endpoint, account-wide unresolved reservation quarantine, regression fixtures and configuration constraints. Main counts 12 scoped merged / 38 partial / 0 untouched. No full phase acceptance or authorization to dispatch/release. This checkpoint supersedes earlier pending #152 status.
+
+## Recovery UI and session containment — 2026-11-25 IST
+
+[Recovery UI/session ledger](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md) maps actual EMA read-only recovery panel, browser API token/cache boundary, auth result fencing and logout readback to existing P01 tasks and regression fixtures. #155 paper staging/build passed, full/invariant pending; main 12/38/0 remains unchanged. No release or live dispatch authority; hosted browser behavior and performance pending. This checkpoint supersedes old status where appropriate.
