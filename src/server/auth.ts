@@ -28,8 +28,10 @@ export interface AuthenticatedRequest extends Request {
   * Helper to issue session JWT cookie
   */
 export function setAuthCookie(res: Response, user: User) {
+  const sv=dbEngine.getUserSessionVersion(user.id);
+  if (sv===null) throw Error('ACTIVE_SESSION_REQUIRED');
   const token = jwt.sign(
-    { sub: user.id, email: user.email, name: user.name, role: user.role, picture: user.picture },
+    { sub: user.id, email: user.email, name: user.name, role: user.role, picture: user.picture, purpose:'session', sv },
     JWT_SECRET,
     { expiresIn: '7d' }
   );
@@ -72,8 +74,8 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
     // Session credentials in URLs leak through history, referrers and access logs.
     if (token) {
       const decoded = jwt.verify(token, JWT_SECRET) as any;
-      const userId = decoded?.sub || decoded?.userId;
-      if (userId) {
+      const userId = decoded?.sub;
+      if (typeof userId==='string' && decoded?.purpose==='session' && Number.isSafeInteger(decoded.sv) && dbEngine.getUserSessionVersion(userId)===decoded.sv) {
         const user = dbEngine.findUserById(userId);
         if (user) {
           // If deactivated by Admin, deny session
@@ -207,7 +209,7 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
     }
 
     const matches = await bcrypt.compare(password, userRow.password_hash);
-    if (!matches) {
+    if (!matches || dbEngine.getUserSessionVersion(userRow.id)!==userRow.session_version) {
       return res.status(401).json({ error: 'Invalid credentials. Access restricted to authorized accounts.' });
     }
 
@@ -216,7 +218,7 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
       if (!totpCode) {
         // Issue temporary 5-minute token for 2FA step
         const tempToken = jwt.sign(
-          { tempUserId: userRow.id, purpose: 'mfa_verification' },
+          { tempUserId: userRow.id, purpose: 'mfa_verification', sv:userRow.session_version },
           JWT_SECRET,
           { expiresIn: '5m' }
         );
@@ -284,7 +286,7 @@ authRouter.post('/login/mfa', authLimiter, async (req: Request, res: Response) =
       (dbEngine.findUserById(decoded.tempUserId)?.email || '')
     );
 
-    if (!userRow || !userRow.mfa_secret) {
+    if (!userRow || !userRow.mfa_secret || userRow.mfa_enabled!==1 || !Number.isSafeInteger(decoded.sv) || dbEngine.getUserSessionVersion(userRow.id)!==decoded.sv) {
       return res.status(400).json({ error: 'MFA is not configured for this account' });
     }
 
@@ -577,6 +579,8 @@ authRouter.post('/reset-password', authLimiter, async (req: Request, res: Respon
  * POST /api/auth/logout — Log out user and clear cookie
  */
 authRouter.post('/logout', (req: Request, res: Response) => {
+  const user=getUserFromRequest(req);
+  if (user) dbEngine.revokeUserSessions(user.id);
   clearAuthCookie(res);
   return res.json({ success: true, message: 'Logged out successfully' });
 });
@@ -589,11 +593,7 @@ authRouter.get('/me', (req: Request, res: Response) => {
   if (!user) {
     return res.json({ authenticated: false, user: null, token: null });
   }
-  const token = jwt.sign(
-    { sub: user.id, email: user.email, name: user.name, picture: user.picture },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
-  setAuthCookie(res, user);
+  res.setHeader('Cache-Control','no-store');
+  const token = setAuthCookie(res, user);
   return res.json({ authenticated: true, user, token });
 });
