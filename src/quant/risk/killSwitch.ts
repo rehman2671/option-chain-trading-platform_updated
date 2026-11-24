@@ -218,17 +218,14 @@ export class KillSwitchEngine {
     state.status = 'MANUAL_HALTED';
     state.isTradingHalted = true;
     state.haltedAt = new Date().toISOString();
-    state.haltReason = reason || `EMERGENCY MANUAL KILL SWITCH triggered by operator [${operator}]. All automated orders cancelled and positions marked for immediate square-off.`;
+    state.haltReason = reason || `EMERGENCY MANUAL KILL SWITCH triggered by operator [${operator}]. New automatic entries halted locally; broker orders and exposure require reconciliation.`;
     state.emergencyActionsExecuted = [
-      'CANCEL_ALL_PENDING_BASKETS',
-      'HALT_ALL_STRATEGY_ENGINES',
-      'FIRE_MARKET_EXIT_ORDERS',
-      'LOCKOUT_NEW_ORDER_DISPATCH'
+      'LOCAL_KILL_SWITCH_HALTED'
     ];
 
     // Persist to DB
     try {
-      dbEngine.saveKillSwitchState({
+      const persisted=dbEngine.saveKillSwitchState({
         userId: key,
         status: state.status,
         isHalted: true,
@@ -237,9 +234,10 @@ export class KillSwitchEngine {
         operator,
         emergencyActions: state.emergencyActionsExecuted
       });
+      if (!persisted) console.error('[KILL SWITCH ENGINE] Local halt not confirmed durable; operator intervention required.');
 
       // Disarm all autonomous strategies for this user/global
-      dbEngine.disarmAllAutonomousStrategies(state.haltReason, userId || undefined);
+      dbEngine.disarmAllAutonomousStrategies(state.haltReason, key==='GLOBAL'?undefined:key);
     } catch (err) {
       console.error('[KILL SWITCH ENGINE] Error persisting kill switch state:', err);
     }
@@ -263,14 +261,12 @@ export class KillSwitchEngine {
     state.haltedAt = new Date().toISOString();
     state.haltReason = reason;
     state.emergencyActionsExecuted = [
-      'HALT_NEW_ORDER_DISPATCH',
-      'CANCEL_PENDING_UNFILLED_ORDERS',
-      'NOTIFY_RISK_MANAGER'
+      'LOCAL_KILL_SWITCH_HALTED'
     ];
 
     // Persist to DB
     try {
-      dbEngine.saveKillSwitchState({
+      const persisted=dbEngine.saveKillSwitchState({
         userId: key,
         status: state.status,
         isHalted: true,
@@ -279,9 +275,10 @@ export class KillSwitchEngine {
         operator,
         emergencyActions: state.emergencyActionsExecuted
       });
+      if (!persisted) console.error('[KILL SWITCH ENGINE] Local halt not confirmed durable; operator intervention required.');
 
       // Disarm all autonomous strategies
-      dbEngine.disarmAllAutonomousStrategies(reason, userId || undefined);
+      dbEngine.disarmAllAutonomousStrategies(reason, key==='GLOBAL'?undefined:key);
     } catch (err) {
       console.error('[KILL SWITCH ENGINE] Error persisting automatic halt state:', err);
     }
@@ -315,30 +312,24 @@ export class KillSwitchEngine {
     const key = this.resolveKey(userId);
     const state = this.getOrCreateState(key);
 
-    state.status = 'ARMED';
-    state.isTradingHalted = false;
-    state.haltedAt = undefined;
-    state.haltReason = undefined;
-    state.emergencyActionsExecuted = [];
-
-    // Update SQLite persistence
-    try {
-      dbEngine.saveKillSwitchState({
-        userId: key,
-        status: 'ARMED',
-        isHalted: false,
-        haltedAt: undefined,
-        haltReason: undefined,
-        operator: supervisorKey,
-        emergencyActions: []
-      });
-    } catch (err) {
-      console.error('[KILL SWITCH ENGINE] Error updating DB on reset:', err);
+    // Persist first. A failed write must never release the in-memory halt.
+    const persisted=dbEngine.saveKillSwitchState({
+      userId:key,status:'ARMED',isHalted:false,
+      operator:'AUTHORIZED_SUPERVISOR_RESET',emergencyActions:[]
+    });
+    const saved=persisted?dbEngine.getKillSwitchState(key):null;
+    if (!saved || saved.status!=='ARMED' || saved.isHalted!==false) {
+      return {success:false,message:'Reset persistence not confirmed; local halt preserved.',state:this.getState(userId)};
     }
+    state.status='ARMED';
+    state.isTradingHalted=false;
+    state.haltedAt=undefined;
+    state.haltReason=undefined;
+    state.emergencyActionsExecuted=[];
 
     return {
       success: true,
-      message: `Kill switch reset successfully for [${key}]. Reason logged: "${reason}"`,
+      message: `Kill switch reset successfully for [${key}]. Broker orders and positions are not certified by this reset.`,
       state: this.getState(userId)
     };
   }
