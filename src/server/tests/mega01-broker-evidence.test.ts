@@ -47,7 +47,7 @@ test('missing, contradictory or duplicated evidence never implies zero fill or r
     assert.equal(r.filledQuantity,null);
     assert.equal(r.retryAuthorized,false);
   }
-  for(const trades of [null,[],[trade(intent,20)],[trade(intent,10),trade(intent,15)],[{...trade(intent,25),product:'D'}],[{...trade(intent,25),average_price:101}]]){
+  for(const trades of [null,[],[trade(intent,20)],[trade(intent,10),trade(intent,15)],[{...trade(intent,25),product:'D'}],[{...trade(intent,25),instrument_token:'1234'}],[{...trade(intent,25),average_price:101}]]){
     assert.equal(reconcileOrderEvidence(intent,detail(intent,25,40,'OPEN'),trades).status,'UNKNOWN');
   }
 });
@@ -82,4 +82,42 @@ test('provider read-only reconciliation rejects mid-read account generation chan
   const invalid=await provider.getVerifiedOrderReconciliation(intent);
   assert.equal(invalid.status,'UNKNOWN');
   assert.equal(invalid.retryAuthorized,false);
+});
+
+test('broker risk transport preserves one account identity across all three reads',async()=>{
+  const {UpstoxProvider}=await import('../engine/providers/UpstoxProvider.js');
+  const provider=new UpstoxProvider();
+  Object.assign(provider,{accessToken:'fixture-token',userId:'fixture-account',isConnected:true,historicalFoAuthEpoch:1});
+  const previous=globalThis.fetch;
+  let invalidate=false;
+  const calls:string[]=[];
+  try {
+    globalThis.fetch=async(input,init)=>{
+      const url=String(input);
+      calls.push(url);
+      assert.ok(init?.signal);
+      assert.equal(new Headers(init?.headers).get('authorization'),'Bearer fixture-token');
+      let response:unknown;
+      if(url.endsWith('/user/get-funds-and-margin')) response=funds;
+      else if(url.endsWith('/charges/margin')){
+        assert.equal(init?.method,'POST');
+        assert.deepEqual(JSON.parse(String(init?.body)),{instruments:[{
+          instrument_key:intent.instrumentKey,quantity:65,transaction_type:'BUY',product:'I'}]});
+        response=margin;
+      } else if(url.endsWith('/portfolio/short-term-positions')){
+        response=portfolio;
+        if(invalidate)Object.assign(provider,{historicalFoAuthEpoch:2});
+      } else throw Error('Unexpected fixture URL');
+      return new Response(JSON.stringify(response),{status:200});
+    };
+    const valid=await provider.getEmaBrokerRiskSnapshot(intent.instrumentKey,65,'MIS');
+    assert.ok(valid);
+    assert.equal(valid.availableMargin,290000);
+    assert.equal(calls.length,3);
+    invalidate=true;
+    assert.equal(await provider.getEmaBrokerRiskSnapshot(intent.instrumentKey,65,'MIS'),null);
+    assert.equal(calls.length,6);
+    assert.equal(await provider.getEmaBrokerRiskSnapshot('NSE_INDEX|Nifty 50',65,'MIS'),null);
+    assert.equal(calls.length,6);
+  }finally{globalThis.fetch=previous;}
 });
