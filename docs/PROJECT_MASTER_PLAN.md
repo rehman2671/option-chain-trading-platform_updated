@@ -85,3 +85,7 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 ## Recovery UI and browser session boundary — 2026-11-25 IST
 
 New independent [recovery UI and session batch](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md) integrates the existing owner-only recovery API into EMA Live Execution and limits browser bearer persistence, cached account responses and superseded authentication results. #155 paper staging/build passed, full/invariant pending. Preserve the 250-task scope and existing Google AI Studio deployment; hosted session compatibility remains an acceptance gate. No live authority.
+
+## Native reconciliation continuation — 2026-11-25 IST
+
+#156 initial TS2322 recovery-parser typecheck repaired without relaxing validation; same PR extended with owner-scoped native reconciliation, exact stored/unique-tag order identity and durable partial/terminal journal recording. [Detailed report](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md). #155 paper staging/build passed; full/invariant pending. No automatic retry, release, dispatch, new phase or deployment change. 250-task scope unchanged.
