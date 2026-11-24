@@ -121,3 +121,10 @@ test('broker risk transport preserves one account identity across all three read
     assert.equal(calls.length,6);
   }finally{globalThis.fetch=previous;}
 });
+
+test('mixed exchange order identities cannot certify filled status',()=>{
+  const d=detail(intent,65,0,'COMPLETE');
+  assert.equal(reconcileOrderEvidence(intent,d,[trade(intent,25),{...trade(intent,40,'trade-b'),exchange_order_id:'exchange-b'}]).status,'UNKNOWN');
+  assert.equal(reconcileOrderEvidence(intent,{...d,exchange_order_id:'exchange-b'},[trade(intent,65)]).status,'UNKNOWN');
+  assert.equal(reconcileOrderEvidence(intent,{...d,exchange_order_id:'exchange-a'},[trade(intent,65)]).status,'FILLED');
+});

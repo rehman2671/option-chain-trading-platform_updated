@@ -43,6 +43,10 @@ Test coverage added: pure mode and basket validation, read-only drawdown project
 - Added owner-scoped atomic manual paper group creation with per-row readback and rollback on duplicate or invalid/unconfirmed write (f9e4e88c, 2a100dbd). Regression verifies successful batch and rollback when later leg collides (0b9e128b). P01-13 moves from outstanding to partial: other multi-leg writers, capital reservation and concurrency remain.
 - No claim that repaired head passed CI. PR #144 remains the only active repair batch. Check latest head before merge.
 
+## Consolidated follow-up — 2026-11-25 IST
+
+[Portfolio, capital reservation and risk work package](MEGA_PHASE_01_PORTFOLIO_RESERVATION_RISK.md) records exact affected IDs, implementation boundaries and tests. #146 merged with both workflows green; authoritative latest main counts 12 scoped merged / 37 partial / 1 outstanding. Proposed new batch advances P01-37 to partial only, not complete. Combined scope 12/38/0, zero fully accepted. Historical tables/checkpoints in this file remain as recorded; see tracker latest checkpoint. No live order or deployment.
+
 ## Merge rule
 Require both exact-head EMA15M safety and paper staging RC workflows complete success (including full regression and lint). Do not modify tests to bypass real safety requirements. If failed, fix or isolate within this mega phase; no arbitrary live release. After merge verify main combined CI. External release issues #17–#22 remain open.
 
