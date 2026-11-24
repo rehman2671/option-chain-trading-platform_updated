@@ -77,3 +77,7 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 ## Current implementation checkpoint — 2026-11-25 IST
 
 #143–#150 merged with PR CI; #151 passed exact-head CI but has merge conflicts in shared tracking documents. Its source and tests are carried onto current main with an atomic preparation journal joining intent, reservation, risk evidence and restart recovery. See [integration batch](MEGA_PHASE_01_GATEWAY_INTEGRATION.md) and [current tracker](PROJECT_PROGRESS_TRACKER.md). Main scope 12 scoped merged, 38 partial, 0 untouched; full phase acceptance pending. The preparation journal is not a live execution gateway. Preserve the 250-task plan, Google AI Studio deployment architecture and MIS/NRML safety gates.
+
+## Owner binding and runtime recovery checkpoint — 2026-11-25 IST
+
+#152 merged with both exact-head workflows successful; #151 closed as superseded. Main 050e0acdac18c9f812ebb72eb9a116a589721cd7. #153 repaired paper staging passed; full/invariant CI pending. New [owner binding and recovery batch](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) integrates normal runtime SQLite schema, explicit deployment-owned account mapping, owner-only authenticated recovery and unresolved account quarantine. No live dispatch/release authority. Existing 250-task scope and Google AI Studio architecture unchanged.
