@@ -1025,10 +1025,11 @@ async function startServer() {
   app.post('/api/paper-trading/start', async (req, res) => {
     try {
       const user = getUserFromRequest(req);
-      const userId = user ? user.id : null;
+      const userId = user?.id;
+      if (!userId) return res.status(401).json({error:'Authentication required'});
       const { strategyName, symbol, legs } = req.body;
-      if (!legs || !Array.isArray(legs) || legs.length === 0) {
-        return res.status(400).json({ error: 'At least one strategy leg is required' });
+      if (!Array.isArray(legs) || legs.length === 0 || legs.length > 20 || legs.some(l=>!l || !['BUY','SELL'].includes(l.action) || !['CE','PE'].includes(l.type) || !Number.isFinite(Number(l.strikePrice)) || Number(l.strikePrice)<=0 || !Number.isSafeInteger(Number(l.quantity)) || Number(l.quantity)<=0 || !Number.isSafeInteger(Number(l.lotSize)) || Number(l.lotSize)<=0 || !Number.isSafeInteger(Number(l.quantity)*Number(l.lotSize)) || !Number.isFinite(Number(l.currentLtp)) || Number(l.currentLtp)<=0)) {
+        return res.status(400).json({ error: '1–20 valid paper legs with positive quantity, lot, strike and premium required' });
       }
 
       const currentPortfolio = await getPaperPortfolioData(userId);
@@ -1090,10 +1091,10 @@ async function startServer() {
           expiry: l.expiry || 'CURRENT'
         };
 
-        dbEngine.savePaperPosition(pos, userId);
         createdPositions.push(pos);
       }
 
+      dbEngine.createPaperPositionsAtomically(createdPositions,userId);
       updatePaperPositionsMTM(userId);
       res.json({
         success: true,
