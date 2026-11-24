@@ -85,3 +85,7 @@ PR #146 merged at 70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3 after exact-head full
 ## Current implementation checkpoint — 2026-11-25 (IST)
 
 P01 remains active; #143–#145 and #147 are merged. #146 and #148 remain independently pending full regression. Next repair on repair/mega01-exposure-input-integrity rejects malformed explicit numerical risk snapshots and preserves zero margin; synthetic default callers and actual portfolio evidence remain unverified. The master scope remains 250 tasks. Refer to [PROJECT_PROGRESS_TRACKER.md](PROJECT_PROGRESS_TRACKER.md) for current CI and task counts. No live release or hosting change authorized.
+
+## Latest follow-up — 2026-11-25 IST
+
+#153 is extended in place (no new PR or phase): repair TS2339 fixture narrowing; join exact listed option identity, effective lot/tick and server-supplied account binding to projected risk. [Detailed batch](MEGA_PHASE_01_CANDIDATE_RISK_BROKER_BINDING.md). #152 combined regression still running; main 12 scoped merged, 38 partial, 0 untouched. No active dispatch or release authority. Next integrate trusted account binding and actual Greek provenance with atomic journal once #152 is verified.
