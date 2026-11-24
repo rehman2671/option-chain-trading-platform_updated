@@ -73,3 +73,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 ## Combined candidate risk and owner-bound journal continuation — 2026-11-25 IST
 
 #153 exact-head CI passed but documentation conflict prevents independent merge; combined branch on #154 head preserves both packages and test history (all #153 source/test changes copied, detailed reports retained). #154 paper staging and production build passed, full/invariant running. [Authenticated candidate journal](MEGA_PHASE_01_AUTHENTICATED_CANDIDATE_JOURNAL.md) adds server-only risk policy, original-session binding, exact candidate receipt and atomic reservation, rollback and restart tests. One unresolved preparation per account pending independent release. This is non-dispatch internal integration, no live order authority. Main remains 12 scoped merged / 38 partial / 0 untouched. No full acceptance; fresh combined CI required.
+
+## Verified #154 merge — 2026-11-25 IST
+
+#154 exact head 89ea5d3b88feb403180cfd3b461cc8c97eac4a4f passed full EMA safety 45486135932 and paper staging 45486136044. Merged main at 9ad93498d18713ee322c3589eaeec47c226e3e3b. #155 includes the verified #154 head as an ancestor and the #153 source/tests plus new joined preparation; fresh combined CI still required. #153 remains open until replacement integration verified. Main scope unchanged 12/38/0, no full acceptance, no hosted verification. Supersedes earlier pending #154 statements.
