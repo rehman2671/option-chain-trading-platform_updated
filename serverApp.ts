@@ -1296,12 +1296,20 @@ async function startServer() {
       }
 
       const updates = req.body;
+      if (!updates || typeof updates!=='object' || Array.isArray(updates)) return res.status(400).json({error:'Invalid strategy updates'});
+      if (existing.activeBasketId || existing.status === 'IN_POSITION') {
+        if (updates.armed === true && existing.errorMessage) return res.status(409).json({error:'Unresolved basket must be reconciled before rearming'});
+        if (Object.keys(updates).some(k=>k!=='armed')) return res.status(409).json({error:'Position-bearing strategy is immutable until reconciled'});
+        if (updates.armed!==false) return res.status(409).json({error:'Position-bearing strategy cannot be rearmed by this endpoint'});
+        dbEngine.saveAutonomousStrategy({...existing,armed:false},userId);
+        return res.json({...existing,armed:false});
+      }
+      const allowed = ['name','symbol','armed','productType','legs','entryRules','adjustmentRules','exitRules','maxPositionSize'];
+      if (Object.keys(updates).some(k=>!allowed.includes(k))) return res.status(400).json({error:'Unsupported strategy update'});
+      if (updates.armed !== undefined && typeof updates.armed !== 'boolean') return res.status(400).json({error:'Invalid armed state'});
       const wasArmed = existing.armed;
-      const updatedStrat = {
-        ...existing,
-        ...updates,
-        id // preserve id
-      };
+      const updatedStrat = {...existing,...updates,id,userId};
+
 
       if (updatedStrat.armed && updatedStrat.status === 'DISARMED') {
         updatedStrat.status = 'WATCHING';
@@ -1335,6 +1343,8 @@ async function startServer() {
       const userId = user ? user.id : null;
       const { id } = req.params;
       const existing = dbEngine.getAutonomousStrategy(id, userId);
+      if (!existing) return res.status(404).json({error:'Autonomous strategy not found'});
+      if (existing.activeBasketId || existing.status==='IN_POSITION') return res.status(409).json({error:'Reconcile active basket before deleting strategy'});
       dbEngine.deleteAutonomousStrategy(id, userId);
       dbEngine.addAutonomousLog({
         id: `log-${Date.now()}`,
