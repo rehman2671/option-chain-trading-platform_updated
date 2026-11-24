@@ -11,8 +11,9 @@ export interface OrderEvidence {
   status:'UNKNOWN'|'ACKNOWLEDGED'|'PARTIAL_OPEN'|'FILLED'|'TERMINAL_PARTIAL'|'TERMINAL_NO_FILL';
   reason:string; filledQuantity:number|null; pendingQuantity:number|null;
   averagePrice:number|null; terminal:boolean; retryAuthorized:false;
+  verifiedIntent:Readonly<OrderIntentEvidence>|null;
 }
-const unknown=(reason:string):OrderEvidence=>({status:'UNKNOWN',reason,filledQuantity:null,pendingQuantity:null,averagePrice:null,terminal:false,retryAuthorized:false});
+const unknown=(reason:string):OrderEvidence=>({status:'UNKNOWN',reason,filledQuantity:null,pendingQuantity:null,averagePrice:null,terminal:false,retryAuthorized:false,verifiedIntent:null});
 export function validOrderIntent(i:OrderIntentEvidence):boolean{
   return !!i&&id(i.orderId)&&/^(NSE_FO|BSE_FO)\|[0-9]+$/.test(i.instrumentKey)&&
     ['I','D'].includes(i.product)&&['BUY','SELL'].includes(i.side)&&
@@ -58,7 +59,7 @@ export function reconcileOrderEvidence(i:OrderIntentEvidence,detail:unknown,trad
   else if(open&&filled+pending===i.quantity&&filled<i.quantity)state=filled===0?'ACKNOWLEDGED':'PARTIAL_OPEN';
   else return unknown('ORDER_STATUS_OR_QUANTITY_INCONSISTENT');
   return {status:state,reason:'Order details and trade executions agree; account exposure not certified.',
-    filledQuantity:filled,pendingQuantity:pending,averagePrice:avg,terminal:complete||cancelled,retryAuthorized:false};
+    filledQuantity:filled,pendingQuantity:pending,averagePrice:avg,terminal:complete||cancelled,retryAuthorized:false,verifiedIntent:{...i}};
 }
 export interface RollbackEvidence {
   status:'UNKNOWN'|'RESIDUAL_EXPOSURE'|'OFFSET_FILLS_MATCH'; residualQuantity:number|null;
@@ -71,6 +72,11 @@ export function reconcileRollbackEvidence(entry:OrderIntentEvidence,entryEvidenc
   const fail=(reason:string):RollbackEvidence=>({status:'UNKNOWN',residualQuantity:null,reason,accountFlatCertified:false,retryAuthorized:false});
   if(!validOrderIntent(entry)||!validOrderIntent(offset)||entry.orderId===offset.orderId||
     entry.tag===offset.tag||entry.instrumentKey!==offset.instrumentKey||entry.product!==offset.product||entry.side===offset.side)return fail('OFFSET_IDENTITY_MISMATCH');
+  const matches=(i:OrderIntentEvidence,e:OrderEvidence)=>e.verifiedIntent!==null&&
+    e.verifiedIntent.orderId===i.orderId&&e.verifiedIntent.instrumentKey===i.instrumentKey&&
+    e.verifiedIntent.product===i.product&&e.verifiedIntent.side===i.side&&
+    e.verifiedIntent.tag===i.tag&&e.verifiedIntent.quantity===i.quantity;
+  if(!matches(entry,entryEvidence)||!matches(offset,offsetEvidence))return fail('EVIDENCE_INTENT_MISMATCH');
   if(!entryEvidence.terminal||!offsetEvidence.terminal||entryEvidence.filledQuantity===null||offsetEvidence.filledQuantity===null||
     !Number.isSafeInteger(entryEvidence.filledQuantity)||!Number.isSafeInteger(offsetEvidence.filledQuantity)||
     entryEvidence.filledQuantity<0||entryEvidence.filledQuantity>entry.quantity||offsetEvidence.filledQuantity<0||
