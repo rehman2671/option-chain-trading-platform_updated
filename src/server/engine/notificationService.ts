@@ -4,6 +4,8 @@
  */
 
 import nodemailer from 'nodemailer';
+import { randomUUID } from 'node:crypto';
+import { formatTelegramSignal, sendTelegram, signalAlertTiming, type TelegramSignalSource } from './telegramAlertTransport.js';
 import { dbEngine } from '../db.js';
 import { Ema15mSignal, EmaNotificationLog, EmaNotificationSettings } from '../../types.js';
 
@@ -45,7 +47,7 @@ export class NotificationService {
   /**
    * Dispatches alerts for a newly confirmed 15m EMA crossover signal
    */
-  public async dispatchSignalAlerts(signal: Ema15mSignal, userId?: string | null): Promise<{
+  public async dispatchSignalAlerts(signal: Ema15mSignal, userId?: string | null, source: TelegramSignalSource = 'UNKNOWN'): Promise<{
     telegram: 'SUCCESS' | 'FAILED' | 'SKIPPED';
     email: 'SUCCESS' | 'FAILED' | 'SKIPPED';
   }> {
@@ -61,7 +63,7 @@ export class NotificationService {
       const botToken = settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
 
       if (botToken && chatId) {
-        const tgSuccess = await this.sendTelegramAlert(signal, botToken, chatId);
+        const tgSuccess = await this.sendTelegramAlert(signal, botToken, chatId, source);
         results.telegram = tgSuccess ? 'SUCCESS' : 'FAILED';
       } else {
         // Record skipped / unconfigured
@@ -99,7 +101,9 @@ export class NotificationService {
     }
 
     // Update signal notification summary status
-    const overallStatus = results.telegram === 'SUCCESS' && results.email === 'SUCCESS'
+    const overallStatus = (results.telegram === 'SUCCESS' || results.email === 'SUCCESS') &&
+      (!settings.telegramEnabled || results.telegram === 'SUCCESS') &&
+      (!settings.emailEnabled || results.email === 'SUCCESS')
       ? 'DELIVERED'
       : (results.telegram === 'SUCCESS' || results.email === 'SUCCESS')
         ? 'PARTIAL'
@@ -115,79 +119,19 @@ export class NotificationService {
   /**
    * Formats and sends message to Telegram Bot
    */
-  public async sendTelegramAlert(signal: Ema15mSignal, botToken: string, chatId: string): Promise<boolean> {
-    const isBullish = signal.signalType === 'BULLISH';
-    const headerEmoji = isBullish ? '🟢 🚀' : '🔴 🔻';
-    const rawSignalLabel = isBullish ? 'BULLISH CROSSOVER (23 EMA > 50 EMA)' : 'BEARISH CROSSOVER (23 EMA < 50 EMA)';
-    // Escape HTML special characters for Telegram HTML parse mode to prevent 400 Bad Request
-    const signalLabel = rawSignalLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const diffSign = signal.emaDifference > 0 ? '+' : '';
-
-    const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-    const strikeSection = signal.selectedStrike && signal.optionType
-      ? `🎯 <b>Directional ATM Strike:</b> ${signal.selectedStrike} ${signal.optionType} (${signal.signalType === 'BULLISH' ? 'Nearest ≥ Spot' : 'Nearest ≤ Spot'})\n📅 <b>Weekly Expiry:</b> ${signal.weeklyExpiry || 'Upcoming Weekly'}\n📦 <b>Quantity:</b> 1 Lot (MIS / Intraday)\n`
-      : '';
-
-    const autoTradeNotice = settings.autoPaperTradingEnabled !== false
-      ? `🟢 <i>Auto MIS Trade: BUY 1 Lot ${signal.selectedStrike || ''} ${signal.optionType || (isBullish ? 'CE' : 'PE')} (${signal.weeklyExpiry || 'Weekly'}) recorded</i>`
-      : `<i>ℹ️ Notice: Alert-only strategy. No automated trade executed.</i>`;
-
-    const text = `
-${headerEmoji} <b>15-MINUTE EMA CROSSOVER ALERT</b> ${headerEmoji}
-
-📊 <b>Instrument:</b> ${signal.instrument}
-⚡ <b>Signal:</b> ${signalLabel}
-💰 <b>${signal.instrument} Spot Close:</b> ₹${signal.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-
-${strikeSection}
-📈 <b>23 EMA:</b> ${signal.ema23.toFixed(2)}
-📉 <b>50 EMA:</b> ${signal.ema50.toFixed(2)}
-⚖️ <b>EMA Diff:</b> ${diffSign}${signal.emaDifference.toFixed(2)}
-
-⏳ <b>Timeframe:</b> 15 Minutes
-🕒 <b>Candle Time:</b> ${signal.candleTimestamp}
-✅ <b>Confirmed At:</b> ${signal.signalConfirmedAt}
-
-${autoTradeNotice}
-`.trim();
-
-    try {
-      const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: 'HTML'
-        })
-      });
-
-      const resJson: any = await response.json();
-      const isSuccess = response.ok && resJson.ok;
-
-      dbEngine.logEmaNotification({
-        id: `tg-${signal.id}-${Date.now()}`,
-        signalId: signal.id,
-        channel: 'TELEGRAM',
-        status: isSuccess ? 'SUCCESS' : 'FAILED',
-        attemptedAt: new Date().toISOString(),
-        errorMessage: isSuccess ? undefined : (resJson.description || 'Telegram API request failed'),
-        payload: { chatId, result: resJson }
-      });
-
-      return isSuccess;
-    } catch (err: any) {
-      console.error('[NOTIF SERVICE] Telegram dispatch error:', err.message);
-      dbEngine.logEmaNotification({
-        id: `tg-${signal.id}-${Date.now()}`,
-        signalId: signal.id,
-        channel: 'TELEGRAM',
-        status: 'FAILED',
-        attemptedAt: new Date().toISOString(),
-        errorMessage: err.message
-      });
-      return false;
-    }
+  public async sendTelegramAlert(signal: Ema15mSignal, botToken: string, chatId: string, source: TelegramSignalSource = 'UNKNOWN'): Promise<boolean> {
+    const attempted = Date.now();
+    const timing = signalAlertTiming(signal, attempted);
+    const result = await sendTelegram(botToken, chatId, formatTelegramSignal(signal, source, attempted));
+    dbEngine.logEmaNotification({
+      id: 'tg-' + randomUUID(), signalId: signal.id, channel: 'TELEGRAM',
+      status: result.ok ? 'SUCCESS' : 'FAILED',
+      attemptedAt: new Date(attempted).toISOString(),
+      errorMessage: result.ok ? undefined : result.code,
+      payload: { ...timing, source, transport: result }
+    });
+    if (!result.ok) console.warn('[NOTIF SERVICE] Telegram dispatch:', result.code);
+    return result.ok;
   }
 
   /**
@@ -360,12 +304,13 @@ ${autoTradeNotice}
               : 'Telegram Chat ID is missing. Enter your numeric Chat ID or channel username.'
         };
       }
-      const ok = await this.sendTelegramAlert(dummySignal, botToken, chatId);
+      const result = await sendTelegram(botToken, chatId, '🧪 TELEGRAM CONNECTIVITY TEST — NOT A TRADING SIGNAL\nServer time: ' + new Date().toISOString());
       return {
-        success: ok,
-        message: ok
-          ? `Telegram test alert delivered successfully to ${chatId}!`
-          : 'Failed to deliver Telegram message. Please check that: 1) Bot Token is correct. 2) Chat ID is correct. 3) You sent /start to your bot in Telegram first!'
+        success: result.ok,
+        message: result.ok
+          ? 'Telegram accepted the test message in ' + result.elapsedMs + ' ms. Check the destination chat; device delivery is not confirmed.'
+          : 'Telegram test failed: ' + result.code + ' (' + result.elapsedMs + ' ms).' +
+            (result.retryAfterSeconds !== undefined ? ' Retry after ' + result.retryAfterSeconds + 's.' : '')
       };
     } else {
       const email = target || currentSettings.emailAddress || process.env.SMTP_USER;
@@ -393,22 +338,9 @@ ${autoTradeNotice}
       return false;
     }
 
-    try {
-      const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        })
-      });
-      return response.ok;
-    } catch (err: any) {
-      console.warn('[NOTIF SERVICE] Direct Telegram dispatch error:', err.message);
-      return false;
-    }
+    const result = await sendTelegram(botToken, chatId, text, true);
+    if (!result.ok) console.warn('[NOTIF SERVICE] Direct Telegram dispatch:', result.code);
+    return result.ok;
   }
 }
 
