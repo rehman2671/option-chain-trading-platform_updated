@@ -216,7 +216,9 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             )}
           </div>
 
-          {overfitResult ? (
+          {overfitResult?.evidenceStatus==='NO_PERTURBATION_EVIDENCE' ? (
+            <p className="text-amber-300">No independent parameter perturbation evidence. Stability, PBO and deflated Sharpe are unavailable; promotion remains blocked.</p>
+          ) : overfitResult ? (
             <div className="space-y-3">
               <p className="text-amber-300">Parameter perturbation output is not independently validated.</p>
               <div className="grid grid-cols-2 gap-2 text-[11px]">
