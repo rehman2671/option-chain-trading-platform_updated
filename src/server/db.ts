@@ -5566,8 +5566,8 @@ class DatabaseEngine {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-        s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
-        s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+        s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+        s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
       );
     } catch (err) {
       console.error('[DB] Error saving quant option snapshot:', err);
@@ -5588,8 +5588,8 @@ class DatabaseEngine {
         for (const s of items) {
           stmt.run(
             s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-            s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
-            s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+            s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+            s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
           );
         }
       });
