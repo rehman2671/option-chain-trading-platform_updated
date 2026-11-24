@@ -13,6 +13,9 @@ import {
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import {underlyingKeys,validListedOptionRequest,verifyExactListedOption,type ListedOptionRequest,type ListedOptionEvidence} from '../../release/exactListedOptionEvidence.js';
+import {assessBrokerCapitalReleaseReview,type ReleaseReview} from '../../release/brokerCapitalReleaseReview.js';
+import {buildBoundBrokerEntryEvidence,validBrokerEntryIdentity,type BoundBrokerEntryEvidence,type BrokerEntryIdentity} from '../../release/boundBrokerEntryEvidence.js';
 import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
 import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
 import {resolveUniqueBrokerNetPosition}
@@ -451,6 +454,31 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
   }
 
+  /** Native non-dispatch risk evidence. No practice fallback, credentials in
+   * output, or claim of independent account completeness. Caller must bind
+   * the authenticated platform owner to the expected broker account. */
+  public async getBoundBrokerEntryEvidence(expected:BrokerEntryIdentity):Promise<BoundBrokerEntryEvidence|null>{
+    if(!validBrokerEntryIdentity(expected))return null;
+    const frozen={...expected};
+    const session=this.captureRiskReadIdentity();
+    if(!session||frozen.accountId!==session.accountId||frozen.authEpoch!==session.authEpoch)return null;
+    const startedAt=Date.now();
+    const headers={Authorization:'Bearer '+session.bearerToken,Accept:'application/json'};
+    const signal=AbortSignal.timeout(12000);
+    try{
+      const [fundsRes,marginRes,positionsRes]=await Promise.all([
+        fetch('https://api.upstox.com/v2/user/get-funds-and-margin',{headers,signal}),
+        fetch('https://api.upstox.com/v2/charges/margin',{method:'POST',headers:{...headers,'Content-Type':'application/json'},signal,
+          body:JSON.stringify({instruments:[{instrument_key:frozen.instrumentKey,quantity:frozen.quantity,transaction_type:'BUY',product:frozen.product}]})}),
+        fetch('https://api.upstox.com/v2/portfolio/short-term-positions',{headers,signal})
+      ]);
+      if(!fundsRes.ok||!marginRes.ok||!positionsRes.ok||!this.currentRiskReadIdentity(session))return null;
+      const [funds,margin,portfolio]=await Promise.all([fundsRes.json(),marginRes.json(),positionsRes.json()]);
+      if(!this.currentRiskReadIdentity(session))return null;
+      return buildBoundBrokerEntryEvidence(frozen,funds,margin,portfolio,startedAt,Date.now());
+    }catch{return null;}
+  }
+
   /**
    * Fail-closed exchange quantity lookup for EMA real SELL. This is intentionally
    * NOT the UI's getPositions() method, which returns [] on transport errors.
@@ -582,6 +610,24 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.error('[UPSTOX PROVIDER] placeOrder error:', err.message || err);
       throw err;
     }
+  }
+
+  /** Read-only exact option identity under the same pinned broker account.
+   * No nearest-expiry substitution or practice fallback. */
+  public async getExactListedOptionEvidence(request:ListedOptionRequest):Promise<ListedOptionEvidence|null>{
+    if(!validListedOptionRequest(request))return null;
+    const frozen={...request,identity:{...request.identity}};
+    const session=this.captureRiskReadIdentity();
+    if(!session||session.accountId!==frozen.identity.accountId||session.authEpoch!==frozen.identity.authEpoch)return null;
+    const start=Date.now();
+    try{
+      const res=await fetch('https://api.upstox.com/v2/option/contract?instrument_key='+encodeURIComponent(underlyingKeys[frozen.underlying]),{
+        headers:{Authorization:'Bearer '+session.bearerToken,Accept:'application/json'},signal:AbortSignal.timeout(5000)});
+      if(!res.ok)return null;
+      const data=await res.json();
+      if(data?.status!=='success'||!this.currentRiskReadIdentity(session))return null;
+      return verifyExactListedOption(frozen,data.data,start,Date.now());
+    }catch{return null;}
   }
 
   /** Listed, exchange-authoritative option contracts for one underlying.
@@ -878,6 +924,21 @@ export class UpstoxProvider implements IMarketDataProvider {
    * Caller must independently authenticate ownership of the persisted intent.
    * No order POST, retry, offset or position closure is authorized.
    */
+  public async getBrokerCapitalReleaseReview(expectedAccount:string,expectedEpoch:number,intent:OrderIntentEvidence):Promise<ReleaseReview>{
+    const unknown:ReleaseReview={status:'UNKNOWN',reason:'ACCOUNT_SESSION_OR_READS_UNAVAILABLE',capitalReleaseAuthorized:false,retryAuthorized:false,accountFlatCertified:false};
+    const session=this.captureRiskReadIdentity();
+    if(!session||session.accountId!==expectedAccount||session.authEpoch!==expectedEpoch||!validOrderIntent(intent))return unknown;
+    const frozen={...intent};const startedAt=Date.now();
+    try{
+      const [detail,trades,positions,orders,gtt]=await Promise.all([this.getOrderDetails(frozen.orderId),this.getOrderTrades(frozen.orderId),
+        this.getVerifiedNrmlPositionRows(),this.getOrderBook(),this.getGttOrders()]);
+      if(!this.currentRiskReadIdentity(session))return unknown;
+      const receivedAt=Date.now();
+      return assessBrokerCapitalReleaseReview({accountId:session.accountId,authEpoch:session.authEpoch,intent:frozen,
+        startedAt,receivedAt,detail,trades,positions,orders,gtt},expectedAccount,expectedEpoch,receivedAt);
+    }catch{return unknown;}
+  }
+
   public async getVerifiedOrderReconciliation(intent: OrderIntentEvidence): Promise<OrderEvidence> {
     const frozen={...intent};
     const unavailable=()=>reconcileOrderEvidence(frozen,null,null);
