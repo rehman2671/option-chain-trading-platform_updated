@@ -619,6 +619,7 @@ export class UpstoxProvider implements IMarketDataProvider {
     }
     const url = `https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(underlyingKey)}`;
     const res = await fetch(url, {
+      signal: AbortSignal.timeout(5000),
       headers: { 'Authorization': `Bearer ${this.accessToken}`, 'Accept': 'application/json' }
     });
     if (!res.ok) throw new Error(`UPSTOX_CONTRACT_LOOKUP_HTTP_${res.status}`);

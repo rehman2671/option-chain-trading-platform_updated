@@ -11,10 +11,11 @@ import { continuousResearchEngine, DailyResearchCycleSummary } from '../learning
 import { calibrationEngine, CalibrationReport } from '../learning/calibrationEngine.js';
 import { dbEngine } from '../../server/db.js';
 import { decisionEngine } from '../decision/decisionEngine.js';
-import { orderAdapter, QuantOrderRequest, QuantOrderResult } from '../adapters/orderAdapter.js';
+import type { QuantOrderResult } from '../adapters/orderAdapter.js';
+import { activeProvider } from '../../server/engine/providers/index.js';
+import { readQuantCandidateEvidence, type QuantEvidenceResult } from '../data/quantCandidateEvidence.js';
 import { killSwitchEngine } from '../risk/killSwitch.js';
 import { drawdownController } from '../risk/drawdownController.js';
-import { exposureController } from '../risk/exposureController.js';
 import { quantAuditLogger } from '../audit/auditLogger.js';
 import { getComputedMarketContext } from '../context/marketContext.js';
 import { QuantUnderlying, QuantExecutionMode, QuantDecisionOutput } from '../types.js';
@@ -255,10 +256,9 @@ export class QuantScheduler {
    * Executes a scheduled decision cycle for a user and optionally routes to order execution based on execution mode.
    * STRICT SAFETY RULES:
    * - If executionMode is ADVISORY_ONLY: only the decision is evaluated and recorded. NO orders are sent.
-   * - If executionMode is SHADOW: orders are routed to orderAdapter with mode: 'SHADOW'.
-   * - If executionMode is LIVE_PAPER: orders are routed to orderAdapter with mode: 'PAPER'.
-   * - If executionMode is LIVE_REAL: orders are routed to orderAdapter with mode: 'LIVE'.
-   * - In ALL modes, kill switch, drawdown controller, and exposure controller are enforced.
+   * - Other modes retain the configured intent, but return read-only candidate evidence.
+   * - No automatic order until structured leg sides, account risk and reconciliation are verified.
+   * - Kill switch and drawdown checks still precede the decision cycle.
    */
   public async runQuantDecisionExecutionCycle(
     userId?: string | null,
@@ -266,6 +266,7 @@ export class QuantScheduler {
   ): Promise<{
     decision: QuantDecisionOutput | null;
     orderResult?: QuantOrderResult | null;
+    contractEvidence?: QuantEvidenceResult;
     executionMode: QuantExecutionMode;
     message: string;
     blockedByRisk?: boolean;
@@ -395,45 +396,20 @@ export class QuantScheduler {
       };
     }
 
-    // Prepare order request
-    const orderMode: 'SHADOW' | 'PAPER' | 'LIVE' =
-      executionMode === 'SHADOW'
-        ? 'SHADOW'
-        : executionMode === 'LIVE_PAPER'
-        ? 'PAPER'
-        : 'LIVE';
-
-    const orderReq: QuantOrderRequest = {
-      strategyId: decision.strategy.id,
-      symbol: `${underlying} ${decision.strategy.strikes || ''}`,
-      action: 'BUY',
-      orderType: 'LIMIT',
-      limitPrice: decision.marketState.spotPrice,
-      quantity: (decision.strategy.positionSizeLots || 1) * 25,
-      mode: orderMode,
-      tag: `Quant-${decision.strategy.id}`,
-      userId: uId,
-      decisionId: decision.decisionId
-    };
-
-    // Route order through orderAdapter (which enforces risk checks & logging)
-    const orderResult = await orderAdapter.submitOrder(orderReq);
-
+    // Decision strategy.strikes is display text, not a structured signed leg list.
+    // The legacy path fabricated a single BUY at the underlying spot and fixed 25 units.
+    // Preserve advisory/shadow analysis; no simulated or real order from incomplete intent.
+    const contractEvidence: QuantEvidenceResult = await readQuantCandidateEvidence({
+      underlying, strikes:decision.strategy.strikes, expiry:decision.strategy.expiry,
+      lots:decision.strategy.positionSizeLots
+    }, process.env.NODE_ENV==='test' ? null : activeProvider);
     quantAuditLogger.log({
-      actor: 'QUANT_SCHEDULER',
-      action: `DECISION_TO_${orderMode}_ORDER`,
-      entityType: 'ORDER',
-      entityId: orderResult.orderId,
-      afterState: orderResult,
-      reason: `Automated routing from Decision ${decision.decisionId} under mode ${executionMode}: ${orderResult.message}`
+      actor:'QUANT_SCHEDULER',action:'DECISION_EXECUTION_HELD_CONTRACT_EVIDENCE',
+      entityType:'DECISION',entityId:decision.decisionId,afterState:contractEvidence,
+      reason:'Structured leg sides, account risk and execution reconciliation are not established.'
     });
-
-    return {
-      decision,
-      orderResult,
-      executionMode,
-      message: `Decision routed to ${executionMode} execution: ${orderResult.message}`
-    };
+    return {decision,orderResult:null,executionMode,contractEvidence,
+      message:'Order held: '+contractEvidence.reason+' No broker or paper order submitted.'};
   }
 
   /**
