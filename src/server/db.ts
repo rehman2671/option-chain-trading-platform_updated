@@ -3098,10 +3098,10 @@ class DatabaseEngine {
       let countRow: any;
       if (userId) {
         countRow = this.db.prepare(`SELECT COUNT(*) as count FROM autonomous_strategies WHERE armed = 1 AND user_id = ?`).get(userId) as any;
-        this.db.prepare(`UPDATE autonomous_strategies SET armed = 0, status = 'DISARMED' WHERE armed = 1 AND user_id = ?`).run(userId);
+        this.db.prepare(`UPDATE autonomous_strategies SET armed = 0, status = CASE WHEN active_basket_id IS NOT NULL OR status = 'IN_POSITION' THEN status ELSE 'DISARMED' END WHERE armed = 1 AND user_id = ?`).run(userId);
       } else {
         countRow = this.db.prepare(`SELECT COUNT(*) as count FROM autonomous_strategies WHERE armed = 1`).get() as any;
-        this.db.prepare(`UPDATE autonomous_strategies SET armed = 0, status = 'DISARMED' WHERE armed = 1`).run();
+        this.db.prepare(`UPDATE autonomous_strategies SET armed = 0, status = CASE WHEN active_basket_id IS NOT NULL OR status = 'IN_POSITION' THEN status ELSE 'DISARMED' END WHERE armed = 1`).run();
       }
       const armedCount = countRow ? (countRow.count as number) : 0;
 
@@ -6246,8 +6246,8 @@ class DatabaseEngine {
     haltReason?: string;
     operator?: string;
     emergencyActions?: string[];
-  }): void {
-    if (!this.db || !state.userId) return;
+  }): boolean {
+    if (!this.db || !state.userId) return false;
     try {
       const now = new Date().toISOString();
       this.db.prepare(`
@@ -6273,8 +6273,10 @@ class DatabaseEngine {
         JSON.stringify(state.emergencyActions || []),
         now
       );
-    } catch (err) {
-      console.error('[DB] Error saving quant_kill_switch_state:', err);
+      return true;
+    } catch {
+      console.error('[DB] Error saving quant_kill_switch_state');
+      return false;
     }
   }
 

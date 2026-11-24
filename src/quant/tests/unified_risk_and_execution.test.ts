@@ -203,6 +203,22 @@ describe('Unified Risk Controls & Real Execution Integration', () => {
     assert.ok(gating.reason?.includes('Limit breach detected'));
   });
 
+  it('kill switch records only local halt and refuses reset when durable write fails',()=>{
+    const state=killSwitchEngine.manualEmergencyKill('TEST_SUITE',TEST_USER,'Fixture halt');
+    assert.deepEqual(state.emergencyActionsExecuted,['LOCAL_KILL_SWITCH_HALTED']);
+    const original=dbEngine.saveKillSwitchState;
+    try {
+      dbEngine.saveKillSwitchState=()=>false;
+      const failed=killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET,'Fixture',TEST_USER);
+      assert.equal(failed.success,false);
+      assert.equal(killSwitchEngine.isHalted(TEST_USER),true);
+    } finally {dbEngine.saveKillSwitchState=original;}
+    assert.equal(killSwitchEngine.resetKillSwitch(TEST_RESET_SECRET,'Fixture',TEST_USER).success,true);
+    const saved=dbEngine.getKillSwitchState(TEST_USER);
+    assert.equal(saved.operator,'AUTHORIZED_SUPERVISOR_RESET');
+    assert.ok(!JSON.stringify(saved).includes(TEST_RESET_SECRET));
+  });
+
   it('10. Verifies authorized Kill Switch reset unlocks execution safely', async () => {
     // Halt
     killSwitchEngine.manualEmergencyKill('TEST_SUITE', TEST_USER, 'Temporary halt');
