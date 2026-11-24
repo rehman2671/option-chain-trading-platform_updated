@@ -59,7 +59,7 @@ export async function readQuantCandidateEvidence(
       const matches=rows.map(row).filter((r):r is Row=>!!r&&r.underlying_key===spec.underlyingKey&&r.underlying_symbol===input.underlying&&r.segment===spec.segment&&r.instrument_type===c.optionType&&r.expiry===expiry&&r.strike_price===c.strike);
       if(matches.length!==1)return null;
       const m=matches[0],instrumentKey=m.instrument_key,lotSize=m.lot_size;
-      if(typeof instrumentKey!=='string'||!new RegExp('^'+spec.segment+'\\\\|[0-9]+$').test(instrumentKey)||!positiveInt(lotSize)||!positiveInt(lotSize*lots))return null;
+      if(typeof instrumentKey!=='string'||!instrumentKey.startsWith(spec.segment+'|')||!/^[0-9]+$/.test(instrumentKey.slice(spec.segment.length+1))||!positiveInt(lotSize)||!positiveInt(lotSize*lots))return null;
       if(rows.filter(r=>row(r)?.instrument_key===instrumentKey).length!==1)return null;
       return {...c,instrumentKey,expiry,lotSize,quantity:lotSize*lots};
     });
