@@ -26,6 +26,7 @@ import { globalNotificationService } from './src/server/engine/notificationServi
 import { startTelegramMonitor, getTelegramMonitorStatus } from './src/server/engine/telegramMonitor.js';
 import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import { authRouter, attachUser, getUserFromRequest, requireAuth, requireSuperAdmin } from './src/server/auth.js';
 import { quantRouter } from './src/quant/api/quantRouter.js';
 import { performUpstoxTOTPLogin, getUpstoxAuthStatus, initializeUpstoxAutoRefreshCron, setManualAccessToken } from './src/server/engine/upstoxAuthService.js';
@@ -97,7 +98,8 @@ app.use('/api/quant', requireAuth as any, quantRouter);
 app.use('/api/ema15m', requireAuth as any);
 
 // Authenticate and attach user (with guest/session fallback for paper trading)
-app.use(['/api/basket', '/api/autonomous'], requireAuth as any);
+app.use(['/api/basket', '/api/autonomous', '/api/paper-trading'], requireAuth as any);
+const expensiveApiLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Request rate limit exceeded' } });
 
 // Paper Trading Virtual Terminal Engine
 const PAPER_VIRTUAL_CAPITAL = 1000000; // 10 Lakhs Initial Virtual Capital
@@ -790,7 +792,7 @@ async function startServer() {
   });
 
   // 5. One-Click Execute Strategy Signal into Paper Trading
-  app.post('/api/platform/execute-signal', async (req, res) => {
+  app.post('/api/platform/execute-signal', requireAuth as any, async (req, res) => {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
@@ -896,13 +898,14 @@ async function startServer() {
   });
 
   // Section 5B: Basket Order Execution with Application-Level Atomicity & Fallback
-  app.post('/api/basket/execute', async (req, res) => {
+  app.post('/api/basket/execute', expensiveApiLimiter, async (req, res) => {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
-      const { strategyId, strategyName, symbol, legs, userAvailableMargin } = req.body;
+      const { strategyId, strategyName, symbol, legs } = req.body;
       const portfolio = await getPaperPortfolioData(userId);
-      const marginToUse = userAvailableMargin !== undefined ? Number(userAvailableMargin) : portfolio.ledger.availableMargin;
+      // Client-provided balances are never authoritative, even for simulation.
+      const marginToUse = portfolio.ledger.availableMargin;
       const result = await globalBasketEngine.executeBasketOrder(
         strategyId,
         strategyName || 'Custom Strategy',
@@ -944,7 +947,7 @@ async function startServer() {
   });
 
   // Historical Batch Sync Endpoints (Jan 2024 - Present across 1m, 3m, 5m, 15m, 30m, 60m, day)
-  app.post('/api/historical/sync-all', async (req, res) => {
+  app.post('/api/historical/sync-all', requireSuperAdmin as any, expensiveApiLimiter, async (req, res) => {
     try {
       const status = await startFullHistoricalSync();
       res.json(status);
@@ -958,7 +961,7 @@ async function startServer() {
   });
 
   // AI Interpretation & Narration Endpoint (Gemini @google/genai)
-  app.post('/api/ai/narrate', async (req, res) => {
+  app.post('/api/ai/narrate', requireAuth as any, expensiveApiLimiter, async (req, res) => {
     try {
       const { symbol, userPrompt } = req.body;
       const narration = await generateAiNarration(symbol || 'NIFTY', userPrompt);
@@ -969,7 +972,7 @@ async function startServer() {
   });
 
   // Database Introspection API (Auto-Index & Migration Status)
-  app.get('/api/db/schema', (req, res) => {
+  app.get('/api/db/schema', requireSuperAdmin as any, (req, res) => {
     try {
       const schema = dbEngine.getSchemaInfo();
       res.json(schema);
@@ -978,7 +981,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/db/migrations', (req, res) => {
+  app.get('/api/db/migrations', requireSuperAdmin as any, (req, res) => {
     try {
       const migrations = dbEngine.getMigrationHistory();
       res.json(migrations);
@@ -987,7 +990,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/db/export-ddl', (req, res) => {
+  app.get('/api/db/export-ddl', requireSuperAdmin as any, (req, res) => {
     try {
       const ddl = dbEngine.exportDDLScript();
       res.type('text/plain').send(ddl);
@@ -1211,7 +1214,8 @@ async function startServer() {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : null;
-      dbEngine.clearAllPaperPositions(userId);
+      if (!userId) return res.status(401).json({ error: 'Authentication required' });
+      dbEngine.clearUserPaperPositions(userId);
       const portfolio = await getPaperPortfolioData(userId);
       res.json({ success: true, portfolio });
     } catch (err: any) {
@@ -1360,7 +1364,7 @@ async function startServer() {
   });
 
   // Reset Global Kill Switch Endpoint
-  app.post('/api/autonomous/kill-switch/reset', (req, res) => {
+  app.post('/api/autonomous/kill-switch/reset', requireSuperAdmin as any, (req, res) => {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : 'ANONYMOUS';
@@ -1372,11 +1376,13 @@ async function startServer() {
   });
 
   // Task 1: Simulated Circuit Breaker Verification Endpoint
-  app.post('/api/autonomous/test-circuit-breaker', (req, res) => {
+  app.post('/api/autonomous/test-circuit-breaker', requireSuperAdmin as any, (req, res) => {
     try {
       const user = getUserFromRequest(req);
       const userId = user ? user.id : 'ANONYMOUS';
+      if (activeProvider.getProviderMode() !== 'PRACTICE') return res.status(409).json({ error: 'Circuit breaker test is practice-only' });
       const simulatedLoss = Number(req.body?.simulatedLoss) || -15000;
+      if (!Number.isFinite(simulatedLoss) || simulatedLoss >= 0) return res.status(400).json({error:'Invalid simulated loss'});
       dbEngine.addAutonomousLog({
         id: `log-test-${Date.now()}`,
         strategyId: 'SIMULATED_TEST',
@@ -1411,7 +1417,7 @@ async function startServer() {
   });
 
   // Task 2: System Margin API Endpoint (Fetches real margin from active provider)
-  app.get('/api/system/margin', async (req, res) => {
+  app.get('/api/system/margin', requireSuperAdmin as any, async (req, res) => {
     try {
       const marginInfo = await activeProvider.getAvailableMargin();
       res.json(marginInfo || { available: 1000000, source: 'PRACTICE' });
@@ -3026,7 +3032,7 @@ async function startServer() {
   });
 
   // 7. Send Test Alert (Telegram or Email)
-  app.post('/api/ema15m/test-notification', requireAuth as any, async (req, res) => {
+  app.post('/api/ema15m/test-notification', requireSuperAdmin as any, expensiveApiLimiter, async (req, res) => {
     try {
       const { channel, target, botToken } = req.body;
       if (!channel || (channel !== 'TELEGRAM' && channel !== 'EMAIL')) {
@@ -3040,11 +3046,13 @@ async function startServer() {
   });
 
   // 8. Trigger Mock Crossover for Testing / Verification (Isolated from live execution)
-  app.post('/api/ema15m/mock-crossover', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/mock-crossover', requireSuperAdmin as any, expensiveApiLimiter, (req, res) => {
     try {
       const { symbol, targetType } = req.body;
       const inst = (symbol || 'NIFTY').toUpperCase() as Ema15mInstrument;
       const type = (targetType || 'BULLISH') as 'BULLISH' | 'BEARISH';
+      if (activeProvider.getProviderMode() !== 'PRACTICE') return res.status(409).json({error:'Mock crossover is practice-only'});
+      if (!['NIFTY','BANKNIFTY','SENSEX'].includes(inst) || !['BULLISH','BEARISH'].includes(type)) return res.status(400).json({error:'Invalid mock crossover'});
       const result = globalEma15mEngine.triggerMockCrossover(inst, type);
       res.json({
         success: true,
@@ -3057,7 +3065,7 @@ async function startServer() {
   });
 
   // 9. Get Notification Dispatch Audit Logs
-  app.get('/api/ema15m/notification-logs', (req, res) => {
+  app.get('/api/ema15m/notification-logs', requireSuperAdmin as any, (req, res) => {
     try {
       const signalId = req.query.signalId as string | undefined;
       const limit = Number(req.query.limit) || 50;
@@ -3104,7 +3112,7 @@ async function startServer() {
   });
 
   // 12. Manually Square Off / Close an EMA Paper Trade (Pure simulation, NEVER touches broker)
-  app.post('/api/ema15m/paper-trades/close', requireAuth as any, (req, res) => {
+  app.post('/api/ema15m/paper-trades/close', requireSuperAdmin as any, (req, res) => {
     try {
       const { id, exitPrice, reason } = req.body;
       if (!id) {
@@ -3117,6 +3125,7 @@ async function startServer() {
       }
 
       const closePrice = exitPrice !== undefined ? Number(exitPrice) : trade.currentPrice;
+      if (!Number.isFinite(closePrice) || closePrice <= 0) return res.status(400).json({error:'Invalid exit premium'});
       const closed = dbEngine.closeEmaPaperTrade(id, closePrice, reason || 'MANUAL_SQUARE_OFF');
       if (closed) {
         try {
@@ -3212,7 +3221,7 @@ async function startServer() {
   });
 
   // 15. Fetch EMA Execution Audit Logs
-  app.get('/api/ema15m/execution-logs', (req, res) => {
+  app.get('/api/ema15m/execution-logs', requireSuperAdmin as any, (req, res) => {
     try {
       const limit = Number(req.query.limit) || 100;
       const instrument = req.query.instrument as string | undefined;
@@ -3238,7 +3247,7 @@ async function startServer() {
   // -------------------------------------------------------------
 
   // 17. Live Execution Summary
-  app.get('/api/ema15m/live-summary', (req, res) => {
+  app.get('/api/ema15m/live-summary', requireSuperAdmin as any, (req, res) => {
     try {
       const summary = dbEngine.getEmaLiveTradingSummary();
       res.json({ success: true, summary });
@@ -3248,7 +3257,7 @@ async function startServer() {
   });
 
   // 18. Live Broker Positions
-  app.get('/api/ema15m/live-positions', (req, res) => {
+  app.get('/api/ema15m/live-positions', requireSuperAdmin as any, (req, res) => {
     try {
       const instrument = req.query.instrument as string | undefined;
       const status = req.query.status as string | undefined;
@@ -3260,7 +3269,7 @@ async function startServer() {
   });
 
   // 19. Live Order Attempts (including rejections and 0 filled qty)
-  app.get('/api/ema15m/live-attempts', (req, res) => {
+  app.get('/api/ema15m/live-attempts', requireSuperAdmin as any, (req, res) => {
     try {
       const instrument = req.query.instrument as string | undefined;
       const limit = Number(req.query.limit) || 100;
@@ -3286,7 +3295,7 @@ async function startServer() {
   });
 
   // 21. Structured Execution Events
-  app.get('/api/ema15m/execution-events', (req, res) => {
+  app.get('/api/ema15m/execution-events', requireSuperAdmin as any, (req, res) => {
     try {
       const limit = Number(req.query.limit) || 100;
       const stage = req.query.stage as string | undefined;
