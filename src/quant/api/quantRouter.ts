@@ -250,30 +250,9 @@ quantRouter.get('/strategies', (req, res) => {
   }
 });
 
-quantRouter.post('/strategies/promote', (req, res) => {
-  try {
-    const { strategyId, targetStatus } = req.body;
-    const strats = dbEngine.getQuantStrategies();
-    const target = strats.find((s: any) => s.id === strategyId);
-    if (!target) {
-      return res.status(404).json({ error: 'Strategy not found' });
-    }
-    target.status = targetStatus;
-    dbEngine.saveQuantStrategy(target);
-
-    dbEngine.saveQuantAuditLog({
-      actor: 'OPERATOR',
-      action: 'STRATEGY_PROMOTED',
-      entityType: 'STRATEGY',
-      entityId: strategyId,
-      afterState: { status: targetStatus },
-      reason: `Promoted strategy ${target.name} to ${targetStatus}`
-    });
-
-    res.json({ success: true, strategy: target });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+quantRouter.post('/strategies/promote', (req,res)=>{
+  // No independently verified promotion evidence is available through this route.
+  return res.status(409).json({error:'Strategy promotion blocked: independent validation required.',promotionAllowed:false});
 });
 
 // 9. Backtests
@@ -476,26 +455,8 @@ quantRouter.get('/drift', (req, res) => {
 });
 
 // 20. Strategy Lifecycle Promotion Gate (Section 47 & B9)
-quantRouter.post('/strategy-lifecycle/promote', (req, res) => {
-  try {
-    const { strategyId, targetStatus, operatorNotes } = req.body;
-    quantAuditLogger.log({
-      actor: 'operator',
-      action: 'STRATEGY_LIFECYCLE_TRANSITION',
-      entityType: 'STRATEGY',
-      entityId: strategyId || 'STRAT_BULL_CALL_SPREAD_01',
-      afterState: { targetStatus, operatorNotes },
-      reason: operatorNotes || 'Operator evaluated research validation gates and approved promotion.'
-    });
-    res.json({
-      success: true,
-      strategyId,
-      newStatus: targetStatus,
-      updatedAt: new Date().toISOString()
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: { code: 'PROMOTION_ERROR', message: err.message } });
-  }
+quantRouter.post('/strategy-lifecycle/promote', (req,res)=>{
+  return res.status(409).json({error:'Strategy promotion blocked: independent validation required.',promotionAllowed:false});
 });
 
 // 21. Audit Logs (Section 78, 79 & B3)
@@ -1395,20 +1356,17 @@ quantRouter.post('/shadow-mode/close', (req, res) => {
 quantRouter.get('/quality-gates', (req, res) => {
   try {
     const strategyId = (req.query.strategy as string) || 'strat_bull_call_spread';
-    const report = qualityGatesEngine.evaluateStrategy(strategyId, 1, {
-      sampleSize: 142,
-      netPnlINR: 48500,
-      expectancyR: 0.38,
-      maxDrawdownPct: 11.2,
-      profitFactor: 1.82,
-      sharpeRatio: 1.64,
-      walkForwardWindowsPassed: 5,
-      oosSharpeRatio: 1.45,
-      monteCarloRuinProbPct: 0.08,
-      parameterPlateauWidthPct: 80,
-      dataQualityScore: 98
+    const report=qualityGatesEngine.evaluateStrategy(strategyId,1,{
+      sampleSize:0,netPnlINR:0,expectancyR:0,maxDrawdownPct:0,profitFactor:0,sharpeRatio:0,
+      walkForwardWindowsPassed:0,oosSharpeRatio:0,monteCarloRuinProbPct:100,
+      parameterPlateauWidthPct:0,dataQualityScore:0
     });
-    res.json(report);
+    const unavailable={...report,gates:report.gates.map(g=>({...g,actualValue:'UNVERIFIED',passed:false,
+      notes:'Independent evidence unavailable'})),allGatesPassed:false,passedGateCount:0,passedPercentage:0,
+      promotionAllowed:false,rejectionReasons:['Independent validation evidence unavailable']};
+    res.setHeader('Cache-Control','no-store');
+    return res.json(unavailable);
+
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
