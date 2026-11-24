@@ -79,6 +79,7 @@ class DatabaseEngine {
 
       // 5. Run schema migrations and indexes
       this.runMigrations();
+      this.ensureSessionVersionColumn();
       this.ensureAutoIndexes();
       this.seedQuantFeatureHistoryIfEmpty();
       this.syncConfiguredUsersFromEnv();
@@ -2841,12 +2842,10 @@ class DatabaseEngine {
           'SELECT * FROM users WHERE lower(email) = lower(?) OR id = ?'
         ).get(email, account.id) as any;
 
-        // Env credentials are authoritative for this managed roster. Updating
-        // a configured password rotates any previously seeded/known password.
+        // Initial environment password bootstraps the account only. Existing
+        // password resets and administrative disablement survive restart.
         const currentHash = existing?.password_hash as string | undefined;
-        const passwordHash = currentHash && bcrypt.compareSync(password, currentHash)
-          ? currentHash
-          : bcrypt.hashSync(password, 12);
+        const passwordHash = currentHash || bcrypt.hashSync(password, 12);
 
         if (existing) {
           this.db.prepare(`
@@ -2869,24 +2868,41 @@ class DatabaseEngine {
     }
   }
 
+  private ensureSessionVersionColumn(): void {
+    if (!this.db) throw Error('DB_NOT_INITIALIZED');
+    const cols=this.db.prepare('PRAGMA table_info(users)').all() as {name:string}[];
+    if (!cols.some(c=>c.name==='session_version')) this.db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+  }
+
+  public getUserSessionVersion(userId:string): number|null {
+    if (!this.db) return null;
+    const row=this.db.prepare('SELECT session_version FROM users WHERE id=? AND is_active=1').get(userId) as {session_version:number}|undefined;
+    return row && Number.isSafeInteger(row.session_version) && row.session_version>=0 ? row.session_version : null;
+  }
+
+  public revokeUserSessions(userId:string): void {
+    if (!this.db) throw Error('DB_NOT_INITIALIZED');
+    this.db.prepare('UPDATE users SET session_version=session_version+1 WHERE id=?').run(userId);
+  }
+
   public setUserActiveStatus(userId: string, isActive: boolean): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET is_active = ? WHERE id = ?`).run(isActive ? 1 : 0, userId);
+    this.db.prepare(`UPDATE users SET is_active = ?, session_version=session_version+1 WHERE id = ?`).run(isActive ? 1 : 0, userId);
   }
 
   public setUserRole(userId: string, role: string): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(role, userId);
+    this.db.prepare(`UPDATE users SET role = ?, session_version=session_version+1 WHERE id = ?`).run(role, userId);
   }
 
   public setUserPassword(userId: string, passwordHash: string): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(passwordHash, userId);
+    this.db.prepare(`UPDATE users SET password_hash = ?, reset_token=NULL, reset_token_expires_at=NULL, session_version=session_version+1 WHERE id = ?`).run(passwordHash, userId);
   }
 
   public setUserMfaSecret(userId: string, secret: string | null, enabled: boolean): void {
     if (!this.db) return;
-    this.db.prepare(`UPDATE users SET mfa_secret = ?, mfa_enabled = ? WHERE id = ?`).run(secret, enabled ? 1 : 0, userId);
+    this.db.prepare(`UPDATE users SET mfa_secret = ?, mfa_enabled = ?, session_version=session_version+1 WHERE id = ?`).run(secret, enabled ? 1 : 0, userId);
   }
 
   public findUserByEmail(email: string): any | null {
@@ -3006,7 +3022,7 @@ class DatabaseEngine {
   public consumeResetToken(userId: string, digest: string, passwordHash: string, now: string): boolean {
     if (!this.db) return false;
     return this.db.prepare(`
-      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL
+      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL, session_version=session_version+1
       WHERE id = ? AND reset_token = ? AND is_active = 1 AND password_hash IS NOT NULL
         AND julianday(reset_token_expires_at) > julianday(?)
     `).run(passwordHash, userId, digest, now).changes === 1;
@@ -3015,14 +3031,14 @@ class DatabaseEngine {
   public updatePassword(userId: string, passwordHash: string): void {
     if (!this.db) return;
     this.db.prepare(`
-      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL WHERE id = ?
+      UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL, session_version=session_version+1 WHERE id = ?
     `).run(passwordHash, userId);
   }
 
   public updatePasswordOnAccount(userId: string, passwordHash: string): void {
     if (!this.db) return;
     this.db.prepare(`
-      UPDATE users SET password_hash = ? WHERE id = ?
+      UPDATE users SET password_hash = ?, reset_token=NULL, reset_token_expires_at=NULL, session_version=session_version+1 WHERE id = ?
     `).run(passwordHash, userId);
   }
 
