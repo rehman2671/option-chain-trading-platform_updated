@@ -807,8 +807,8 @@ quantRouter.post('/settings', (req, res) => {
 
     if (!['ADVISORY_ONLY','SHADOW','LIVE_PAPER','LIVE_REAL'].includes(targetMode)) return res.status(400).json({error:{code:'INVALID_EXECUTION_MODE'}});
     if (targetMode === 'LIVE_REAL') return res.status(409).json({error:{code:'LEGACY_LIVE_EXECUTION_QUARANTINED'}});
-    // Strict safety gate: Activating LIVE_REAL or LIVE_PAPER requires explicit confirmation
-    if ((targetMode === 'LIVE_REAL' || targetMode === 'LIVE_PAPER') && currentSettings.quantExecutionMode !== targetMode) {
+    // LIVE_REAL is quarantined above. Paper activation still requires confirmation.
+    if (targetMode === 'LIVE_PAPER' && currentSettings.quantExecutionMode !== targetMode) {
       if (!req.body.confirmRiskAcknowledged) {
         return res.status(400).json({
           error: {
