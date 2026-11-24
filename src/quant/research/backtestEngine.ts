@@ -682,6 +682,7 @@ export class BacktestEngine {
       periodEnd,
       dataSource,
       status: 'COMPLETED',
+      evidenceStatus:'UNVERIFIED_STORED_REPLAY',
       availableDataRange: {
         minDate: availability.minDate,
         maxDate: availability.maxDate
@@ -739,6 +740,7 @@ export class BacktestEngine {
       periodEnd,
       dataSource: 'INSUFFICIENT_HISTORICAL_DATA',
       status: 'INSUFFICIENT_HISTORICAL_DATA',
+      evidenceStatus:'INSUFFICIENT_DATA',
       availableDataRange: {
         minDate: minDate || '',
         maxDate: maxDate || ''
