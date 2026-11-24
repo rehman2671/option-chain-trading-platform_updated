@@ -16,15 +16,15 @@ describe('EMA15M / Quant API authentication boundaries', () => {
   let server: Server;
   let base = '';
   let operatorToken = '';
-  const originalLookup = dbEngine.findUserById;
+  const operatorId = 'test-ema-operator';
 
   before(async () => {
     const operator = {
       id: 'test-ema-operator', email: 'ema-test-operator@example.invalid',
       role: 'OPERATOR', name: 'Test operator', isActive: true
     } as any;
-    (dbEngine as any).findUserById = (id: string) =>
-      id === operator.id ? operator : originalLookup.call(dbEngine, id);
+    await dbEngine.initialize();
+    dbEngine.getRawDatabase().prepare("INSERT INTO users(id,email,name,role,is_active,password_hash,email_verified) VALUES(?,?,?,'OPERATOR',1,?,1)").run(operator.id,operator.email,operator.name,'fixture-hash');
     operatorToken = setAuthCookie({ cookie: () => undefined } as any, operator);
     server = await new Promise<Server>((resolve, reject) => {
       const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
@@ -36,7 +36,7 @@ describe('EMA15M / Quant API authentication boundaries', () => {
   });
 
   after(async () => {
-    (dbEngine as any).findUserById = originalLookup;
+    dbEngine.getRawDatabase().prepare('DELETE FROM users WHERE id=?').run(operatorId);
     if (server) await new Promise<void>((resolve, reject) =>
       server.close(err => err ? reject(err) : resolve()));
   });
