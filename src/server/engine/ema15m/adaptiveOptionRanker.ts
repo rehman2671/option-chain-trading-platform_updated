@@ -49,8 +49,9 @@ function istDate(asOf: Date): string {
   return new Date(asOf.getTime() + 330 * 60_000).toISOString().slice(0, 10);
 }
 function daysBetween(date: string, asOf: Date): number {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return NaN;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(asOf.getTime())) return NaN;
   const a = Date.parse(date + 'T00:00:00Z');
+  if(!Number.isFinite(a)||new Date(a).toISOString().slice(0,10)!==date)return NaN;
   const b = Date.parse(istDate(asOf) + 'T00:00:00Z');
   return (a - b) / 86_400_000;
 }
@@ -66,10 +67,12 @@ export function chooseAdaptiveExpiries(
   const segment = instrument === 'SENSEX' ? 'BSE_FO' : 'NSE_FO';
   const rows = Array.isArray(contracts) ? contracts : [];
   const expiryDays = new Map<string, number>();
+  const keyCounts=new Map<string,number>();
+  for(const row of rows)if(typeof row?.instrument_key==='string')keyCounts.set(row.instrument_key,(keyCounts.get(row.instrument_key)??0)+1);
   for (const row of rows as any[]) {
     if (row?.underlying_symbol !== instrument || row?.underlying_key !== underlyingKey ||
         row?.instrument_type !== optionType || row?.segment !== segment ||
-        !validContractKey(row?.instrument_key, segment) ||
+        !validContractKey(row?.instrument_key, segment) || keyCounts.get(row.instrument_key)!==1||
         !Number.isInteger(Number(row.lot_size)) || Number(row.lot_size) <= 0) continue;
     const days = daysBetween(row.expiry, asOf);
     if (Number.isInteger(days) && days >= 0) expiryDays.set(row.expiry, days);
@@ -105,12 +108,18 @@ export function rankAdaptiveOptions(input: {
     (input.maxPremiumOutlay === undefined ||
       (Number.isFinite(input.maxPremiumOutlay) && input.maxPremiumOutlay > 0));
   const contractMap = new Map<string, any>();
+  const duplicateKeys=new Set<string>(),seenKeys=new Set<string>();
+  for(const c of Array.isArray(input.brokerContracts)?input.brokerContracts:[]){
+    if(typeof c?.instrument_key!=='string')continue;
+    if(seenKeys.has(c.instrument_key))duplicateKeys.add(c.instrument_key);
+    seenKeys.add(c.instrument_key);
+  }
   for (const c of Array.isArray(input.brokerContracts) ? input.brokerContracts : []) {
     if (c?.underlying_key === input.underlyingKey &&
         c?.underlying_symbol === input.instrument &&
         c?.segment === segment &&
         c?.instrument_type === input.optionType &&
-        validContractKey(c.instrument_key, segment) &&
+        validContractKey(c.instrument_key, segment) && !duplicateKeys.has(c.instrument_key)&&
         Number.isInteger(Number(c.lot_size)) && Number(c.lot_size) > 0) {
       contractMap.set(c.instrument_key, c);
     }
@@ -125,6 +134,10 @@ export function rankAdaptiveOptions(input: {
       return { ...base, status: 'UNVERIFIED_CHAIN', reason: 'BROKER_OPTION_CHAIN_UNAVAILABLE' };
     }
     const ranked: RankedOption[] = [];
+    const chainCounts=new Map<string,number>();
+    for(const row of chain){const side=input.optionType==='CE'?row?.call_options:row?.put_options;const k=side?.instrument_key;
+      if(typeof k==='string')chainCounts.set(k,(chainCounts.get(k)??0)+1);}
+    const numeric=(x:unknown)=>typeof x==='number'&&Number.isFinite(x)?x:NaN;
     for (const entry of chain as any[]) {
       if (!entry || entry.expiry !== bucket.expiry ||
           entry.underlying_key !== input.underlyingKey ||
@@ -135,19 +148,20 @@ export function rankAdaptiveOptions(input: {
           Math.abs(chainSpot - input.spot) / input.spot > 0.015) continue;
       const side = input.optionType === 'CE' ? entry.call_options : entry.put_options;
       const key = side?.instrument_key;
+      if(chainCounts.get(key)!==1)continue;
       const listed = contractMap.get(key);
       if (!listed || listed.expiry !== bucket.expiry ||
           Number(listed.strike_price) !== Number(entry.strike_price)) continue;
       const quote = side?.market_data;
       const greeks = side?.option_greeks;
-      const bid = Number(quote?.bid_price), ask = Number(quote?.ask_price);
-      const bidQty = Number(quote?.bid_qty), askQty = Number(quote?.ask_qty);
-      const volume = Number(quote?.volume), openInterest = Number(quote?.oi);
-      const delta = Number(greeks?.delta), theta = Number(greeks?.theta), iv = Number(greeks?.iv);
+      const bid = numeric(quote?.bid_price), ask = numeric(quote?.ask_price);
+      const bidQty = numeric(quote?.bid_qty), askQty = numeric(quote?.ask_qty);
+      const volume = numeric(quote?.volume), openInterest = numeric(quote?.oi);
+      const delta = numeric(greeks?.delta), theta = numeric(greeks?.theta), iv = numeric(greeks?.iv);
       const strike = Number(listed.strike_price), lot = Number(listed.lot_size);
       if (![bid, ask, bidQty, askQty, volume, openInterest, delta, theta, iv, strike, lot]
         .every(Number.isFinite) || bid <= 0 || ask <= bid ||
-        bidQty <= 0 || askQty <= 0 || volume <= 0 || openInterest <= 0 ||
+        !Number.isSafeInteger(bidQty)||!Number.isSafeInteger(askQty)||bidQty<lot||askQty<lot||volume<=0||openInterest<=0||
         iv <= 0 || Math.abs(delta) < 0.35 || Math.abs(delta) > 0.85 ||
         (input.optionType === 'CE' && delta <= 0) ||
         (input.optionType === 'PE' && delta >= 0) ||
