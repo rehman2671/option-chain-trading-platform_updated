@@ -67,6 +67,10 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 | | 41–45 | Install; migration; restart; runtime security; AI Studio smoke |
 | | 46–50 | Rollback; operator guide; monitoring runbook; blockers; acceptance |
 
+## Consolidated P01 risk implementation checkpoint — 2026-11-25 IST
+
+PR #146 merged at 70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3 after exact-head full regression and staging passed. Continue the same 250-task scope. Next independent batch covers portfolio Greek evidence, atomic account-wide reservation, drawdown and kill-switch input validation, dead legacy broker dispatch removal and exact exchange fill identities. See [consolidated batch ledger](MEGA_PHASE_01_PORTFOLIO_RESERVATION_RISK.md). This checkpoint supersedes any earlier pending-#146 statements below. Actual account evidence, common gateway, durable drawdown and external acceptance still pending; no release.
+
 ## Gates and anti-stuck rule
 
 1. P01: reject unauthorized orders/destructive actions and misleading closure; preserve actual exposure until broker reconciliation. P02: verify data clocks, complete bars, source labels and hosting/Telegram evidence. P03: reproducible realistic simulations; distinguish missing actual evidence. P04: paper positional and MIS separation, no premature live release. P05: full cross-module and hosted acceptance.
