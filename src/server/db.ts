@@ -4244,6 +4244,11 @@ class DatabaseEngine {
     const db = this.db;
     if (!db) throw new Error('EMA_LIVE_DATABASE_UNAVAILABLE: claimEmaLiveEntryAttempt');
     const claim = db.transaction(() => {
+      // Terminal attempts consume the same signal too. An old signal must
+      // not authorize a new BUY after reconciliation or position closure.
+      if (!attempt.signalId || db.prepare(
+        'SELECT id FROM ema_live_order_attempts WHERE signal_id = ? LIMIT 1'
+      ).get(attempt.signalId)) return false;
       const pending = db.prepare(`
         SELECT id FROM ema_live_order_attempts
         WHERE instrument = ? AND order_status IN
