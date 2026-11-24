@@ -322,7 +322,7 @@ export class UpstoxStreamerV3 {
           const symbol = INSTRUMENT_KEY_MAP[instrumentKey];
           if (symbol) {
             // Update spot in market feed and quant engines instantly!
-            globalMarketFeed.updateLiveSpot(symbol, ltp, cp, volume);
+            globalMarketFeed.updateLiveSpot(symbol, ltp, cp, volume, undefined, ltt);
           }
         }
       }
