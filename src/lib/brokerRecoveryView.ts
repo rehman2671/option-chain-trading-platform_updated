@@ -18,7 +18,7 @@ export function parseRecoveryResponse(raw:unknown):RecoveryView|null{
    (r.reservationState!==null&&r.reservationState!=='HELD'&&r.reservationState!=='UNKNOWN')||
    (r.disposition!=='RECONCILIATION_REQUIRED'&&r.disposition!=='TERMINAL_REVIEW_REQUIRED'&&r.disposition!=='ORPHAN_REVIEW_REQUIRED'))return null;
   items.push({intentId:r.intentId,intentState:r.intentState,filledQuantity:r.filledQuantity,
-   reservedPaise:r.reservedPaise,reservationState:r.reservationState,disposition:r.disposition});
+   reservedPaise:r.reservedPaise,reservationState:r.reservationState===null?null:String(r.reservationState),disposition:r.disposition});
  }
  return {status:raw.status,items};
 }
