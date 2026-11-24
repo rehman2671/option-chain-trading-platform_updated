@@ -63,10 +63,46 @@ export function recordPreparedEntryEvidence(db:Database.Database,i:DurableIntent
   try{return db.transaction(()=>{
     const held=reservation(db,i);
     if(!held||held.owner_id!==i.ownerId||!['HELD','UNKNOWN'].includes(held.state))throw Error('RESERVATION_NOT_CONFIRMED');
+    const persisted=db.prepare('SELECT owner_id,instrument_key,product,side,quantity,tag FROM execution_intent_v1 WHERE account_scope=? AND intent_id=?').get(i.accountScope,i.intentId) as
+      {owner_id:string;instrument_key:string;product:string;side:string;quantity:number;tag:string}|undefined;
+    if(!persisted||persisted.owner_id!==i.ownerId||persisted.instrument_key!==i.instrumentKey||persisted.product!==i.product||
+       persisted.side!==i.side||persisted.quantity!==i.quantity||persisted.tag!==i.tag)throw Error('INTENT_IDENTITY_UNCONFIRMED');
     const recorded=recordIntentEvidence(db,i,orderId,detail,trades,now);
     if(!markReservationUnknown(db,i.accountScope,i.ownerId,i.intentId))throw Error('RESERVATION_RETENTION_UNCONFIRMED');
     if(recorded.status==='DENIED')return result('DENIED','UNRESOLVED_EVIDENCE_CAPITAL_RETAINED');
     if(recorded.status==='REPLAY')return result('REPLAY','Previously recorded evidence; capital retained');
     return result('RECORDED','Local broker evidence recorded; capital retained pending independent reconciliation');
   }).immediate();}catch{return result('DENIED','EVIDENCE_JOURNAL_UNAVAILABLE');}
+}
+
+export interface RecoveryItem {
+  intentId:string; intentState:string|null; brokerOrderId:string|null;
+  filledQuantity:number|null; reservedPaise:number|null; reservationState:string|null;
+  disposition:'RECONCILIATION_REQUIRED'|'TERMINAL_REVIEW_REQUIRED'|'ORPHAN_REVIEW_REQUIRED';
+}
+type RecoveryResult={status:'REVIEW_REQUIRED'|'EMPTY'|'UNKNOWN';items:RecoveryItem[];orderAuthorized:false;capitalReleaseAuthorized:false};
+/** Owner-scoped, bounded, read-only restart recovery. Never implies account flat,
+ * retries or release. Account-wide access requires a separate supervisor policy. */
+export function inspectPreparedEntries(db:Database.Database,scope:string,ownerId:string):RecoveryResult{
+  const out=(status:RecoveryResult['status'],items:RecoveryItem[]=[]):RecoveryResult=>({status,items,orderAuthorized:false,capitalReleaseAuthorized:false});
+  if(!identifier(scope)||!identifier(ownerId))return out('UNKNOWN');
+  try{return db.transaction(()=>{
+    const rows=db.prepare(`SELECT i.intent_id AS intentId,i.state AS intentState,i.broker_order_id AS brokerOrderId,
+      i.filled_quantity AS filledQuantity,r.amount_paise AS reservedPaise,r.state AS reservationState,i.terminal AS terminal,
+      CASE WHEN r.intent_id IS NULL THEN 1 ELSE 0 END AS orphan
+      FROM execution_intent_v1 i LEFT JOIN capital_reservation_v1 r
+        ON i.account_scope=r.account_scope AND i.intent_id=r.intent_id AND i.owner_id=r.owner_id
+      WHERE i.account_scope=? AND i.owner_id=?
+      UNION ALL
+      SELECT r.intent_id,NULL,NULL,NULL,r.amount_paise,r.state,0,1
+      FROM capital_reservation_v1 r LEFT JOIN execution_intent_v1 i
+        ON i.account_scope=r.account_scope AND i.intent_id=r.intent_id AND i.owner_id=r.owner_id
+      WHERE r.account_scope=? AND r.owner_id=? AND i.intent_id IS NULL
+      ORDER BY intentId LIMIT 501`).all(scope,ownerId,scope,ownerId) as
+        (Omit<RecoveryItem,'disposition'>&{terminal:number;orphan:number})[];
+    if(rows.length>500)return out('UNKNOWN');
+    const items=rows.map(({terminal,orphan,...row}):RecoveryItem=>({...row,disposition:orphan?'ORPHAN_REVIEW_REQUIRED':
+      terminal===1?'TERMINAL_REVIEW_REQUIRED':'RECONCILIATION_REQUIRED'}));
+    return out(items.length?'REVIEW_REQUIRED':'EMPTY',items);
+  })();}catch{return out('UNKNOWN');}
 }
