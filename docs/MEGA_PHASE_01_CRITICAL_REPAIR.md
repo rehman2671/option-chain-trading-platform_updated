@@ -15,7 +15,7 @@ One consolidated repair PR, not another series of research phases.
 - Mock crossover is an explicitly isolated diagnostic response/Telegram test, not a persisted market candle, paper trade or normal strategy signal. Live entry from normal EMA candle finalization is suppressed if source is not live or slot freshness is unverified/over 30s. The legacy paper forced square-off scans explicit MIS only, not NRML. Existing historical contamination is not silently deleted.
 - No hosting migration, live NRML release, order placement or production database changes performed.
 
-## Task tracker
+## Historical task tracker (initial repair baseline)
 
 Status S = scoped implementation present, awaiting exact-head CI and merge (not completed/accepted); P = partial containment or prerequisite; O = outstanding. No task is marked accepted before CI.
 
@@ -61,3 +61,7 @@ Risk-control follow-up: P01-30/40 already partial, strengthened by durable reset
 - #145 exact-head workflows 45451535514 and 45451535534 passed; merged at 76f01d296f8f6a9dc1cac30a726b846b71c9ea34. #147 exact-head workflows 45455579578 and 45455579558 passed; merged at 1005bb047770e488b6473133659f1e36b1e82141.
 - Main scope: 12 scoped implementations, 33 partial, 5 outstanding (23,24,35,36,37). Combined proposed scope across #146/#148 remains 12/37/1. Neither count means full acceptance. #146/#148 paper staging passed, regression pending at checkpoint; no reset of their CI.
 - Exposure controller explicit numerical gate now rejects nonfinite Greeks/capital, nonpositive capital/peak, negative margin and invalid position counts, and retains legitimate zero margin rather than substituting 165000. Added negative regression tests; independent repair branch, CI pending. Existing default/synthetic caller risk, direct report input provenance, actual Greek aggregation, actual single-trade risk and full gateway remain unresolved. P01-36/39 scope is partial at most; P01-37 remains outstanding. No additional task acceptance or live release.
+
+## Current integrated scope — 2026-11-25 IST
+
+#148/#149/#150 merged after successful exact-head CI. Main now has 12 scoped implementations merged and 38 partial tasks, no untouched IDs; full acceptance remains pending. Scoped IDs: 07,08,09,11,12,26,34,41,45,46,47,48. All other P01 IDs remain partial. #151 green but merge conflicts; source/tests incorporated into a replacement integration branch, subject to fresh CI. See [gateway integration](MEGA_PHASE_01_GATEWAY_INTEGRATION.md), [durable intent/auth](MEGA_PHASE_01_DURABLE_INTENT_AUTH_RECOVERY.md) and [current tracker](PROJECT_PROGRESS_TRACKER.md). Atomic preparation and reconciliation are integrated internally, but actual broker source, active gateway dispatch and capital release are not authorized. This checkpoint supersedes historical counts and status above.
