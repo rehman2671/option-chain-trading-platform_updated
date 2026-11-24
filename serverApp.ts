@@ -23,6 +23,7 @@ import { globalAutonomousEngine } from './src/server/engine/autonomousEngine.js'
 import { globalStrategyPlatformEngine } from './src/server/engine/strategyPlatformEngine.js';
 import { globalEma15mEngine } from './src/server/engine/ema15mEngine.js';
 import { globalNotificationService } from './src/server/engine/notificationService.js';
+import { startTelegramMonitor, getTelegramMonitorStatus } from './src/server/engine/telegramMonitor.js';
 import { PaperPosition, TradingPillarId, Ema15mInstrument } from './src/types.js';
 import cookieParser from 'cookie-parser';
 import { authRouter, attachUser, getUserFromRequest, requireAuth, requireSuperAdmin } from './src/server/auth.js';
@@ -3018,6 +3019,12 @@ async function startServer() {
     }
   });
 
+  // Safe operational diagnostics: no bot credentials, chat IDs or broker account IDs.
+  app.get('/api/ema15m/telegram-monitor-status', requireSuperAdmin as any, (req,res) => {
+    res.setHeader('Cache-Control','no-store');
+    res.json(getTelegramMonitorStatus());
+  });
+
   // 7. Send Test Alert (Telegram or Email)
   app.post('/api/ema15m/test-notification', requireAuth as any, async (req, res) => {
     try {
@@ -3318,6 +3325,8 @@ async function startServer() {
       console.log('[UPSTOX] Starting Upstox V3 Protobuf WebSocket Streamer...');
       globalUpstoxStreamer.connect(process.env.UPSTOX_ACCESS_TOKEN).catch(e => console.warn('[UPSTOX V3 STREAMER] Startup error:', e.message));
     }
+
+    if (!paperStaging) startTelegramMonitor();
 
     // Initialize background engines asynchronously without blocking port 3000 startup probe
     globalEma15mEngine.initialize().catch(err => {
