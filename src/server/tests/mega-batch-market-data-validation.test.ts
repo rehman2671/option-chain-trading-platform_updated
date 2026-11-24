@@ -54,3 +54,35 @@ test('walk-forward and Monte Carlo never manufacture evidence from missing sampl
  assert.ok(result.percentile5Pnl<=result.percentile50Pnl&&result.percentile50Pnl<=result.percentile95Pnl);
  assert.equal(monteCarloEngine.runSimulation('fixture',10001,sample).simulationsCount,0);
 });
+
+test('overlapping provider connect cannot restore obsolete account; native zero available margin retained',async()=>{
+ const {UpstoxProvider}=await import('../engine/providers/UpstoxProvider.js');
+ const provider=new UpstoxProvider();
+ const old=globalThis.fetch,oldToken=process.env.UPSTOX_ACCESS_TOKEN;
+ const internal=provider as unknown as {practiceFallback:{connect:()=>Promise<unknown>}};
+ internal.practiceFallback.connect=async()=>({connected:true});
+ let releaseOld:(r:Response)=>void=()=>{},startOld:()=>void=()=>{};
+ const oldStarted=new Promise<void>(resolve=>{startOld=resolve;});
+ const profile=(id:string)=>new Response(JSON.stringify({status:'success',data:{user_id:id,user_name:id}}),{status:200});
+ try{
+  globalThis.fetch=async(input,init)=>{
+   const token=new Headers(init?.headers).get('authorization');
+   if(String(input).includes('/user/profile')){
+    if(token==='Bearer fixture-old')return new Promise<Response>(resolve=>{releaseOld=resolve;startOld();});
+    assert.equal(token,'Bearer fixture-new');return profile('account-new');
+   }
+   assert.match(String(input),/get-funds-and-margin/);assert.equal(token,'Bearer fixture-new');
+   return new Response(JSON.stringify({status:'success',data:{equity:{available_margin:0},sec:{available_margin:999}}}),{status:200});
+  };
+  process.env.UPSTOX_ACCESS_TOKEN='fixture-old';
+  const first=provider.connect();await oldStarted;
+  process.env.UPSTOX_ACCESS_TOKEN='fixture-new';
+  assert.equal((await provider.connect()).connected,true);
+  releaseOld(profile('account-old'));await first;
+  assert.equal(provider.getLiveConnectionStatus().userId,'account-new');
+  assert.deepEqual(await provider.getAvailableMargin(),{available:0,source:'LIVE'});
+ }finally{
+  globalThis.fetch=old;
+  if(oldToken===undefined)delete process.env.UPSTOX_ACCESS_TOKEN;else process.env.UPSTOX_ACCESS_TOKEN=oldToken;
+ }
+});
