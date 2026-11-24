@@ -167,6 +167,12 @@ export class KillSwitchEngine {
     const key = this.resolveKey(userId);
     const state = this.getOrCreateState(key);
 
+    if (!metrics || ![metrics.dailyLossPct,metrics.drawdownPct,metrics.leverageRatio,metrics.openPositionsCount].every(Number.isFinite) ||
+        metrics.drawdownPct<0 || metrics.leverageRatio<0 || !Number.isSafeInteger(metrics.openPositionsCount) || metrics.openPositionsCount<0) {
+      if(state.status==='ARMED')this.triggerHalt('AUTOMATIC BREACH: Invalid portfolio risk metrics; verified evidence required.',userId,'INVALID_RISK_EVIDENCE');
+      return this.getState(userId);
+    }
+
     state.currentDailyLossPct = metrics.dailyLossPct;
     state.currentDrawdownPct = metrics.drawdownPct;
     state.currentLeverageRatio = metrics.leverageRatio;
