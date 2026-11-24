@@ -69,9 +69,7 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
     if (!token && req.headers['x-auth-token']) {
       token = req.headers['x-auth-token'] as string;
     }
-    if (!token && typeof req.query?.token === 'string') {
-      token = req.query.token;
-    }
+    // Session credentials in URLs leak through history, referrers and access logs.
     if (token) {
       const decoded = jwt.verify(token, JWT_SECRET) as any;
       const userId = decoded?.sub || decoded?.userId;
