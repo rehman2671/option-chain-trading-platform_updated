@@ -4,6 +4,7 @@
  */
 
 import Database from 'better-sqlite3';
+import {reconcileOwnerPreparedOrder,type OwnerRecoveryProvider} from './release/ownerOrderRecovery.js';
 import {inspectPreparedEntries} from './release/entryPreparationJournal.js';
 import {initAuthenticatedCandidateJournal,prepareAuthenticatedCandidate,type AuthenticatedCandidateInput} from './release/authenticatedCandidateJournal.js';
 import {resolveServerBrokerOwnerBinding,type VerifiedPrincipal,type NativeConnectionIdentity} from './release/serverBrokerOwnerBinding.js';
@@ -2928,6 +2929,14 @@ class DatabaseEngine {
   public prepareAuthorizedBrokerCandidate(principal:VerifiedPrincipal,connection:NativeConnectionIdentity,input:AuthenticatedCandidateInput,now:number){
     if(!this.db)return {status:'DENIED' as const,reason:'CANDIDATE_JOURNAL_UNAVAILABLE',orderAuthorized:false as const,capitalReleaseAuthorized:false as const};
     return prepareAuthenticatedCandidate(this.db,principal,connection,input,now);
+  }
+
+  /** Native read-only broker calls; only local journal metadata is recorded.
+   * No caller-provided broker order ID, account scope or raw execution evidence. */
+  public async reconcileAuthorizedBrokerPreparation(principal:VerifiedPrincipal,provider:OwnerRecoveryProvider,intentId:string){
+    if(!this.db)return {status:'UNKNOWN' as const,reason:'RECOVERY_UNAVAILABLE_CAPITAL_RETAINED',orderAuthorized:false as const,
+      capitalReleaseAuthorized:false as const,retryAuthorized:false as const,accountFlatCertified:false as const};
+    return reconcileOwnerPreparedOrder(this.db,principal,provider,intentId);
   }
 
   public getUserSessionVersion(userId:string): number|null {
