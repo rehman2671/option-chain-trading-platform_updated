@@ -158,8 +158,12 @@ export class OrderAdapter {
           openedAt: timestamp,
           legLabel: order.tag || `Quant-${order.strategyId}`
         }, order.userId || undefined);
-      } catch (err) {
-        console.warn('[ORDER ADAPTER] Warning saving paper position:', err);
+        const saved = dbEngine.getPaperPositionById(paperPosId, order.userId || undefined);
+        if (!saved || saved.status!=='OPEN' || saved.quantity!==order.quantity) throw Error('PAPER_ORDER_PERSISTENCE_UNCONFIRMED');
+      } catch {
+        const result: QuantOrderResult={orderId,status:'REJECTED',executedPrice:0,slippage:0,message:'Paper ledger write not confirmed; reconcile before retry',timestamp};
+        this.recordOrder(order,result);
+        return result;
       }
 
       const result: QuantOrderResult = {
