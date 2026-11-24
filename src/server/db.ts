@@ -592,9 +592,10 @@ class DatabaseEngine {
     try {
       const uId = userId || (basket as any).userId || null;
       const legsJson = JSON.stringify(basket.legs || []);
-      const existing = this.db.prepare(`SELECT id FROM basket_orders WHERE id = ?`).get(basket.id);
+      const existing = this.db.prepare(`SELECT id, user_id FROM basket_orders WHERE id = ?`).get(basket.id) as {id:string;user_id:string|null}|undefined;
 
       if (existing) {
+        if (existing.user_id!==uId) throw Error('BASKET_OWNER_MISMATCH');
         this.db.prepare(
           `UPDATE basket_orders SET status = ?, margin_required = ?, margin_available = ?, fallback_action = ?, reconciliation_status = ?, legs_json = ?, user_id = COALESCE(?, user_id) WHERE id = ?`
         ).run(
@@ -635,6 +636,17 @@ class DatabaseEngine {
   /**
    * Load all basket orders from SQLite
    */
+  /** Durable, owner-scoped basket lookup for restart and fill readback. */
+  public getBasketOrderForUser(id:string,userId:string): BasketOrderRecord|null {
+    if (!this.db || !userId) return null;
+    const row=this.db.prepare('SELECT * FROM basket_orders WHERE id=? AND user_id=?').get(id,userId) as any;
+    if (!row) return null;
+    return {id:row.id,strategyId:row.strategy_id,strategyName:row.strategy_name,symbol:row.symbol,
+      status:row.status,marginRequired:row.margin_required,marginAvailable:row.margin_available,
+      fallbackActionTriggered:row.fallback_action||undefined,reconciliationStatus:row.reconciliation_status,
+      legs:JSON.parse(row.legs_json||'[]'),createdAt:row.created_at};
+  }
+
   public loadAllBasketOrders(userId?: string | null, limit?: number, offset?: number): BasketOrderRecord[] {
     if (!this.db) return [];
     try {
