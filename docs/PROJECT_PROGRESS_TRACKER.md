@@ -54,3 +54,10 @@ Issues [#17](https://github.com/rehman2671/option-chain-trading-platform_updated
 ## Update protocol
 
 At each substantive batch record task IDs, implementation/partial/accepted state, exact head and base, workflow URLs/conclusions, merge SHA, hosted acceptance evidence, compatibility changes and blockers. Keep README links and detailed phase ledger synchronized. A pending or failed test is not a passed test; a merged commit is not a deployed service. Do not create another phase just to retry a failing check.
+
+## Follow-up checkpoint — 2026-11-25 IST (latest)
+
+- #152 head 276079b98979939af4a0f8ab92f0591bb44b4695: paper staging 45478233259 and production build passed; EMA full/invariant 45478233332 still running. #151 conflicting source carried into #152, not merged.
+- #153 original head d346e0acadf6d35d74865b6a9aa62c1b21782f3b: paper staging 45480739925 failed typecheck TS2339; container job passed. Fixed redundant unreachable branch after assertion narrowing in 61508e8b60355b921e7cf009a58e884f5a0f5c30, no assertion removal. Additional exact listing and candidate evidence join + native session fence tests committed on same PR; new head requires all CI again.
+- [Detailed candidate risk ledger](MEGA_PHASE_01_CANDIDATE_RISK_BROKER_BINDING.md) records task IDs and remaining boundaries. Native exact catalog matching, lot/tick validation and cross-evidence account/owner/session binding checks added; actual server-owned binding, Greek provenance and durable journal connection remain pending.
+- Main remains 12 scoped merged, 38 partial, 0 untouched; no full phase acceptance. No live order, capital release, deployment or safety bypass.
