@@ -10,6 +10,7 @@ import { calculateMaxPainStrike, calculatePCR, classifyOIBuildup, calculateIVRan
 import { dbEngine } from '../db.js';
 import { activeProvider, initActiveProvider } from './providers/index.js';
 import { globalEma15mEngine } from './ema15mEngine.js';
+import { freshExchangeTick } from './ema15m/alertTickClock.js';
 import { CANONICAL_INSTRUMENTS } from '../../shared/marketConfig.js';
 import { marketDataAdapter, mapMarketFeedStrikesToQuantSnapshots } from '../../quant/adapters/marketDataAdapter.js';
 
@@ -108,6 +109,8 @@ export class MarketFeedEngine {
     ['NIFTY', { symbol: 'NIFTY', expiry: getUpcomingExpiriesForSymbol('NIFTY')[0] || '2026-08-20', lastRequestedAt: Date.now() }]
   ]);
   private lastBackgroundPollTime: number = 0;
+  private spotPollInFlight = false;
+  private snapshotPollInFlight = false;
 
   // Phase I Task 1: Continuous Background Capture Loop for All Symbols
   private bgSymbolIndex: number = 0;
@@ -269,8 +272,9 @@ export class MarketFeedEngine {
    * Ingest a sub-second tick from Upstox V3 Protobuf WebSocket Streamer
    * Updates spot, calculates delta moves, persists tick to SQLite WAL, and triggers 15m EMA Engine
    */
-  public updateLiveSpot(symbol: string, spot: number, prevClose?: number, volume?: number, vix?: number): void {
-    if (spot <= 0) return;
+  public updateLiveSpot(symbol: string, spot: number, prevClose?: number, volume?: number, vix?: number, exchangeMs?: number): void {
+    // Never turn receipt time or an old websocket snapshot into a live EMA tick.
+    if (!Number.isFinite(spot) || spot <= 0 || exchangeMs === undefined || !freshExchangeTick(exchangeMs)) return;
     const cfg = UNDERLYING_CONFIGS[symbol];
     const oldSpot = this.currentSpots.get(symbol) || (cfg ? cfg.baseSpotPrice : spot);
     const pc = (prevClose && prevClose > 0) ? prevClose : (this.prevCloses.get(symbol) || oldSpot);
@@ -290,7 +294,7 @@ export class MarketFeedEngine {
 
     // Feed tick directly into 15m EMA Strategy Engine and Quant Data Adapter
     if (symbol === 'NIFTY' || symbol === 'BANKNIFTY' || symbol === 'SENSEX' || symbol === 'FINNIFTY' || symbol === 'MIDCPNIFTY') {
-      globalEma15mEngine.ingestTick(symbol as any, spot, volume || 0);
+      globalEma15mEngine.ingestTick(symbol as any, spot, volume || 0, new Date(exchangeMs));
       marketDataAdapter.updateSpotPrice(symbol as any, spot);
     }
 
@@ -304,26 +308,27 @@ export class MarketFeedEngine {
 
   private async pollLoop(): Promise<void> {
     const now = Date.now();
-    try {
-      // 1. Poll all actively viewed symbols (requested within 10s by ANY connected client) at 3s cadence
-      const activeList = this.getActiveViews();
-      const activeSymbols = activeList.map(a => a.symbol);
-
-      await this.refreshUnderlyingSpots(activeSymbols);
-      for (const view of activeList) {
-        await this.buildAndCacheSnapshot(view.symbol, view.expiry);
-      }
-
-      // 2. Poll other background symbols without active viewers at low frequency (every 30s)
+    const activeList = this.getActiveViews();
+    // EMA instruments are sampled independently of which dashboard is open.
+    // Option-chain snapshot I/O must not block the next spot refresh.
+    if (!this.spotPollInFlight) {
+      this.spotPollInFlight = true;
+      const symbols = new Set([...activeList.map(a => a.symbol), 'NIFTY', 'BANKNIFTY', 'SENSEX']);
       if (now - this.lastBackgroundPollTime > 30000) {
         this.lastBackgroundPollTime = now;
-        const otherSymbols = Object.keys(UNDERLYING_CONFIGS).filter(s => !activeSymbols.includes(s));
-        if (otherSymbols.length > 0) {
-          await this.refreshUnderlyingSpots(otherSymbols);
-        }
+        for (const symbol of Object.keys(UNDERLYING_CONFIGS)) symbols.add(symbol);
       }
-    } catch (err: any) {
-      console.error('[MARKET FEED] Poll loop error:', err.message);
+      void this.refreshUnderlyingSpots([...symbols]).finally(() => { this.spotPollInFlight = false; });
+    }
+    if (!this.snapshotPollInFlight) {
+      this.snapshotPollInFlight = true;
+      try {
+        for (const view of activeList) await this.buildAndCacheSnapshot(view.symbol, view.expiry);
+      } catch (err: any) {
+        console.error('[MARKET FEED] Snapshot poll error:', err.message);
+      } finally {
+        this.snapshotPollInFlight = false;
+      }
     }
   }
 
@@ -381,10 +386,7 @@ export class MarketFeedEngine {
           if (sym === 'NIFTY' || sym === 'BANKNIFTY' || sym === 'SENSEX') {
             const providerIsLive = activeProvider.getProviderMode() === 'LIVE';
             const exchangeMs = uq.exchangeTimestamp ? Date.parse(uq.exchangeTimestamp) : NaN;
-            const brokerQuoteIsFresh = uq.source === 'UPSTOX_LIVE' &&
-              Number.isFinite(exchangeMs) &&
-              exchangeMs <= Date.now() + 5000 &&
-              Date.now() - exchangeMs <= 30000;
+            const brokerQuoteIsFresh = uq.source === 'UPSTOX_LIVE' && freshExchangeTick(exchangeMs);
 
             // A fallback/practice quote must never contribute to a live-orderable EMA crossover.
             if (!providerIsLive || brokerQuoteIsFresh) {
