@@ -111,6 +111,7 @@ export class MarketFeedEngine {
   private lastBackgroundPollTime: number = 0;
   private spotPollInFlight = false;
   private snapshotPollInFlight = false;
+  private backgroundCaptureInFlight=false;
 
   // Phase I Task 1: Continuous Background Capture Loop for All Symbols
   private bgSymbolIndex: number = 0;
@@ -284,6 +285,7 @@ export class MarketFeedEngine {
   public updateLiveSpot(symbol: string, spot: number, prevClose?: number, volume?: number, vix?: number, exchangeMs?: number): void {
     // Never turn receipt time or an old websocket snapshot into a live EMA tick.
     if (!Number.isFinite(spot) || spot <= 0 || exchangeMs === undefined || !freshExchangeTick(exchangeMs)) return;
+    if(exchangeMs<=(this.lastVerifiedSpotMs.get(symbol)??0))return;
     this.recordVerifiedSpotClock(symbol, exchangeMs);
     const cfg = UNDERLYING_CONFIGS[symbol];
     const oldSpot = this.currentSpots.get(symbol) || (cfg ? cfg.baseSpotPrice : spot);
@@ -350,7 +352,7 @@ export class MarketFeedEngine {
    */
   private async backgroundCaptureLoop(): Promise<void> {
     const symbols = Object.keys(UNDERLYING_CONFIGS);
-    if (symbols.length === 0) return;
+    if (symbols.length === 0||this.backgroundCaptureInFlight) return;
 
     const symbol = symbols[this.bgSymbolIndex % symbols.length];
     this.bgSymbolIndex++;
@@ -359,6 +361,7 @@ export class MarketFeedEngine {
     if (!cfg) return;
 
     const expiry = cfg.expiries[0]; // Nearest weekly/monthly expiry
+    this.backgroundCaptureInFlight=true;
     try {
       await this.refreshUnderlyingSpots([symbol]);
       await this.buildAndCacheSnapshot(symbol, expiry);
@@ -366,7 +369,7 @@ export class MarketFeedEngine {
       this.checkOptionChainsGrowthSafeguard();
     } catch (err: any) {
       console.error(`[MARKET FEED] Background capture error for ${symbol}:`, err.message);
-    }
+    }finally{this.backgroundCaptureInFlight=false;}
   }
 
   private async refreshUnderlyingSpots(symbols: string[]): Promise<void> {
@@ -375,7 +378,13 @@ export class MarketFeedEngine {
       for (const sym of symbols) {
         const uq = uQuotes.get(sym);
         const cfg = UNDERLYING_CONFIGS[sym];
-        if (uq && uq.available && uq.spot > 0) {
+        if (uq && uq.available && Number.isFinite(uq.spot)&&uq.spot > 0) {
+          const providerIsLive=activeProvider.getProviderMode()==='LIVE';
+          const exchangeMs=uq.exchangeTimestamp?Date.parse(uq.exchangeTimestamp):NaN;
+          const brokerQuoteIsFresh=uq.source==='UPSTOX_LIVE'&&freshExchangeTick(exchangeMs);
+          const last=this.lastVerifiedSpotMs.get(sym)??0;
+          if(providerIsLive&&last>0&&freshExchangeTick(last)&&(!brokerQuoteIsFresh||exchangeMs<=last))continue;
+          if(providerIsLive&&brokerQuoteIsFresh)this.recordVerifiedSpotClock(sym,exchangeMs);
           const spot = uq.spot;
           const prevClose = uq.prevClose > 0 ? uq.prevClose : spot;
           const change = spot - prevClose;
@@ -384,7 +393,7 @@ export class MarketFeedEngine {
           this.currentSpots.set(sym, spot);
           this.prevCloses.set(sym, prevClose);
           this.spotMovePercents.set(sym, pChange);
-          this.spotLiveFlags.set(sym, true);
+          this.spotLiveFlags.set(sym,providerIsLive&&brokerQuoteIsFresh);
 
           const vix = cfg ? cfg.indiaVixBase : 15.0;
           this.indiaVixMap.set(sym, vix);
@@ -394,10 +403,7 @@ export class MarketFeedEngine {
 
           // Ingest into 15m EMA Engine for NIFTY, BANKNIFTY, SENSEX
           if (sym === 'NIFTY' || sym === 'BANKNIFTY' || sym === 'SENSEX') {
-            const providerIsLive = activeProvider.getProviderMode() === 'LIVE';
-            const exchangeMs = uq.exchangeTimestamp ? Date.parse(uq.exchangeTimestamp) : NaN;
-            const brokerQuoteIsFresh = uq.source === 'UPSTOX_LIVE' && freshExchangeTick(exchangeMs);
-            if (providerIsLive && brokerQuoteIsFresh) this.recordVerifiedSpotClock(sym, exchangeMs);
+
 
             // A fallback/practice quote must never contribute to a live-orderable EMA crossover.
             if (!providerIsLive || brokerQuoteIsFresh) {
@@ -509,8 +515,8 @@ export class MarketFeedEngine {
         const volume = q.volume || 0;
         const openInterest = q.oi || 0;
         const prevOI = previousOIMap.get(`${K}_${type}`);
-        const changeInOI = prevOI !== undefined ? (openInterest - prevOI) : (q.changeInOI || 0);
-        const pChangeInOI = q.pChangeInOI || ((prevOI && prevOI > 0) ? Number(((changeInOI / prevOI) * 100).toFixed(2)) : 0);
+        const changeInOI = q.changeInOIAvailable===true?q.changeInOI:0;
+        const pChangeInOI = q.changeInOIAvailable===true?q.pChangeInOI:0;
 
         // Real or calculated IV
         const realIv = q.ivAvailable && q.iv > 0
@@ -522,9 +528,9 @@ export class MarketFeedEngine {
         const change = Number((greeks.delta * (spotPrice - prevClose)).toFixed(2));
         const pChange = prevClose > 0 ? Number((((ltp - (ltp - change)) / (ltp - change || 1)) * 100).toFixed(2)) : 0;
 
-        const bidPrice = q.bidPrice || Number((ltp * 0.995).toFixed(2));
-        const askPrice = q.askPrice || Number((ltp * 1.005).toFixed(2));
-        const buildup = classifyOIBuildup(pChange, changeInOI);
+        const bookAvailable=Number.isFinite(q.bidPrice)&&Number.isFinite(q.askPrice)&&q.bidPrice>0&&q.askPrice>=q.bidPrice;
+        const bidPrice=bookAvailable?q.bidPrice:0,askPrice=bookAvailable?q.askPrice:0;
+        const buildup=q.changeInOIAvailable===true?classifyOIBuildup(pChange,changeInOI):'NEUTRAL';
 
         return {
           strikePrice: K,
@@ -546,6 +552,8 @@ export class MarketFeedEngine {
           bidPrice: Number(bidPrice.toFixed(2)),
           askPrice: Number(askPrice.toFixed(2)),
           available: true,
+          quoteSource:q.source==='UPSTOX_CHAIN_UNTIMED'||q.source==='PRACTICE'?q.source:'UNVERIFIED',
+          bookAvailable,changeInOIAvailable:q.changeInOIAvailable===true,greeksSource:'MODELED',
           ltpAvailable: q.ltpAvailable,
           oiAvailable: q.oiAvailable,
           volumeAvailable: q.volumeAvailable,
@@ -632,8 +640,8 @@ export class MarketFeedEngine {
         unavailableCount++;
       }
     }
-    const isSpotLive = !!this.spotLiveFlags.get(symbol);
-    const isPartialData = unavailableCount > 0 || !isSpotLive;
+    const isSpotLive=!!this.spotLiveFlags.get(symbol)&&freshExchangeTick(this.lastVerifiedSpotMs.get(symbol)??0);
+    const isPartialData = true; // option chain has no verified exchange clock or depth provenance
     const partialDataReason = !isSpotLive
       ? (unavailableCount > 0 ? `Spot price is STALE / Fallback + ${unavailableCount} option contract fields unavailable` : 'Spot price is STALE / Fallback anchor')
       : (unavailableCount > 0 ? `${unavailableCount} option contract fields unavailable` : undefined);
@@ -691,7 +699,7 @@ export class MarketFeedEngine {
       providerMode: mode,
       isPartialData,
       unavailableStrikeCount: unavailableCount,
-      partialDataReason
+      partialDataReason:partialDataReason||'Option quotes are untimed or modeled; native execution evidence unavailable'
     };
 
     this.snapshotCache.set(`${symbol}_${expiry}`, snapshot);
