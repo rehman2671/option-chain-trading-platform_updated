@@ -81,3 +81,7 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 ## Owner binding and runtime recovery checkpoint — 2026-11-25 IST
 
 #152 merged with both exact-head workflows successful; #151 closed as superseded. Main 050e0acdac18c9f812ebb72eb9a116a589721cd7. #153 repaired paper staging passed; full/invariant CI pending. New [owner binding and recovery batch](MEGA_PHASE_01_OWNER_BINDING_RUNTIME_RECOVERY.md) integrates normal runtime SQLite schema, explicit deployment-owned account mapping, owner-only authenticated recovery and unresolved account quarantine. No live dispatch/release authority. Existing 250-task scope and Google AI Studio architecture unchanged.
+
+## Recovery UI and browser session boundary — 2026-11-25 IST
+
+New independent [recovery UI and session batch](MEGA_PHASE_01_RECOVERY_UI_SESSION_BOUNDARY.md) integrates the existing owner-only recovery API into EMA Live Execution and limits browser bearer persistence, cached account responses and superseded authentication results. #155 paper staging/build passed, full/invariant pending. Preserve the 250-task scope and existing Google AI Studio deployment; hosted session compatibility remains an acceptance gate. No live authority.
