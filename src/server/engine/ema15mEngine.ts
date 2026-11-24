@@ -422,7 +422,7 @@ export class Ema15mEngine {
             });
 
             // 2. Dispatch notifications asynchronously
-            globalNotificationService.dispatchSignalAlerts(signal).catch(err => {
+            globalNotificationService.dispatchSignalAlerts(signal, undefined, isMock ? 'MOCK' : this.dataSource).catch(err => {
               console.error(`[EMA 15M ALERT] Error dispatching alerts:`, err.message);
             });
           } else {
