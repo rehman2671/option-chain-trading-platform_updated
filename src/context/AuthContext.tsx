@@ -190,11 +190,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: JSON.stringify({ token, newPassword })
     });
     const data = await parseJsonResponse(res, 'Password reset failed');
-    if (data.token) {
-      setAuthToken(data.token);
-    }
-    setUser(data.user);
-    setAuthModalOpen(false);
+    setAuthToken(null);
+    setUser(null);
+    setResetToken(null);
+    cancelMfa();
+    setAuthModalTab('login');
+    setAuthModalOpen(true);
     return data;
   };
 
