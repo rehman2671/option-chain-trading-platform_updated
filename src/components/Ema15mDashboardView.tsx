@@ -51,6 +51,7 @@ import {
   EmaLiveTradingSummary
 } from '../types.js';
 import { ExpertTraderChart } from './ExpertTraderChart.js';
+import {BrokerPreparationRecoveryPanel} from './BrokerPreparationRecoveryPanel.js';
 import { usePollingInterval } from '../lib/usePollingInterval.js';
 
 export const Ema15mDashboardView: React.FC = () => {
@@ -1280,6 +1281,7 @@ export const Ema15mDashboardView: React.FC = () => {
       {/* 4.6 Tab: Upstox Live Broker Real-Money Execution */}
       {activeSubTab === 'LIVE_EXECUTION' && (
         <div className="space-y-5">
+          {user?.id&&<BrokerPreparationRecoveryPanel key={user.id} ownerId={user.id}/>}
           {/* Top Operational Status Banner */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
