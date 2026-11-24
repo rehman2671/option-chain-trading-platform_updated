@@ -8,6 +8,7 @@ import { generateSecret, generateURI, verifySync } from 'otplib';
 import QRCode from 'qrcode';
 import { dbEngine } from './db.js';
 import { User } from '../types.js';
+import { createPasswordResetToken, hashPasswordResetToken, passwordResetDeliveryConfig, type PasswordResetDeliveryConfig } from './release/passwordResetSecurity.js';
 
 const JWT_SECRET = (() => {
   const configured = process.env.JWT_SECRET;
@@ -18,7 +19,6 @@ const JWT_SECRET = (() => {
   // Development/test sessions never share a predictable hardcoded signing key.
   return crypto.randomBytes(48).toString('hex');
 })();
-const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
 
 export interface AuthenticatedRequest extends Request {
   user?: User | null;
@@ -139,49 +139,31 @@ export function requireSuperAdmin(req: AuthenticatedRequest, res: Response, next
   next();
 }
 
-/**
- * Email Helper (SMTP or Dev Simulation Console Output)
- */
-async function sendEmail(to: string, subject: string, htmlContent: string, linkForDevLog: string): Promise<boolean> {
-  const smtpHost = process.env.SMTP_HOST || 'smtp.hostinger.com';
-  const smtpPort = parseInt(process.env.SMTP_PORT || '465', 10);
-  const smtpUser = process.env.SMTP_USER || 'noreply@aaditechs.in';
-  const smtpPass = process.env.SMTP_PASS;
-  const smtpFrom = process.env.SMTP_FROM || process.env.EMAIL_FROM || smtpUser || 'noreply@aaditechs.in';
-
-  if (smtpHost && smtpUser && smtpPass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: smtpUser, pass: smtpPass },
-        tls: {
-          rejectUnauthorized: true
-        }
-      });
-
-      await transporter.sendMail({
-        from: `Option Chain Platform <${smtpFrom}>`,
-        to,
-        subject,
-        html: htmlContent
-      });
-      console.log(`[EMAIL SENT] Successfully sent email to ${to}`);
-      return true;
-    } catch (err: any) {
-      console.error(`[EMAIL ERROR] Failed sending to ${to}:`, err.message || err);
-      return false;
-    }
+/** Explicit SMTP delivery only; never log recovery tokens, links, recipients or provider errors. */
+async function sendResetEmail(config: PasswordResetDeliveryConfig, to: string, resetLink: string): Promise<boolean> {
+  try {
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.port === 465,
+      requireTLS: config.port !== 465,
+      auth: { user: config.user, pass: config.pass },
+      tls: { rejectUnauthorized: true },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000
+    });
+    await transporter.sendMail({
+      from: { name: 'Option Chain Platform', address: config.from },
+      to,
+      subject: 'Password Reset Request',
+      text: 'Reset your password using this one-time link (expires in 1 hour):\n' + resetLink
+    });
+    return true;
+  } catch {
+    console.warn('[AUTH] Password reset email delivery failed.');
+    return false;
   }
-
-  // Fallback Dev Simulation Mode
-  console.log(`\n================ [DEV EMAIL SIMULATION] ================`);
-  console.log(`TO: ${to}`);
-  console.log(`SUBJECT: ${subject}`);
-  console.log(`ACTION LINK: ${linkForDevLog}`);
-  console.log(`========================================================\n`);
-  return false;
 }
 
 // Rate limiters
@@ -190,10 +172,7 @@ const authLimiter = rateLimit({
   max: 15,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: false,
-  keyGenerator: (req) => {
-    return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '127.0.0.1';
-  },
+  // Use Express's trusted-proxy IP resolution, never a raw forwarded header.
   message: { error: 'Too many authentication attempts. Please try again in 15 minutes.' }
 });
 
@@ -202,10 +181,7 @@ const resendLimiter = rateLimit({
   max: 3,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: false,
-  keyGenerator: (req) => {
-    return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '127.0.0.1';
-  },
+  // Use Express's trusted-proxy IP resolution, never a raw forwarded header.
   message: { error: 'Too many resend requests. Please wait 15 minutes.' }
 });
 
@@ -529,40 +505,34 @@ authRouter.post('/admin/users/:id/mfa/disable', requireSuperAdmin, async (req: R
  */
 authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
-    if (!email) {
+    const { email } = req.body || {};
+    if (typeof email !== 'string' || !email.trim() || email.length > 254) {
       return res.status(400).json({ error: 'Email address is required' });
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const userRow = dbEngine.findUserByEmail(cleanEmail);
+    const config = passwordResetDeliveryConfig(process.env);
+    const userRow = config ? dbEngine.findUserByEmail(cleanEmail) : null;
 
-    if (userRow && userRow.password_hash) {
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
-      dbEngine.setResetToken(userRow.id, resetToken, expiresAt);
+    if (config && userRow && userRow.password_hash && userRow.is_active === 1) {
+      const { token, digest } = createPasswordResetToken();
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      dbEngine.setResetToken(userRow.id, digest, expiresAt);
+      const resetLink = new URL('/reset-password', config.baseUrl);
+      resetLink.searchParams.set('token', token);
 
-      const resetLink = `${APP_BASE_URL}/reset-password?token=${resetToken}`;
-      const emailHtml = `
-        <div style="font-family: sans-serif; padding: 20px; color: #1e293b;">
-          <h2>Reset Your Password</h2>
-          <p>Click below to reset your Option Chain Trading Platform password:</p>
-          <p><a href="${resetLink}" style="background-color: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; display: inline-block;">Reset Password</a></p>
-          <p>Link: <code>${resetLink}</code></p>
-          <p>This link expires in 1 hour.</p>
-        </div>
-      `;
-
-      await sendEmail(cleanEmail, 'Password Reset Request', emailHtml, resetLink);
+      if (!(await sendResetEmail(config, cleanEmail, resetLink.toString()))) {
+        dbEngine.clearResetTokenIfMatches(userRow.id, digest);
+      }
     }
 
     // Generic response to prevent email enumeration
     return res.json({
       success: true,
-      message: 'If an account exists with password login for this email, password reset instructions have been sent.'
+      message: 'If an eligible account exists and email delivery is configured, password reset instructions will be sent.'
     });
   } catch (err) {
-    console.error('Forgot password error:', err);
+    console.error('[AUTH] Password reset request failed.');
     return res.status(500).json({ error: 'Failed to process password reset request' });
   }
 });
@@ -572,41 +542,35 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
  */
 authRouter.post('/reset-password', authLimiter, async (req: Request, res: Response) => {
   try {
-    const { token, newPassword } = req.body;
-    if (!token || !newPassword) {
-      return res.status(400).json({ error: 'Reset token and new password are required' });
+    const { token, newPassword } = req.body || {};
+    const digest = hashPasswordResetToken(token);
+    if (!digest || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'Invalid reset token or password' });
     }
 
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    if (newPassword.length < 8 || Buffer.byteLength(newPassword, 'utf8') > 72) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters and at most 72 UTF-8 bytes' });
     }
 
-    const userRow = dbEngine.findUserByResetToken(token);
-    if (!userRow) {
+    const userRow = dbEngine.findUserByResetToken(digest);
+    const expires = Date.parse(userRow?.reset_token_expires_at || '');
+    if (!userRow || userRow.is_active !== 1 || !userRow.password_hash || !Number.isFinite(expires) || expires <= Date.now()) {
       return res.status(400).json({ error: 'Invalid or expired password reset token' });
     }
 
-    if (userRow.reset_token_expires_at) {
-      const expires = new Date(userRow.reset_token_expires_at).getTime();
-      if (Date.now() > expires) {
-        return res.status(400).json({ error: 'Password reset token has expired' });
-      }
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    if (!dbEngine.consumeResetToken(userRow.id, digest, passwordHash, new Date().toISOString())) {
+      return res.status(400).json({ error: 'Invalid or expired password reset token' });
     }
 
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-    dbEngine.updatePassword(userRow.id, passwordHash);
-
-    const user = dbEngine.findUserById(userRow.id)!;
-    const tokenCookie = setAuthCookie(res, user);
-
+    // A reset link proves mailbox access, not MFA. Never issue an authenticated session here.
+    clearAuthCookie(res);
     return res.json({
       success: true,
-      message: 'Password reset successfully. You are now logged in.',
-      user,
-      token: tokenCookie
+      message: 'Password reset successfully. Please log in with your new password.'
     });
   } catch (err) {
-    console.error('Reset password error:', err);
+    console.error('[AUTH] Password reset completion failed.');
     return res.status(500).json({ error: 'Failed to reset password' });
   }
 });
