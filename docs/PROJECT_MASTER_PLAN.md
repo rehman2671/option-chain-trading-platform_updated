@@ -67,10 +67,6 @@ Each numbered range covers five tasks; prefix IDs with P01–P05 to avoid collis
 | | 41–45 | Install; migration; restart; runtime security; AI Studio smoke |
 | | 46–50 | Rollback; operator guide; monitoring runbook; blockers; acceptance |
 
-## Consolidated P01 risk implementation checkpoint — 2026-11-25 IST
-
-PR #146 merged at 70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3 after exact-head full regression and staging passed. Continue the same 250-task scope. Next independent batch covers portfolio Greek evidence, atomic account-wide reservation, drawdown and kill-switch input validation, dead legacy broker dispatch removal and exact exchange fill identities. See [consolidated batch ledger](MEGA_PHASE_01_PORTFOLIO_RESERVATION_RISK.md). This checkpoint supersedes any earlier pending-#146 statements below. Actual account evidence, common gateway, durable drawdown and external acceptance still pending; no release.
-
 ## Gates and anti-stuck rule
 
 1. P01: reject unauthorized orders/destructive actions and misleading closure; preserve actual exposure until broker reconciliation. P02: verify data clocks, complete bars, source labels and hosting/Telegram evidence. P03: reproducible realistic simulations; distinguish missing actual evidence. P04: paper positional and MIS separation, no premature live release. P05: full cross-module and hosted acceptance.
@@ -78,6 +74,6 @@ PR #146 merged at 70734ac9e911b6ee2f9d9738b0c9c1f8d6745ee3 after exact-head full
 3. If CI fails, identify actual failure, repair and retest. Do not waive checks or claim a future merge. Isolate independently safe work if needed. External blockers only stop their dependent release gate; no fake source data or broker evidence.
 4. Issues #17–#22 remain the separate external evidence track (licensed data, calendar/masters, independent validation, broker NRML protection, OOS, actual AI Studio operations). CI success is source acceptance, not proof of profitable trading, device delivery or hosted durability.
 
-## Current implementation checkpoint — 2026-11-25 (IST)
+## Current implementation checkpoint — 2026-11-25 IST
 
-P01 remains active; #143–#145 and #147 are merged. #146 and #148 remain independently pending full regression. Next repair on repair/mega01-exposure-input-integrity rejects malformed explicit numerical risk snapshots and preserves zero margin; synthetic default callers and actual portfolio evidence remain unverified. The master scope remains 250 tasks. Refer to [PROJECT_PROGRESS_TRACKER.md](PROJECT_PROGRESS_TRACKER.md) for current CI and task counts. No live release or hosting change authorized.
+#143–#150 merged with PR CI; #151 passed exact-head CI but has merge conflicts in shared tracking documents. Its source and tests are carried onto current main with an atomic preparation journal joining intent, reservation, risk evidence and restart recovery. See [integration batch](MEGA_PHASE_01_GATEWAY_INTEGRATION.md) and [current tracker](PROJECT_PROGRESS_TRACKER.md). Main scope 12 scoped merged, 38 partial, 0 untouched; full phase acceptance pending. The preparation journal is not a live execution gateway. Preserve the 250-task plan, Google AI Studio deployment architecture and MIS/NRML safety gates.
