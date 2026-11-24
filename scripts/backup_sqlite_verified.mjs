@@ -10,6 +10,7 @@ import {
   mkdtempSync, openSync, realpathSync, rmSync
 } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function existsIncludingSymlink(file) {
   try { lstatSync(file); return true; }
@@ -95,7 +96,7 @@ export async function createVerifiedSqliteBackup(source, destination) {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL('file://' + path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
   if (args.length !== 4 || args[0] !== '--source' || args[2] !== '--destination') {
     console.error('Usage: node scripts/backup_sqlite_verified.mjs --source /absolute/option_platform.sqlite --destination /private/backup/snapshot.sqlite');
