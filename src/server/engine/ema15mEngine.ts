@@ -28,6 +28,7 @@ import { resolveTradingsymbol } from './basketEngine.js';
 import { executionCoordinator } from './ema15m/executionCoordinator.js';
 import { StrategyRules } from './ema15m/strategyRules.js';
 import { SessionCalendar } from './ema15m/sessionCalendar.js';
+import { canIngestEmaTick, historicalSlotIsClosed } from './ema15m/alertTickClock.js';
 import { brokerOrderReconciler } from './ema15m/brokerOrderReconciler.js';
 
 export class Ema15mEngine {
@@ -42,6 +43,7 @@ export class Ema15mEngine {
 
   // In-memory active (forming) candle per instrument
   private activeCandles: Map<Ema15mInstrument, Ema15mCandle> = new Map();
+  private lastEmaTickMs = new Map<Ema15mInstrument, number>();
   // In-memory cache of completed candles (sorted chronological)
   private candleCache: Map<Ema15mInstrument, Ema15mCandle[]> = new Map();
   private lastAutoSyncMap: Map<string, number> = new Map();
@@ -112,7 +114,9 @@ export class Ema15mEngine {
 
     try {
       // Fetch real 15m exchange candles from Yahoo Finance (1 month range = ~550-600 candles, ~22 trading days)
-      const yahooCandles = await fetchYahooHistoricalCandles(inst, '15m', '1mo');
+      const requestedAt = Date.now();
+      const yahooCandles = (await fetchYahooHistoricalCandles(inst, '15m', '1mo'))
+        .filter(c => historicalSlotIsClosed(c.timestamp, requestedAt));
       if (yahooCandles && yahooCandles.length > 0) {
         candles = yahooCandles.map(c => ({
           instrument: inst,
@@ -132,6 +136,15 @@ export class Ema15mEngine {
     }
 
     if (candles.length > 0) {
+      // Preserve bars finalized locally while the history request was in flight.
+      const bySlot = new Map(candles.map(c => [c.timestamp, c]));
+      for (const local of this.candleCache.get(inst) || []) {
+        if (local.isClosed && historicalSlotIsClosed(local.timestamp, Date.now()) &&
+            Date.parse(local.timestamp) >= Date.parse(candles[candles.length - 1].timestamp)) {
+          bySlot.set(local.timestamp, local);
+        }
+      }
+      candles = [...bySlot.values()].sort((a,b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       this.recalculateAllIndicators(candles);
       dbEngine.saveEma15mCandlesBatch(candles);
       this.candleCache.set(inst, candles);
@@ -208,7 +221,7 @@ export class Ema15mEngine {
    * Ingests a new live spot tick for an instrument (from MarketFeed or WebSocket)
    */
   public ingestTick(instrument: Ema15mInstrument, price: number, volume: number = 0, timestamp: Date = new Date()): void {
-    if (!price || price <= 0) return;
+    if (!Number.isFinite(price) || price <= 0) return;
 
     // Sanity boundary check to prevent symbol cross-pollution using dynamic instrument configs
     const cfg = getInstrumentConfig(instrument);
@@ -226,6 +239,12 @@ export class Ema15mEngine {
     if (!marketHours.isMarketOpen && this.dataSource !== 'PRACTICE') {
       return;
     }
+
+    const eventMs = timestamp.getTime();
+    const history = this.candleCache.get(instrument) || [];
+    // Late/out-of-order ticks must not reopen a closed candle or roll spot P&L backwards.
+    if (!canIngestEmaTick(eventMs, Date.now(), this.lastEmaTickMs.get(instrument), history[history.length - 1]?.timestamp)) return;
+    this.lastEmaTickMs.set(instrument, eventMs);
 
     // 1. Immediately update live mark-to-market P&L on all OPEN paper positions for this instrument via batching
     this.updateOpenPaperTrades(instrument, price);
@@ -272,7 +291,7 @@ export class Ema15mEngine {
 
     for (const inst of this.INSTRUMENTS) {
       const active = this.activeCandles.get(inst);
-      if (active && active.timestamp !== currentSlot) {
+      if (active && Date.parse(active.timestamp) < Date.parse(currentSlot)) {
         // Candle time passed: close it and evaluate crossover
         this.finalizeCandle(active);
         this.activeCandles.delete(inst);
@@ -375,7 +394,7 @@ export class Ema15mEngine {
       const curr = history[lastIdx];
       const prev = history[lastIdx - 1];
 
-      if (prev && curr && prev.ema23 !== undefined && prev.ema50 !== undefined && curr.ema23 !== undefined && curr.ema50 !== undefined) {
+      if (prev && curr && curr.timestamp === candle.timestamp && prev.ema23 !== undefined && prev.ema50 !== undefined && curr.ema23 !== undefined && curr.ema50 !== undefined) {
         const signalType = this.evaluateCrossover(prev.ema23, prev.ema50, curr.ema23, curr.ema50);
         curr.signal = signalType;
 
