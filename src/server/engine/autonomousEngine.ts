@@ -20,6 +20,7 @@ import { tradeReviewEngine } from '../../quant/learning/tradeReviewEngine.js';
 import { killSwitchEngine } from '../../quant/risk/killSwitch.js';
 import { drawdownController } from '../../quant/risk/drawdownController.js';
 import { exposureController } from '../../quant/risk/exposureController.js';
+import { basketFullyFilled } from '../release/legacyExecutionContainment.js';
 
 export class AutonomousRunnerEngine {
   private runnerInterval?: NodeJS.Timeout;
@@ -173,6 +174,17 @@ export class AutonomousRunnerEngine {
               isPartialData: snapshot.isPartialData
             };
 
+            // Never simulate closure of an existing live/unknown basket after switching provider modes.
+            if (strat.status === 'IN_POSITION') {
+              const original = strat.activeBasketId ? globalBasketEngine.getBasketRecord(strat.activeBasketId) : undefined;
+              if (!original || original.strategyId !== strat.id || !original.legs.length ||
+                  !original.legs.every(l => l.orderId?.startsWith('sim-'))) {
+                strat.armed = false;
+                strat.errorMessage = 'Existing basket exposure unresolved; reconcile directly with broker before rearming.';
+                dbEngine.saveAutonomousStrategy(strat, userId);
+                continue;
+              }
+            }
             if (strat.status === 'WATCHING') {
               const evalResult = evaluateStrategyEntry(strat, context);
 
@@ -225,7 +237,7 @@ export class AutonomousRunnerEngine {
                   userId
                 );
 
-                if (basketResult.status === 'COMPLETED') {
+                if (basketFullyFilled(basketResult, strat.legs)) {
                   strat.status = 'IN_POSITION';
                   strat.activeBasketId = basketResult.id;
                   strat.lastActionAt = nowIso;
@@ -233,7 +245,7 @@ export class AutonomousRunnerEngine {
 
                   strat.legs = strat.legs.map(leg => {
                     const matchExec = basketResult.legs.find(
-                      exec => exec.strikePrice === leg.strikePrice && exec.type === leg.type
+                      exec => exec.legId === leg.id
                     );
                     return {
                       ...leg,
@@ -304,13 +316,21 @@ export class AutonomousRunnerEngine {
                     userId
                   );
 
+                  if (!basketFullyFilled(basketResult, reverseLegs)) {
+                    strat.armed = false;
+                    strat.errorMessage = 'Exit not fully confirmed; position remains unresolved. Reconcile before rearming.';
+                    strat.lastEvaluatedAt = nowIso;
+                    dbEngine.saveAutonomousStrategy(strat, userId);
+                    dbEngine.addAutonomousLog({id:'exit-unresolved-'+basketResult.id,strategyId:strat.id,strategyName:strat.name,timestamp:nowIso,eventType:'ERROR',details:{basketId:basketResult.id,reason:'EXIT_NOT_FULLY_CONFIRMED'}},userId);
+                    continue;
+                  }
                   let realizedPositionPnl = 0;
                   const exitLegsDetail: any[] = [];
 
                   for (const leg of strat.legs) {
                     const entryP = leg.entryPrice || leg.currentLtp || 0;
                     const matchExitExec = basketResult.legs.find(
-                      exec => exec.strikePrice === leg.strikePrice && exec.type === leg.type
+                      exec => exec.legId === leg.id
                     );
                     const exitP = matchExitExec && matchExitExec.status === 'FILLED' ? matchExitExec.avgFillPrice : (leg.currentLtp || entryP);
                     const legPnl = leg.action === 'BUY'
@@ -375,6 +395,12 @@ export class AutonomousRunnerEngine {
                     userId
                   );
 
+                  if (!basketFullyFilled(basketResult, strat.legs)) {
+                    strat.armed=false;
+                    strat.errorMessage='Adjustment not fully confirmed; reconcile before rearming.';
+                    dbEngine.saveAutonomousStrategy(strat,userId);
+                    continue;
+                  }
                   strat.lastActionAt = nowIso;
                   strat.lastEvaluatedAt = nowIso;
                   dbEngine.saveAutonomousStrategy(strat, userId);
