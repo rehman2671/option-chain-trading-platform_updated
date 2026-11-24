@@ -92,3 +92,25 @@ test('password, status, MFA and logout-style revocation invalidate prior session
     assert.equal(dbEngine.getUserSessionVersion(id),5);
   }finally{db.prepare('DELETE FROM users WHERE id=?').run(id);}
 });
+
+test('atomic paper group rolls back earlier leg when a later leg collides or cannot be written',async()=>{
+  const {dbEngine}=await import('../db.js');
+  const {randomUUID}=await import('node:crypto');
+  await dbEngine.initialize();
+  const db=dbEngine.getRawDatabase();
+  const user='test-batch-'+randomUUID(), first='test-leg-'+randomUUID(), second='test-leg-'+randomUUID();
+  const make=(id:string):import('../../types.js').PaperPosition=>({
+    id,symbol:'NIFTY',strategyName:'fixture',strategyGroupId:user,strikePrice:24000,type:'CE',action:'BUY',
+    quantity:65,lotSize:65,entryPrice:100,currentPrice:100,pnl:0,pnlPercent:0,status:'OPEN',
+    openedAt:new Date().toISOString(),expiry:'2026-11-24'
+  });
+  try{
+    assert.throws(()=>dbEngine.createPaperPositionsAtomically([make(first),make(first)],user),/DUPLICATE/);
+    assert.equal(dbEngine.getPaperPositionById(first,user),null);
+    dbEngine.createPaperPositionsAtomically([make(first),make(second)],user);
+    assert.ok(dbEngine.getPaperPositionById(first,user));
+    assert.ok(dbEngine.getPaperPositionById(second,user));
+    assert.throws(()=>dbEngine.createPaperPositionsAtomically([make(first)],user),/DUPLICATE/);
+    assert.ok(dbEngine.getPaperPositionById(first,user));
+  }finally{db.prepare('DELETE FROM paper_positions WHERE id IN (?,?)').run(first,second);}
+});
