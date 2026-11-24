@@ -75,7 +75,8 @@ export function prepareAuthenticatedCandidate(db:Database.Database,principal:Ver
    // Conservatively allow only one unresolved preparation per account until
    // verified release/reconciliation of reservations is implemented.
    if(db.prepare('SELECT 1 FROM capital_reservation_v1 WHERE account_scope=? LIMIT 1').get(binding.accountId)||
-      db.prepare('SELECT 1 FROM execution_intent_v1 WHERE account_scope=? LIMIT 1').get(binding.accountId))
+      db.prepare('SELECT 1 FROM execution_intent_v1 WHERE account_scope=? LIMIT 1').get(binding.accountId)||
+      db.prepare('SELECT 1 FROM candidate_preparation_v1 WHERE account_scope=? LIMIT 1').get(binding.accountId))
     return out('DENIED','ACCOUNT_PREPARATION_REVIEW_REQUIRED');
   }
   const journal=prepareEntryJournal(db,{accountScope:binding.accountId,ownerId:binding.ownerId,sessionEpoch:risk.sessionEpoch,
