@@ -13,6 +13,7 @@ import {
 import { PracticeModeProvider } from './PracticeModeProvider.js';
 import type { BrokerRiskSnapshot } from '../ema15m/brokerRiskGate.js';
 import { parseBrokerRiskResponse } from '../../release/brokerAccountRiskEvidence.js';
+import {buildBoundBrokerEntryEvidence,validBrokerEntryIdentity,type BoundBrokerEntryEvidence,type BrokerEntryIdentity} from '../../release/boundBrokerEntryEvidence.js';
 import { reconcileOrderEvidence, validOrderIntent, type OrderEvidence, type OrderIntentEvidence } from '../../release/brokerOrderReconciliationEvidence.js';
 import {parseStrictQuoteSnapshotTime} from '../ema15m/adaptiveSellableOptionDepthReadOnly.js';
 import {resolveUniqueBrokerNetPosition}
@@ -449,6 +450,31 @@ export class UpstoxProvider implements IMarketDataProvider {
       console.warn('[EMA BROKER RISK] Verified broker account evidence unavailable');
       return null;
     }
+  }
+
+  /** Native non-dispatch risk evidence. No practice fallback, credentials in
+   * output, or claim of independent account completeness. Caller must bind
+   * the authenticated platform owner to the expected broker account. */
+  public async getBoundBrokerEntryEvidence(expected:BrokerEntryIdentity):Promise<BoundBrokerEntryEvidence|null>{
+    if(!validBrokerEntryIdentity(expected))return null;
+    const frozen={...expected};
+    const session=this.captureRiskReadIdentity();
+    if(!session||frozen.accountId!==session.accountId||frozen.authEpoch!==session.authEpoch)return null;
+    const startedAt=Date.now();
+    const headers={Authorization:'Bearer '+session.bearerToken,Accept:'application/json'};
+    const signal=AbortSignal.timeout(12000);
+    try{
+      const [fundsRes,marginRes,positionsRes]=await Promise.all([
+        fetch('https://api.upstox.com/v2/user/get-funds-and-margin',{headers,signal}),
+        fetch('https://api.upstox.com/v2/charges/margin',{method:'POST',headers:{...headers,'Content-Type':'application/json'},signal,
+          body:JSON.stringify({instruments:[{instrument_key:frozen.instrumentKey,quantity:frozen.quantity,transaction_type:'BUY',product:frozen.product}]})}),
+        fetch('https://api.upstox.com/v2/portfolio/short-term-positions',{headers,signal})
+      ]);
+      if(!fundsRes.ok||!marginRes.ok||!positionsRes.ok||!this.currentRiskReadIdentity(session))return null;
+      const [funds,margin,portfolio]=await Promise.all([fundsRes.json(),marginRes.json(),positionsRes.json()]);
+      if(!this.currentRiskReadIdentity(session))return null;
+      return buildBoundBrokerEntryEvidence(frozen,funds,margin,portfolio,startedAt,Date.now());
+    }catch{return null;}
   }
 
   /**
