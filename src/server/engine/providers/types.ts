@@ -17,6 +17,11 @@ export interface UnderlyingQuote {
 }
 
 export interface OptionContractQuote {
+  source?: 'UPSTOX_CHAIN_UNTIMED' | 'PRACTICE';
+  instrumentKey?: string;
+  expiry?: string;
+  receivedAt?: string;
+  exchangeTimestampVerified?: false;
   strikePrice: number;
   optionType: 'CE' | 'PE';
   ltp: number;
