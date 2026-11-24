@@ -32,7 +32,7 @@ Status S = scoped implementation present, awaiting exact-head CI and merge (not 
 | 41–45 EMA | 41,45 | 42,43,44 | — |
 | 46–50 tests | 46,47,48 | 49,50 | — |
 
-S: 12 scoped implementations/tests; P: 27 partially addressed; O: 11 outstanding. All 50 task IDs remain unaccepted until their own gates pass.
+S: 12 scoped implementations/tests; P: 28 partially addressed; O: 10 outstanding. All 50 task IDs remain unaccepted until their own gates pass.
 Remaining source work includes unified broker gateway and evidence-backed contract IDs, complete atomic multi-leg persistence, actual server-side broker funds/Greeks, unknown/partial-fill reconciliation and rollback, durable drawdown/kill-state, robust idempotency, comprehensive route inventory and browser token lifecycle. Containment is not equivalent to implementation of live execution.
 Test coverage added: pure mode and basket validation, read-only drawdown projection, account reset/lookup/close isolation, persisted session version, cookie origin guard, built-server smoke for guest/role denial and revoked bearer replay. Full broker simulation and end-to-end hosted validation remain pending.
 
