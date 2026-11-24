@@ -19,6 +19,7 @@ let lastOutcome = 'NOT_STARTED';
 let previousFeed: string | null = null;
 let candidateFeed: string | null = null;
 let candidateSince = 0;
+let cooldownUntil = 0;
 
 function currentFeed(now: number): string {
   if (activeProvider.getProviderMode() !== 'LIVE') return 'PRACTICE — no live-feed claim';
@@ -44,6 +45,7 @@ async function poll(): Promise<void> {
       previousFeed = candidateFeed = null;
       return;
     }
+    if (now < cooldownUntil) return;
     const db = dbEngine.getRawDatabase();
     const alerts: MonitorAlert[] = [];
     const feed = currentFeed(now);
@@ -96,7 +98,10 @@ async function poll(): Promise<void> {
       lastOutcome = result.code;
       db.prepare('UPDATE telegram_monitor_claims SET outcome=?,elapsed_ms=? WHERE key=?').run(result.code,result.elapsedMs,alert.key);
       // Avoid hammering Telegram when config/transport fails or Telegram rate-limits.
-      if (!result.ok) break;
+      if (!result.ok) {
+        cooldownUntil = Date.now() + Math.max(30_000, Math.min(3600, result.retryAfterSeconds ?? 30) * 1000);
+        break;
+      }
     }
   } catch {
     lastOutcome = 'MONITOR_POLL_FAILED';
@@ -121,7 +126,7 @@ export function getTelegramMonitorStatus() {
   const now = Date.now();
   const clocks = globalMarketFeed.getVerifiedSpotClock();
   return { enabled:process.env.TELEGRAM_MONITORING_ENABLED==='1',
-    running:Boolean(timer), lastPollAt, lastOutcome, feed:currentFeed(now),
+    running:Boolean(timer), lastPollAt, lastOutcome, cooldownUntil:cooldownUntil>now?new Date(cooldownUntil).toISOString():null, feed:currentFeed(now),
     exchangeQuoteAgeMs:Object.fromEntries(symbols.map(s=>[s,clocks[s]===null?null:Math.max(0,now-Number(clocks[s]))])),
     deviceDeliveryConfirmed:false, liveTradingAuthorized:false };
 }
