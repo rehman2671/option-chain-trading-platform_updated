@@ -19,3 +19,7 @@ Optional server environment variables in the existing Google AI Studio deploymen
 The adapter requires trusted server-side normalized marks, native evidence and fresh durable equity observation; it does not certify actual upstream provenance. Broker funds are not NAV. It is limited to bounded long BUY preparation, no MARKET execution, no live NRML permission, no actual capital release. Local auth epoch is not independently authenticated exchange or restart evidence. No real broker order or hosting change.
 
 Main remains 12 scoped merged, 38 partial, 0 untouched. New work advances existing IDs, no phase acceptance. Require combined exact-head CI, resolve any actual failure, and verify hosted operation separately.
+
+## Verified #154 merge — 2026-11-25 IST
+
+#154 exact head 89ea5d3b88feb403180cfd3b461cc8c97eac4a4f passed full EMA safety 45486135932 and paper staging 45486136044. Merged main at 9ad93498d18713ee322c3589eaeec47c226e3e3b. #155 includes the verified #154 head as an ancestor and the #153 source/tests plus new joined preparation; fresh combined CI still required. #153 remains open until replacement integration verified. Main scope unchanged 12/38/0, no full acceptance, no hosted verification. Supersedes earlier pending #154 statements.
