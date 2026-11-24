@@ -119,6 +119,15 @@ export class MarketFeedEngine {
   // Cached market data
   private currentSpots: Map<string, number> = new Map();
   private spotLiveFlags: Map<string, boolean> = new Map();
+  private lastVerifiedSpotMs = new Map<string, number>();
+
+  // Read-only monitoring clock; never label synthetic or receipt-time prices as live.
+  public getVerifiedSpotClock(): Record<string, number | null> {
+    return Object.fromEntries(['NIFTY','BANKNIFTY','SENSEX'].map(s => [s, this.lastVerifiedSpotMs.get(s) ?? null]));
+  }
+  private recordVerifiedSpotClock(symbol: string, exchangeMs: number): void {
+    if (freshExchangeTick(exchangeMs)) this.lastVerifiedSpotMs.set(symbol, Math.max(this.lastVerifiedSpotMs.get(symbol) || 0, exchangeMs));
+  }
   private prevCloses: Map<string, number> = new Map();
   private spotMovePercents: Map<string, number> = new Map();
   private indiaVixMap: Map<string, number> = new Map();
@@ -275,6 +284,7 @@ export class MarketFeedEngine {
   public updateLiveSpot(symbol: string, spot: number, prevClose?: number, volume?: number, vix?: number, exchangeMs?: number): void {
     // Never turn receipt time or an old websocket snapshot into a live EMA tick.
     if (!Number.isFinite(spot) || spot <= 0 || exchangeMs === undefined || !freshExchangeTick(exchangeMs)) return;
+    this.recordVerifiedSpotClock(symbol, exchangeMs);
     const cfg = UNDERLYING_CONFIGS[symbol];
     const oldSpot = this.currentSpots.get(symbol) || (cfg ? cfg.baseSpotPrice : spot);
     const pc = (prevClose && prevClose > 0) ? prevClose : (this.prevCloses.get(symbol) || oldSpot);
@@ -387,6 +397,7 @@ export class MarketFeedEngine {
             const providerIsLive = activeProvider.getProviderMode() === 'LIVE';
             const exchangeMs = uq.exchangeTimestamp ? Date.parse(uq.exchangeTimestamp) : NaN;
             const brokerQuoteIsFresh = uq.source === 'UPSTOX_LIVE' && freshExchangeTick(exchangeMs);
+            if (providerIsLive && brokerQuoteIsFresh) this.recordVerifiedSpotClock(sym, exchangeMs);
 
             // A fallback/practice quote must never contribute to a live-orderable EMA crossover.
             if (!providerIsLive || brokerQuoteIsFresh) {
