@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import QRCode from 'qrcode';
 import { dbEngine } from './db.js';
+import {validEmailInput,validLoginPassword,validNewPassword,validTotp,validMfaSecret,mfaState} from './release/authInputPolicy.js';
 import { User } from '../types.js';
 import { createPasswordResetToken, hashPasswordResetToken, passwordResetDeliveryConfig, type PasswordResetDeliveryConfig } from './release/passwordResetSecurity.js';
 
@@ -73,7 +74,7 @@ export function getUserFromRequest(req: Request, allowFallback: boolean = false)
     }
     // Session credentials in URLs leak through history, referrers and access logs.
     if (token) {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      const decoded = jwt.verify(token, JWT_SECRET, {algorithms:['HS256']}) as any;
       const userId = decoded?.sub;
       if (typeof userId==='string' && decoded?.purpose==='session' && Number.isSafeInteger(decoded.sv) && dbEngine.getUserSessionVersion(userId)===decoded.sv) {
         const user = dbEngine.findUserById(userId);
@@ -192,8 +193,9 @@ export const authRouter = Router();
  */
 authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
   try {
-    const { email, password, totpCode } = req.body;
-    if (!email || !password) {
+    res.setHeader('Cache-Control','no-store');
+    const { email, password, totpCode } = req.body || {};
+    if (!validEmailInput(email) || !validLoginPassword(password) || (totpCode!==undefined && totpCode!=='' && !validTotp(totpCode))) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
@@ -214,7 +216,9 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
     }
 
     // Check if 2FA Authenticator MFA is enabled on this account
-    if (userRow.mfa_enabled === 1 && userRow.mfa_secret) {
+    const mfa=mfaState(userRow.mfa_enabled,userRow.mfa_secret);
+    if(mfa==='INVALID')return res.status(403).json({error:'Account authentication configuration requires administrator review.'});
+    if (mfa==='REQUIRED') {
       if (!totpCode) {
         // Issue temporary 5-minute token for 2FA step
         const tempToken = jwt.sign(
@@ -256,8 +260,8 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
       token
     });
   } catch (err: any) {
-    console.error('Login error:', err);
-    return res.status(500).json({ error: err.message || 'Login failed due to server error' });
+    console.error('[AUTH] Login failed.');
+    return res.status(500).json({ error: 'Login failed due to server error' });
   }
 });
 
@@ -266,14 +270,15 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response) => {
  */
 authRouter.post('/login/mfa', authLimiter, async (req: Request, res: Response) => {
   try {
-    const { tempToken, totpCode } = req.body;
-    if (!tempToken || !totpCode) {
+    res.setHeader('Cache-Control','no-store');
+    const { tempToken, totpCode } = req.body || {};
+    if (typeof tempToken!=='string' || !tempToken || tempToken.length>4096 || !validTotp(totpCode)) {
       return res.status(400).json({ error: 'Temporary token and 6-digit TOTP code are required' });
     }
 
     let decoded: any;
     try {
-      decoded = jwt.verify(tempToken, JWT_SECRET);
+      decoded = jwt.verify(tempToken, JWT_SECRET, {algorithms:['HS256']});
     } catch {
       return res.status(401).json({ error: 'MFA session expired. Please log in again.' });
     }
@@ -286,7 +291,7 @@ authRouter.post('/login/mfa', authLimiter, async (req: Request, res: Response) =
       (dbEngine.findUserById(decoded.tempUserId)?.email || '')
     );
 
-    if (!userRow || !userRow.mfa_secret || userRow.mfa_enabled!==1 || !Number.isSafeInteger(decoded.sv) || dbEngine.getUserSessionVersion(userRow.id)!==decoded.sv) {
+    if (!userRow || mfaState(userRow.mfa_enabled,userRow.mfa_secret)!=='REQUIRED' || !Number.isSafeInteger(decoded.sv) || dbEngine.getUserSessionVersion(userRow.id)!==decoded.sv) {
       return res.status(400).json({ error: 'MFA is not configured for this account' });
     }
 
@@ -313,7 +318,7 @@ authRouter.post('/login/mfa', authLimiter, async (req: Request, res: Response) =
       token
     });
   } catch (err: any) {
-    console.error('MFA Login Verification error:', err);
+    console.error('[AUTH] MFA login verification failed.');
     return res.status(500).json({ error: 'Failed to verify MFA token' });
   }
 });
@@ -358,6 +363,7 @@ authRouter.post('/admin/users/:id/toggle-status', requireSuperAdmin, async (req:
     dbEngine.setUserActiveStatus(targetUserId, newActive);
 
     const updated = dbEngine.findUserById(targetUserId);
+    if(!updated || updated.isActive!==newActive)return res.status(503).json({error:'Account status write not confirmed.'});
     return res.json({
       success: true,
       message: `User ${targetUser.email} is now ${newActive ? 'ENABLED' : 'DISABLED'}.`,
@@ -374,10 +380,10 @@ authRouter.post('/admin/users/:id/toggle-status', requireSuperAdmin, async (req:
 authRouter.post('/admin/users/:id/reset-password', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const targetUserId = req.params.id;
-    const { newPassword } = req.body;
+    const { newPassword } = req.body || {};
 
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+    if (!validNewPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters and at most 72 UTF-8 bytes.' });
     }
 
     const targetUser = dbEngine.findUserById(targetUserId);
@@ -387,6 +393,8 @@ authRouter.post('/admin/users/:id/reset-password', requireSuperAdmin, async (req
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
     dbEngine.setUserPassword(targetUserId, passwordHash);
+    const saved=dbEngine.findUserByEmail(targetUser.email);
+    if(!saved || saved.id!==targetUserId || saved.password_hash!==passwordHash)return res.status(503).json({error:'Password write not confirmed.'});
 
     return res.json({
       success: true,
@@ -409,6 +417,7 @@ authRouter.post('/admin/users/:id/mfa/generate', requireSuperAdmin, async (req: 
       return res.status(404).json({ error: 'User not found' });
     }
 
+    res.setHeader('Cache-Control','no-store');
     const secret = generateSecret();
     const serviceName = 'OptionPlatform';
     const otpauth = generateURI({
@@ -431,7 +440,7 @@ authRouter.post('/admin/users/:id/mfa/generate', requireSuperAdmin, async (req: 
       user: targetUser
     });
   } catch (err: any) {
-    console.error('Error generating MFA secret:', err);
+    console.error('[AUTH] MFA generation failed.');
     return res.status(500).json({ error: 'Failed to generate Authenticator MFA setup' });
   }
 });
@@ -442,9 +451,9 @@ authRouter.post('/admin/users/:id/mfa/generate', requireSuperAdmin, async (req: 
 authRouter.post('/admin/users/:id/mfa/enable', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const targetUserId = req.params.id;
-    const { secret, token } = req.body;
+    const { secret, token } = req.body || {};
 
-    if (!secret || !token) {
+    if (!validMfaSecret(secret) || !validTotp(token)) {
       return res.status(400).json({ error: 'Secret and verification code are required' });
     }
 
@@ -463,6 +472,8 @@ authRouter.post('/admin/users/:id/mfa/enable', requireSuperAdmin, async (req: Re
     }
 
     dbEngine.setUserMfaSecret(targetUserId, secret.trim(), true);
+    const saved=dbEngine.findUserByEmail(targetUser.email);
+    if(!saved || saved.id!==targetUserId || saved.mfa_enabled!==1 || saved.mfa_secret!==secret.trim())return res.status(503).json({error:'MFA activation not confirmed.'});
     const updated = dbEngine.findUserById(targetUserId);
 
     return res.json({
@@ -488,6 +499,8 @@ authRouter.post('/admin/users/:id/mfa/disable', requireSuperAdmin, async (req: R
     }
 
     dbEngine.setUserMfaSecret(targetUserId, null, false);
+    const saved=dbEngine.findUserByEmail(targetUser.email);
+    if(!saved || saved.id!==targetUserId || saved.mfa_enabled!==0 || saved.mfa_secret!==null)return res.status(503).json({error:'MFA deactivation not confirmed.'});
     const updated = dbEngine.findUserById(targetUserId);
 
     return res.json({
