@@ -4,6 +4,8 @@
  */
 
 import Database from 'better-sqlite3';
+import {initEntryPreparationJournal,inspectPreparedEntries} from './release/entryPreparationJournal.js';
+import {resolveServerBrokerOwnerBinding,type VerifiedPrincipal,type NativeConnectionIdentity} from './release/serverBrokerOwnerBinding.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -80,6 +82,7 @@ class DatabaseEngine {
       // 5. Run schema migrations and indexes
       this.runMigrations();
       this.ensureSessionVersionColumn();
+      initEntryPreparationJournal(this.db);
       this.ensureAutoIndexes();
       this.seedQuantFeatureHistoryIfEmpty();
       this.syncConfiguredUsersFromEnv();
@@ -2903,6 +2906,19 @@ class DatabaseEngine {
     if (!this.db) throw Error('DB_NOT_INITIALIZED');
     const cols=this.db.prepare('PRAGMA table_info(users)').all() as {name:string}[];
     if (!cols.some(c=>c.name==='session_version')) this.db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /** Internal read-only recovery using a verified session principal and native
+   * provider identity. Environment is deployment-owned, not a request field.
+   * No database handle, broker token, retry or capital-release permission exposed. */
+  public inspectAuthorizedBrokerPreparation(principal:VerifiedPrincipal,connection:NativeConnectionIdentity,now:number){
+    if(!this.db)return null;
+    try{return this.db.transaction(()=>{
+      const binding=resolveServerBrokerOwnerBinding(principal,this.getUserSessionVersion(principal.userId),
+        connection,process.env.BROKER_PREPARATION_OWNER_MAP,now);
+      if(!binding)return null;
+      return inspectPreparedEntries(this.db!,binding.accountId,binding.ownerId);
+    })();}catch{return null;}
   }
 
   public getUserSessionVersion(userId:string): number|null {
