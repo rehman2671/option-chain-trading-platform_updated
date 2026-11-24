@@ -82,7 +82,7 @@ export class BacktestEngine {
       const cndRow = rawDb.prepare(`
         SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt
         FROM ema_15m_candles
-        WHERE instrument = ?
+        WHERE instrument = ? AND timeframe='15m' AND is_closed=1
       `).get(underlying) as any;
 
       const optMin = optRow?.min_ts || '';
@@ -157,7 +157,7 @@ export class BacktestEngine {
     const candleCount = rawDb.prepare(`
       SELECT COUNT(*) as count
       FROM ema_15m_candles
-      WHERE instrument = ?
+      WHERE instrument = ? AND timeframe='15m' AND is_closed=1
         AND timestamp >= ?
         AND timestamp <= ?
     `).get(underlying, periodStart, periodEnd) as any;
@@ -230,15 +230,31 @@ export class BacktestEngine {
     let winCount = 0;
 
     for (const [timestamp, chain] of snapshotsByTs.entries()) {
-      const calls = chain.filter(c => c.option_type === 'CE');
-      const puts = chain.filter(c => c.option_type === 'PE');
+      // Never mix different expiries within a snapshot or substitute a
+      // fabricated quote for a missing exact leg. Select the earliest
+      // non-expired expiry only when no position is held.
+      const day=new Date(Date.parse(timestamp)+330*60000);
+      if(!Number.isFinite(day.getTime()))continue;
+      const today=day.toISOString().slice(0,10);
+      const expiry=inPosition?longLeg?.expiry:[...new Set(chain.map(c=>c.expiry).filter(e=>typeof e==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(e)&&e>=today))].sort()[0];
+      if(!expiry||expiry<today){
+        if(inPosition)return this.buildInsufficientDataResult(backtestId,strategy,periodStart,periodEnd,'Open replay position expired without verified exit quote',availability.minDate,availability.maxDate);
+        continue;
+      }
+      const exact=chain.filter(c=>c.expiry===expiry);
+      const seen=new Set<string>();
+      if(exact.some(c=>{const k=c.strike+':'+c.option_type;if(seen.has(k))return true;seen.add(k);return false;}))
+        return this.buildInsufficientDataResult(backtestId,strategy,periodStart,periodEnd,'Duplicate exact contract in replay snapshot',availability.minDate,availability.maxDate);
+      const calls=exact.filter(c=>c.option_type==='CE');
+      const puts=exact.filter(c=>c.option_type==='PE');
+      if(!calls.length||!puts.length)continue;
 
       const totalPeOi = puts.reduce((sum, p) => sum + (p.oi || 0), 0);
       const totalCeOi = calls.reduce((sum, c) => sum + (c.oi || 0), 0);
       const pcr = totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : 1.0;
 
       // Approximate spot from median strike or ATM where call and put prices are closest
-      let spotPrice = 24500;
+      let spotPrice = NaN;
       if (calls.length > 0 && puts.length > 0) {
         let minDiff = Infinity;
         for (const call of calls) {
@@ -253,9 +269,10 @@ export class BacktestEngine {
         }
       }
 
-      const ivAvg = chain.length > 0
-        ? chain.reduce((sum, c) => sum + (c.iv || 15), 0) / chain.length
-        : 15;
+      if(!Number.isFinite(spotPrice)||spotPrice<=0)continue;
+      const ivs=exact.map(c=>c.iv).filter(v=>typeof v==='number'&&Number.isFinite(v)&&v>0);
+      if(!ivs.length)continue;
+      const ivAvg=ivs.reduce((sum,v)=>sum+v,0)/ivs.length;
 
       const context: StrategyDecisionContext = {
         symbol: underlying,
@@ -287,18 +304,27 @@ export class BacktestEngine {
             shortLeg = calls.find(c => c.strike === atmStrike + strikeStep);
           }
 
-          const longPrice = longLeg?.ask || longLeg?.ltp || 120;
-          const shortPrice = shortLeg?.bid || shortLeg?.ltp || 70;
-          entryCost = Math.max(10, (longPrice - (shortLeg ? shortPrice : 0)) * lotSize);
+          const valid=(n:unknown)=>typeof n==='number'&&Number.isFinite(n)&&n>0;
+          if(!longLeg||!shortLeg||!valid(longLeg.ask)||!valid(shortLeg.bid)||
+             !valid(longLeg.bid)||!valid(shortLeg.ask)||longLeg.bid>longLeg.ask||shortLeg.bid>shortLeg.ask||
+             !Number.isSafeInteger(longLeg.ask_qty)||longLeg.ask_qty<lotSize||!Number.isSafeInteger(shortLeg.bid_qty)||shortLeg.bid_qty<lotSize){
+            inPosition=false;longLeg=null;shortLeg=null;continue;
+          }
+          entryCost=(longLeg.ask-shortLeg.bid)*lotSize;
+          if(!Number.isFinite(entryCost)||entryCost<=0){inPosition=false;longLeg=null;shortLeg=null;continue;}
         }
       } else {
         currentHoldingBars++;
         // Find current leg prices in current snapshot
-        const curLong = chain.find(c => c.strike === longLeg?.strike && c.option_type === longLeg?.option_type);
-        const curShort = shortLeg ? chain.find(c => c.strike === shortLeg?.strike && c.option_type === shortLeg?.option_type) : null;
+        const curLong = exact.find(c => c.strike === longLeg?.strike && c.option_type === longLeg?.option_type);
+        const curShort = shortLeg ? exact.find(c => c.strike === shortLeg?.strike && c.option_type === shortLeg?.option_type) : null;
 
-        const curLongPrice = curLong?.bid || curLong?.ltp || (longLeg?.ltp || 100);
-        const curShortPrice = curShort ? (curShort?.ask || curShort?.ltp || (shortLeg?.ltp || 60)) : 0;
+        const valid=(n:unknown)=>typeof n==='number'&&Number.isFinite(n)&&n>0;
+        if(!curLong||!curShort||!valid(curLong.bid)||!valid(curLong.ask)||!valid(curShort.ask)||!valid(curShort.bid)||
+          curLong.bid>curLong.ask||curShort.bid>curShort.ask||!Number.isSafeInteger(curLong.bid_qty)||curLong.bid_qty<lotSize||
+          !Number.isSafeInteger(curShort.ask_qty)||curShort.ask_qty<lotSize)continue;
+        const curLongPrice=curLong.bid;
+        const curShortPrice=curShort.ask;
 
         const currentValue = (curLongPrice - curShortPrice) * lotSize;
         const unrealizedPnl = currentValue - entryCost;
@@ -353,6 +379,7 @@ export class BacktestEngine {
       }
     }
 
+    if(inPosition)return this.buildInsufficientDataResult(backtestId,strategy,periodStart,periodEnd,'Replay ended with unresolved option legs; no invented close',availability.minDate,availability.maxDate);
     return this.assembleResult(
       backtestId,
       strategy,
@@ -385,7 +412,7 @@ export class BacktestEngine {
     const candles = rawDb.prepare(`
       SELECT *
       FROM ema_15m_candles
-      WHERE instrument = ?
+      WHERE instrument = ? AND timeframe='15m' AND is_closed=1
         AND timestamp >= ?
         AND timestamp <= ?
       ORDER BY timestamp ASC
