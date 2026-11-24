@@ -3,6 +3,10 @@
 Base: main 52f5e862c2f6232b0dc0b7863b5d42bbe2fb7b95 (includes verified Telegram PR #143).
 One consolidated repair PR, not another series of research phases.
 
+## Candidate risk continuation — 2026-11-25 IST
+
+[Candidate risk and broker binding](MEGA_PHASE_01_CANDIDATE_RISK_BROKER_BINDING.md) records exact P01 IDs and new regression cases. #148–150 merged, #151 conflict carried to #152, combined regression still running. Main scope 12 scoped merged / 38 partial / 0 untouched, no full acceptance. Native evidence and projected-risk modules remain internal, with no broker dispatch or capital-release authority. Current checkpoint supersedes older counts.
+
 ## Scope and operational compatibility
 
 - Mandatory login for normal paper ledger API; operator-owned rows only. Old anonymous rows remain available for authorized migration/administrative investigation; they are not silently assigned or deleted. Paper reset is strictly account-scoped.
