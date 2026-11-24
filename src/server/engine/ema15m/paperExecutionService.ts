@@ -46,7 +46,7 @@ export class PaperExecutionService {
         if (existingOpen.direction !== newDirection) {
           // Opposite Crossover Reversal: close the opposing paper trade
           const exitPrice = existingOpen.currentPrice || existingOpen.entryPrice;
-          dbEngine.closeEmaPaperTrade(existingOpen.id, exitPrice, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt);
+          if (!Number.isFinite(exitPrice) || exitPrice<=0 || !dbEngine.closeEmaPaperTrade(existingOpen.id, exitPrice, 'OPPOSITE_CROSSOVER', signal.signalConfirmedAt)) return {status:'FAILED',message:'Opposing paper position closure not confirmed'};
 
           const grossPnl = StrategyRules.calculateOptionGrossPnl(existingOpen.entryPrice, exitPrice, existingOpen.quantity);
           const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, existingOpen.brokerage || 40);
@@ -134,6 +134,8 @@ export class PaperExecutionService {
       };
 
       dbEngine.saveEmaPaperTrade(simulatedTrade);
+      const persisted = dbEngine.getEmaPaperTradeById(tradeId);
+      if (!persisted || persisted.status !== 'OPEN' || persisted.signalId!==signal.id || persisted.quantity!==quantity) return {status:'FAILED',message:'Paper entry persistence not confirmed'};
 
       // 4. Log structured audit event
       const randOpen = Math.random().toString(36).slice(2, 8);
@@ -316,14 +318,14 @@ export class PaperExecutionService {
       return;
     }
 
-    const openTrades = dbEngine.getOpenEmaPaperTrades('ALL');
+    const openTrades = dbEngine.getOpenEmaPaperTrades('ALL').filter(t=>t.productType==='MIS');
     if (!openTrades || openTrades.length === 0) return;
 
     console.log(`[EMA PAPER INTRADAY] ⏰ Reached force square-off time (${forceTime} IST). Closing ${openTrades.length} paper trade(s)...`);
 
     for (const trade of openTrades) {
       const exitPrice = trade.currentPrice || trade.entryPrice;
-      dbEngine.closeEmaPaperTrade(trade.id, exitPrice, 'FORCED_INTRADAY_SQUARE_OFF', new Date().toISOString());
+      if (!Number.isFinite(exitPrice) || exitPrice<=0 || !dbEngine.closeEmaPaperTrade(trade.id, exitPrice, 'FORCED_INTRADAY_SQUARE_OFF', new Date().toISOString())) continue;
 
       dbEngine.logEmaExecutionEvent({
         id: `evt-paper-sq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
