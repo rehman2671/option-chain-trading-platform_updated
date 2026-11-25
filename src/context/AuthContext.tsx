@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { User } from '../types';
 import { apiFetch, setAuthToken } from '../lib/api';
 
@@ -33,6 +33,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const authRevision=useRef(0);
+  const refreshSequence=useRef(0);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
@@ -49,21 +51,25 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const refreshUser = async () => {
+    const revision=authRevision.current,seq=++refreshSequence.current;
+    const current=()=>revision===authRevision.current&&seq===refreshSequence.current;
     try {
       const res = await apiFetch('/api/auth/me');
       const data = await res.json();
-      if (data.authenticated && data.user) {
+      if(!current())return;
+      if (res.ok && data.authenticated && data.user) {
         setUser(data.user);
         if (data.token) {
           setAuthToken(data.token);
         }
       } else {
+        setAuthToken(null);
         setUser(null);
       }
     } catch (err) {
-      setUser(null);
+      if(current()){setAuthToken(null);setUser(null);}
     } finally {
-      setLoading(false);
+      if(current())setLoading(false);
     }
   };
 
@@ -105,12 +111,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const login = async (email: string, pass: string, totpCode?: string) => {
+    const revision=++authRevision.current;
     const res = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password: pass, totpCode })
     });
     const data = await parseJsonResponse(res, 'Login failed');
+    if(revision!==authRevision.current)throw Error('Login superseded by another session action');
+    setLoading(false);
 
     // If 2FA MFA is required, retain tempToken and trigger TOTP prompt
     if (data.mfaRequired) {
@@ -135,12 +144,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!mfaPending.tempToken) {
       throw new Error('No active MFA verification session. Please sign in again.');
     }
+    const revision=++authRevision.current;
     const res = await apiFetch('/api/auth/login/mfa', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tempToken: mfaPending.tempToken, totpCode })
     });
     const data = await parseJsonResponse(res, 'Invalid Authenticator code');
+    if(revision!==authRevision.current)throw Error('MFA verification superseded by another session action');
+    setLoading(false);
     if (data.token) {
       setAuthToken(data.token);
     }
@@ -159,10 +171,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const logout = async () => {
-    await apiFetch('/api/auth/logout', { method: 'POST' });
-    setAuthToken(null);
-    setUser(null);
-    window.location.reload();
+    const revision=++authRevision.current;
+    try{
+      const res=await apiFetch('/api/auth/logout',{method:'POST'});
+      if(!res.ok)throw Error('Logout was not confirmed');
+      if(revision!==authRevision.current)return;
+      setAuthToken(null);setUser(null);cancelMfa();setLoading(false);
+      window.location.reload();
+    }catch{
+      // Do not claim server revocation or reload into a possibly active cookie.
+      if(revision===authRevision.current){setLoading(false);window.alert('Logout could not be verified. Please retry before leaving this device.');}
+    }
   };
 
   const resendVerification = async (email: string) => {
@@ -184,12 +203,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const resetPassword = async (token: string, newPassword: string) => {
+    const revision=++authRevision.current;
     const res = await apiFetch('/api/auth/reset-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, newPassword })
     });
     const data = await parseJsonResponse(res, 'Password reset failed');
+    if(revision!==authRevision.current)throw Error('Password reset superseded by another session action');
+    setLoading(false);
     setAuthToken(null);
     setUser(null);
     setResetToken(null);

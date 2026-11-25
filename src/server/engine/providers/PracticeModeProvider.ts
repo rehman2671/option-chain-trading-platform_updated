@@ -345,6 +345,9 @@ export class PracticeModeProvider implements IMarketDataProvider {
       const peAsk = Number((peLtp * 1.005).toFixed(2));
 
       const ceQuote: OptionContractQuote = {
+        source: 'PRACTICE',
+        expiry,
+        exchangeTimestampVerified: false,
         strikePrice: K,
         optionType: 'CE',
         ltp: ceLtp,
@@ -363,6 +366,9 @@ export class PracticeModeProvider implements IMarketDataProvider {
       };
 
       const peQuote: OptionContractQuote = {
+        source: 'PRACTICE',
+        expiry,
+        exchangeTimestampVerified: false,
         strikePrice: K,
         optionType: 'PE',
         ltp: peLtp,

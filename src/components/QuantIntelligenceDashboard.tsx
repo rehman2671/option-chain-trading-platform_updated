@@ -1083,8 +1083,8 @@ export const QuantIntelligenceDashboard: React.FC<QuantIntelligenceDashboardProp
                         : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
                     }`}>
                       {backtestResult.dataSource === 'REAL_HISTORICAL_OPTION_CHAIN'
-                        ? 'REAL_HISTORICAL_OPTION_CHAIN (SQLite Snapshot Quotes)'
-                        : 'MODELED_OPTIONS_ON_REAL_UNDERLYING (Real 15m Candles + European Greeks)'}
+                        ? 'STORED OPTION SNAPSHOT REPLAY — PROVENANCE UNVERIFIED'
+                        : 'MODELED OPTIONS ON STORED 15M CANDLES — PROVENANCE UNVERIFIED'}
                     </span>
                   </div>
                   <div className="text-slate-400">
@@ -1149,7 +1149,7 @@ export const QuantIntelligenceDashboard: React.FC<QuantIntelligenceDashboardProp
                     <div className="text-base font-bold text-emerald-400 mt-1 flex items-center space-x-1">
                       <CheckCircle className={`w-4 h-4 ${backtestResult.passedGates ? 'text-emerald-400' : 'text-rose-400'}`} />
                       <span className={backtestResult.passedGates ? 'text-emerald-400' : 'text-rose-400'}>
-                        {backtestResult.passedGates ? 'PASSED' : 'FAILED'}
+                        {backtestResult.evidenceStatus==='UNVERIFIED_STORED_REPLAY'?'VALIDATION NOT ESTABLISHED':backtestResult.passedGates?'REPORTED PASS — UNVERIFIED':'FAILED'}
                       </span>
                     </div>
                     <div className="text-[10px] text-slate-500">

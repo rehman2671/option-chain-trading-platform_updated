@@ -248,6 +248,7 @@ export interface StrategyDefinition {
 }
 
 export interface BacktestResult {
+  evidenceStatus?: 'UNVERIFIED_STORED_REPLAY' | 'INSUFFICIENT_DATA';
   id: string;
   strategyId: string;
   strategyName: string;
@@ -463,6 +464,7 @@ export interface OptionFlowMetrics {
 }
 
 export interface WalkForwardResult {
+  evidenceStatus?: 'NO_INDEPENDENT_OOS';
   strategyId: string;
   windowsCount: number;
   inSampleSharpeAvg: number;
@@ -484,6 +486,9 @@ export interface WalkForwardResult {
 }
 
 export interface MonteCarloResult {
+  evidenceStatus?: 'NO_TRADE_SAMPLE' | 'INPUT_SAMPLE_BOOTSTRAP';
+  sampleSize?: number;
+  riskThresholdPaise?: number;
   strategyId: string;
   simulationsCount: number;
   medianPnl: number;

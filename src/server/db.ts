@@ -4,6 +4,7 @@
  */
 
 import Database from 'better-sqlite3';
+import {reconcileOwnerPreparedOrder,type OwnerRecoveryProvider} from './release/ownerOrderRecovery.js';
 import {inspectPreparedEntries} from './release/entryPreparationJournal.js';
 import {initAuthenticatedCandidateJournal,prepareAuthenticatedCandidate,type AuthenticatedCandidateInput} from './release/authenticatedCandidateJournal.js';
 import {resolveServerBrokerOwnerBinding,type VerifiedPrincipal,type NativeConnectionIdentity} from './release/serverBrokerOwnerBinding.js';
@@ -2930,6 +2931,14 @@ class DatabaseEngine {
     return prepareAuthenticatedCandidate(this.db,principal,connection,input,now);
   }
 
+  /** Native read-only broker calls; only local journal metadata is recorded.
+   * No caller-provided broker order ID, account scope or raw execution evidence. */
+  public async reconcileAuthorizedBrokerPreparation(principal:VerifiedPrincipal,provider:OwnerRecoveryProvider,intentId:string){
+    if(!this.db)return {status:'UNKNOWN' as const,reason:'RECOVERY_UNAVAILABLE_CAPITAL_RETAINED',orderAuthorized:false as const,
+      capitalReleaseAuthorized:false as const,retryAuthorized:false as const,accountFlatCertified:false as const};
+    return reconcileOwnerPreparedOrder(this.db,principal,provider,intentId);
+  }
+
   public getUserSessionVersion(userId:string): number|null {
     if (!this.db) return null;
     const row=this.db.prepare('SELECT session_version FROM users WHERE id=? AND is_active=1').get(userId) as {session_version:number}|undefined;
@@ -5566,8 +5575,8 @@ class DatabaseEngine {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-        s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
-        s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+        s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+        s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
       );
     } catch (err) {
       console.error('[DB] Error saving quant option snapshot:', err);
@@ -5588,8 +5597,8 @@ class DatabaseEngine {
         for (const s of items) {
           stmt.run(
             s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-            s.ltp, s.bid || s.ltp, s.ask || s.ltp, s.bidQty || 0, s.askQty || 0, s.volume || 0, s.oi || 0, s.oiChange || 0,
-            s.iv || 0, s.delta || 0, s.gamma || 0, s.theta || 0, s.vega || 0, s.source || 'upstox_ws', s.dataQuality || 'OK'
+            s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+            s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
           );
         }
       });

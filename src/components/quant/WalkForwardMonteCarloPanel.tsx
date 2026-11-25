@@ -68,7 +68,7 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             <span>Robustness, Walk-Forward & Monte Carlo Engine (v2 Standard)</span>
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            Evaluate out-of-sample stability, 2,000 bootstrap simulations, and parameter perturbation immunity.
+            Research-only diagnostics. Independent out-of-sample evidence and an actual trade sample are required; no live release or guaranteed returns.
           </p>
         </div>
 
@@ -110,12 +110,14 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             <h4 className="text-sm font-bold text-white">Walk-Forward Testing</h4>
             {wfResult && (
               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${wfResult.passed ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
-                {wfResult.passed ? 'GATE PASSED' : 'GATE FAILED'}
+                {wfResult.evidenceStatus==='NO_INDEPENDENT_OOS'?'OOS UNAVAILABLE':wfResult.passed?'REPORTED PASS — UNVERIFIED':'GATE FAILED'}
               </span>
             )}
           </div>
 
-          {wfResult ? (
+          {wfResult?.evidenceStatus==='NO_INDEPENDENT_OOS' ? (
+            <p className="text-amber-300">Independent training and untouched out-of-sample observations unavailable. No windows or Sharpe values are verified.</p>
+          ) : wfResult ? (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2 text-[11px]">
                 <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
@@ -145,7 +147,7 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             </div>
           ) : (
             <div className="py-12 text-center text-slate-500">
-              Click &quot;Run Walk-Forward&quot; to execute multi-window out-of-sample backtests.
+              Request walk-forward evidence status; actual independent observations are required.
             </div>
           )}
         </div>
@@ -154,14 +156,16 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-bold text-white">Monte Carlo (2,000 Runs)</h4>
-            {mcResult && (
+            {mcResult?.evidenceStatus==='INPUT_SAMPLE_BOOTSTRAP' && (
               <span className="text-[10px] text-emerald-400 font-bold">
-                Ruin Risk: {mcResult.riskOfRuinPct}%
+                Input-sample bootstrap only
               </span>
             )}
           </div>
 
-          {mcResult ? (
+          {mcResult && mcResult.evidenceStatus!=='INPUT_SAMPLE_BOOTSTRAP' ? (
+            <p className="text-amber-300">Actual trade sample unavailable or unverified. No empirical simulation or capital requirement established.</p>
+          ) : mcResult ? (
             <div className="space-y-3">
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
                 <div className="flex justify-between">
@@ -189,14 +193,14 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
                   <span className="text-rose-400 font-bold">₹{mcResult.maxDrawdownDistribution.p95.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-400">Min Capital Needed:</span>
-                  <span className="text-white font-bold">₹{mcResult.worstCaseCapitalNeeded.toLocaleString()}</span>
+                  <span className="text-slate-400">Capital requirement / ruin risk:</span>
+                  <span className="text-white font-bold">Not established</span>
                 </div>
               </div>
             </div>
           ) : (
             <div className="py-12 text-center text-slate-500">
-              Click &quot;Run Monte Carlo&quot; to test 2,000 bootstrap resamplings.
+              Request a bounded bootstrap of an actual supplied trade sample.
             </div>
           )}
         </div>
@@ -207,13 +211,14 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             <h4 className="text-sm font-bold text-white">Overfit & Stability Test</h4>
             {overfitResult && (
               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${overfitResult.overfitRisk === 'LOW' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
-                {overfitResult.overfitRisk} RISK
+                UNVERIFIED MODEL
               </span>
             )}
           </div>
 
           {overfitResult ? (
             <div className="space-y-3">
+              <p className="text-amber-300">Parameter perturbation output is not independently validated.</p>
               <div className="grid grid-cols-2 gap-2 text-[11px]">
                 <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
                   <div className="text-slate-400">Stability Score</div>
