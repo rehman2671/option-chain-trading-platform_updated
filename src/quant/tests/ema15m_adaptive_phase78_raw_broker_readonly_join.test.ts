@@ -221,6 +221,7 @@ describe('Phase78 offline raw GET body ↔ claimed NRML stop, no broker trust pr
   it('a partial sell fill reconciles only with net reduced, leaves and trade quantity',()=>{
     const f=make(),p=f.input.phase77;
     p.paper.position.lots=3;p.positionClaim.netLongLots=2;
+    p.paper.quotes[0].displayedBestBidDepthLots=3;
     p.positionClaim.claimedOutstandingSellOrders[0].remainingLots=2;
     p.events[0].totalLots=3;
     p.events.push({sequence:4,eventId:'EV-4',orderId:'SL-1',at:time(10,4),
