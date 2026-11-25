@@ -262,8 +262,10 @@ describe('Integration 5: Real Market Data Ingestion & Quant Context (Non-Synthet
     assert.strictEqual(ce.bid, 145.0);
     assert.strictEqual(ce.ask, 145.5);
     assert.strictEqual(ce.oi, 150000);
-    assert.strictEqual(ce.source, 'upstox_live');
-    assert.strictEqual(ce.dataQuality, 'OK');
+    // A mock spot-live flag cannot authenticate option quotes or exchange time.
+    assert.strictEqual(ce.source, 'UNVERIFIED_SOURCE');
+    assert.strictEqual(ce.dataQuality, 'DATA_INSUFFICIENT');
+    assert.ok(ce.missingFields?.includes('exchangeTimestamp'));
 
     const pe = mappedSnapshots.find(s => s.optionType === 'PE');
     assert.ok(pe);
@@ -278,8 +280,9 @@ describe('Integration 5: Real Market Data Ingestion & Quant Context (Non-Synthet
 
     // Quality evaluation
     const qualityReport = marketDataAdapter.evaluateQuality(mappedSnapshots);
-    assert.ok(qualityReport.score >= 70);
-    assert.strictEqual(qualityReport.status, 'OK');
+    assert.ok(qualityReport.score < 70);
+    assert.strictEqual(qualityReport.status, 'DATA_INSUFFICIENT');
+    assert.equal(qualityReport.checks.priceFreshness,false);
   });
 });
 
