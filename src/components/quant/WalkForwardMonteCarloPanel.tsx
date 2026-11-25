@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import {apiFetch} from '../../lib/api.js';
 import { Play, ShieldCheck, AlertTriangle, Activity, Sliders, CheckCircle, RefreshCw } from 'lucide-react';
 import { WalkForwardResult, MonteCarloResult, OverfitAnalysisResult } from '../../quant/types';
 
@@ -7,6 +8,7 @@ interface WalkForwardMonteCarloPanelProps {
 }
 
 export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProps> = ({ strategyId }) => {
+  const [replayId,setReplayId]=useState('');
   const [wfResult, setWfResult] = useState<WalkForwardResult | null>(null);
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
   const [overfitResult, setOverfitResult] = useState<OverfitAnalysisResult | null>(null);
@@ -16,11 +18,11 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
 
   const runWalkForward = async () => {
     try {
-      setLoadingWf(true);
-      const res = await fetch('/api/quant/walk-forward/run', {
+      setLoadingWf(true);setWfResult(null);
+      const res = await apiFetch('/api/quant/walk-forward/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategyId, windowsCount: 4 })
+        body: JSON.stringify({ strategyId, windowsCount: 4, replayId:replayId.trim()||undefined })
       });
       if (res.ok) setWfResult(await res.json());
     } catch (err) {
@@ -32,11 +34,11 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
 
   const runMonteCarlo = async () => {
     try {
-      setLoadingMc(true);
-      const res = await fetch('/api/quant/monte-carlo/run', {
+      setLoadingMc(true);setMcResult(null);
+      const res = await apiFetch('/api/quant/monte-carlo/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategyId, simulationsCount: 2000 })
+        body: JSON.stringify({ strategyId, simulationsCount: 2000, replayId:replayId.trim()||undefined })
       });
       if (res.ok) setMcResult(await res.json());
     } catch (err) {
@@ -49,7 +51,7 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
   const checkOverfitting = async () => {
     try {
       setLoadingOverfit(true);
-      const res = await fetch(`/api/quant/overfit-analysis?strategyId=${strategyId}`);
+      const res = await apiFetch(`/api/quant/overfit-analysis?strategyId=${strategyId}`);
       if (res.ok) setOverfitResult(await res.json());
     } catch (err) {
       console.error('Overfitting check failed:', err);
@@ -72,6 +74,9 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
           </p>
         </div>
 
+        <label className="text-slate-300">Stored replay ID (optional if exactly one eligible replay)
+          <input value={replayId} maxLength={160} disabled={loadingWf||loadingMc} onChange={e=>{setReplayId(e.target.value);setWfResult(null);setMcResult(null);}} className="block mt-1 bg-slate-950 border border-slate-700 rounded-lg p-2 w-full" placeholder="Exact replay ID"/>
+        </label>
         <div className="flex items-center space-x-2.5">
           <button
             onClick={runWalkForward}
@@ -79,7 +84,7 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded-xl font-bold flex items-center space-x-2 transition"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingWf ? 'animate-spin' : ''}`} />
-            <span>{loadingWf ? 'Evaluating...' : 'Run Walk-Forward (4 Windows)'}</span>
+            <span>{loadingWf ? 'Evaluating...' : 'Review 4 chronological windows'}</span>
           </button>
 
           <button
@@ -110,13 +115,18 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             <h4 className="text-sm font-bold text-white">Walk-Forward Testing</h4>
             {wfResult && (
               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${wfResult.passed ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
-                {wfResult.evidenceStatus==='NO_INDEPENDENT_OOS'?'OOS UNAVAILABLE':wfResult.passed?'REPORTED PASS — UNVERIFIED':'GATE FAILED'}
+                {wfResult.evidenceStatus==='DESCRIPTIVE_CHRONOLOGICAL_PARTITIONS'?'DESCRIPTIVE ONLY':wfResult.evidenceStatus==='NO_INDEPENDENT_OOS'?'OOS UNAVAILABLE':wfResult.passed?'REPORTED PASS — UNVERIFIED':'GATE FAILED'}
               </span>
             )}
           </div>
 
           {wfResult?.evidenceStatus==='NO_INDEPENDENT_OOS' ? (
             <p className="text-amber-300">Independent training and untouched out-of-sample observations unavailable. No windows or Sharpe values are verified.</p>
+          ) : wfResult?.evidenceStatus==='DESCRIPTIVE_CHRONOLOGICAL_PARTITIONS' ? (
+            <div className="space-y-3">
+              <p className="text-amber-300">Replay {wfResult.replayId}: {wfResult.sampleSize} modeled or stored trades. Expanding chronological partitions, not independent training/OOS.</p>
+              {wfResult.windows.map(w=><div key={w.windowId} className="border border-slate-800 rounded-lg p-2"><p>Window {w.windowId}: {w.trainTradeCount} earlier / {w.testTradeCount} later trades</p><p>{w.testStart} → {w.testEnd}</p><p>Earlier net ₹{w.trainNetPnl.toLocaleString()} / Later net ₹{w.testNetPnl.toLocaleString()}</p></div>)}
+            </div>
           ) : wfResult ? (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -167,6 +177,7 @@ export const WalkForwardMonteCarloPanel: React.FC<WalkForwardMonteCarloPanelProp
             <p className="text-amber-300">Actual trade sample unavailable or unverified. No empirical simulation or capital requirement established.</p>
           ) : mcResult ? (
             <div className="space-y-3">
+              <p className="text-amber-300">Stored replay {mcResult.replayId||'unverified input'}: {mcResult.sampleSize} trades, {mcResult.simulationsCount} simulations. No independent provenance or ruin estimate.</p>
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
                 <div className="flex justify-between">
                   <span className="text-slate-400">5th Percentile (Adverse):</span>
