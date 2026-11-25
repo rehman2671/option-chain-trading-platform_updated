@@ -464,7 +464,9 @@ export interface OptionFlowMetrics {
 }
 
 export interface WalkForwardResult {
-  evidenceStatus?: 'NO_INDEPENDENT_OOS';
+  evidenceStatus?: 'NO_INDEPENDENT_OOS' | 'DESCRIPTIVE_CHRONOLOGICAL_PARTITIONS';
+  replayId?: string;
+  sampleSize?: number;
   strategyId: string;
   windowsCount: number;
   inSampleSharpeAvg: number;
@@ -481,12 +483,16 @@ export interface WalkForwardResult {
     trainNetPnl: number;
     testNetPnl: number;
     testSharpe: number;
+    trainTradeCount?: number;
+    testTradeCount?: number;
     status: 'PASSED' | 'FAILED';
   }>;
 }
 
 export interface MonteCarloResult {
   evidenceStatus?: 'NO_TRADE_SAMPLE' | 'INPUT_SAMPLE_BOOTSTRAP';
+  replayId?: string;
+  replaySource?: 'UNVERIFIED_STORED_REPLAY';
   sampleSize?: number;
   riskThresholdPaise?: number;
   strategyId: string;
