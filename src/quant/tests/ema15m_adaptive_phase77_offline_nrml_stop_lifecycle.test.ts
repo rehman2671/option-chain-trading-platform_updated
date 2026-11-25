@@ -191,6 +191,8 @@ describe('Phase77 offline claimed broker NRML stop/GTT lifecycle adversarial rec
   });
   it('partial fill can be internally reconciled only with matching reduced net position and remaining stop',()=>{
     const f=setup();f.paper.position.lots=3;f.positionClaim.netLongLots=2;
+    // Paper monitor marks original hypothetical debit, not actual remaining exposure.
+    f.paper.quotes[0].displayedBestBidDepthLots=3;
     f.events[0].totalLots=3;
     f.positionClaim.claimedOutstandingSellOrders[0].remainingLots=2;
     f.events.push(event(4,'PARTIAL_FILL','STOP-1','SELL_STOP',4,{cumulativeFilledLots:1}));

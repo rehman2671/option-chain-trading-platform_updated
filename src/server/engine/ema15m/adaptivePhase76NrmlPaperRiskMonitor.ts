@@ -81,9 +81,15 @@ export interface Phase76PaperReport {
   liveExecutionAuthorized: false;
   productionSafe: false;
 }
-const validIso=(s:unknown):s is string=>typeof s==='string'&&
-  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(s)&&
-  Number.isFinite(Date.parse(s));
+const validIso=(s:unknown):s is string=>{
+  if(typeof s!=='string')return false;
+  const m=/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?(Z|([+-])(\d\d):(\d\d))$/.exec(s);
+  if(!m)return false;
+  const h=Number(m[5]??0),min=Number(m[6]??0),ms=Date.parse(s);
+  if(!Number.isFinite(ms)||h>14||min>59||(h===14&&min!==0))return false;
+  const offset=m[3]==='Z'?0:(m[4]==='+'?1:-1)*(60*h+min);
+  return new Date(ms+offset*60000).toISOString().slice(0,23)===m[1]+'.'+(m[2]??'').padEnd(3,'0');
+};
 const finite=(v:unknown,min:number,max:number):v is number=>
   typeof v==='number'&&Number.isFinite(v)&&v>=min&&v<=max;
 const integer=(v:unknown,min:number,max:number):v is number=>
@@ -189,7 +195,8 @@ export function reviewPhase76NrmlPaperRisk(input:Phase76PaperInput):Phase76Paper
     const bid=q.bestBidPremiumPoints;
     const at=Date.parse(q.receivedAt);
     const usable=bid!==null&&q.displayedBestBidDepthLots>=
-      k.minimumBidDepthLotsForIndicativeMark;
+      Math.max(k.minimumBidDepthLotsForIndicativeMark,p.lots)&&
+      at-Date.parse(q.observedAt)<=k.maximumQuoteAgeSeconds*1000;
     if(!usable){ pending=null;continue; }
     const previous=previousUsable;
     previousUsable={bid:bid!,day:istDay(Date.parse(q.observedAt))};
@@ -220,13 +227,13 @@ export function reviewPhase76NrmlPaperRisk(input:Phase76PaperInput):Phase76Paper
   const quoteFresh=!!last&&now-Date.parse(last.observedAt)<=
     k.maximumQuoteAgeSeconds*1000;
   const sufficientDepth=!!last&&last.bestBidPremiumPoints!==null&&
-    last.displayedBestBidDepthLots>=k.minimumBidDepthLotsForIndicativeMark;
+    last.displayedBestBidDepthLots>=Math.max(k.minimumBidDepthLotsForIndicativeMark,p.lots);
   const validCurrent=quoteFresh&&sufficientDepth;
   if(!quoteFresh)alerts.add('STALE_OR_MISSING_QUOTE_REVIEW');
   else if(!sufficientDepth)alerts.add('BID_DEPTH_UNAVAILABLE_REVIEW');
   if(!armed&&pending)alerts.add('UNCONFIRMED_PREMIUM_SPIKE_IGNORED');
   let mark:null|number=null,pnl:null|number=null;
-  if(validCurrent){
+  if(validCurrent&&days>=0){
     const bid=last!.bestBidPremiumPoints!;
     mark=rounded(bid*qty);
     pnl=rounded((bid-p.assumedEntryAskPremiumPoints)*qty-

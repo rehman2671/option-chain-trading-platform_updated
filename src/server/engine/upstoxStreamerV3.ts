@@ -47,6 +47,9 @@ export class UpstoxStreamerV3 {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private lastError: string | null = null;
   private isConnecting: boolean = false;
+  private generation=0;
+  private heartbeatTimer:NodeJS.Timeout|null=null;
+  private lastTransportActivity=0;
   private tokenExpired: boolean = false;
   private lastUsedToken: string | null = null;
   private isRefreshingToken: boolean = false;
@@ -97,8 +100,13 @@ export class UpstoxStreamerV3 {
       return false;
     }
 
-    // If an explicit token was provided or it's different from the expired token, reset expiry
-    if (token || (this.lastUsedToken && accessToken !== this.lastUsedToken)) {
+    const changed=this.lastUsedToken!==null&&accessToken!==this.lastUsedToken;
+    if(changed){
+      this.generation++;this.cleanupSocket();this.isConnected=false;this.isConnecting=false;
+      if(this.reconnectTimer){clearTimeout(this.reconnectTimer);this.reconnectTimer=null;}
+    }
+    // Only a different token clears a known expiration.
+    if (changed) {
       this.tokenExpired = false;
       this.reconnectAttempts = 0;
       this.lastUsedToken = accessToken;
@@ -113,6 +121,7 @@ export class UpstoxStreamerV3 {
       return true;
     }
 
+    const generation=++this.generation;
     this.isConnecting = true;
     this.lastError = null;
 
@@ -128,6 +137,7 @@ export class UpstoxStreamerV3 {
       });
 
       const authData: any = await authRes.json().catch(() => ({}));
+      if(generation!==this.generation)return false;
       if (!authRes.ok || authData.status !== 'success' || !authData.data?.authorizedRedirectUri) {
         const errorMsg = authData.errors?.[0]?.message || authData.message || `HTTP ${authRes.status}: Failed to authorize WebSocket feed`;
         const authErr = new Error(errorMsg);
@@ -138,6 +148,8 @@ export class UpstoxStreamerV3 {
       }
 
       const wsUrl = authData.data.authorizedRedirectUri;
+      const parsed=new URL(wsUrl);
+      if(parsed.protocol!=='wss:'||parsed.username||parsed.password||!(parsed.hostname==='upstox.com'||parsed.hostname.endsWith('.upstox.com')))throw Error('Unverified websocket destination');
       console.log('[UPSTOX V3 STREAMER] Authorized. Connecting to WebSocket pipe...');
 
       this.cleanupSocket();
@@ -146,12 +158,23 @@ export class UpstoxStreamerV3 {
         headers: {
           'Authorization': `Bearer ${accessToken}`
         },
-        followRedirects: true
+        followRedirects: false,
+        handshakeTimeout:10000,
+        maxPayload:8*1024*1024
       });
 
+      const socket=this.ws;
+      const current=()=>generation===this.generation&&this.ws===socket;
       this.ws.binaryType = 'nodebuffer';
 
       this.ws.on('open', () => {
+        if(!current())return;
+        this.lastTransportActivity=Date.now();
+        this.heartbeatTimer=setInterval(()=>{
+          if(!current())return;
+          if(Date.now()-this.lastTransportActivity>45000){socket.terminate();return;}
+          if(socket.readyState===WebSocket.OPEN)socket.ping();
+        },15000);this.heartbeatTimer.unref?.();
         this.isConnected = true;
         this.isConnecting = false;
         this.tokenExpired = false;
@@ -162,17 +185,23 @@ export class UpstoxStreamerV3 {
         this.sendSubscription();
       });
 
+      this.ws.on('pong',()=>{if(current())this.lastTransportActivity=Date.now();});
+      this.ws.on('ping',()=>{if(current())this.lastTransportActivity=Date.now();});
       this.ws.on('message', (data: Buffer) => {
+        if(!current())return;
+        this.lastTransportActivity=Date.now();
         this.handleBinaryMessage(data);
       });
 
       this.ws.on('error', (err: any) => {
-        console.warn('[UPSTOX V3 STREAMER] Socket warning/error:', err.message);
-        this.lastError = err.message;
+        if(!current())return;
+        this.lastError = 'Socket transport error';
       });
 
       this.ws.on('close', (code, reason) => {
-        console.warn(`[UPSTOX V3 STREAMER] Socket closed (code ${code}): ${reason.toString()}`);
+        if(!current())return;
+        if(this.heartbeatTimer){clearInterval(this.heartbeatTimer);this.heartbeatTimer=null;}
+        this.lastError='Socket closed ('+code+')';
         this.isConnected = false;
         this.isConnecting = false;
         if (!this.tokenExpired) {
@@ -182,9 +211,10 @@ export class UpstoxStreamerV3 {
 
       return true;
     } catch (err: any) {
+      if(generation!==this.generation)return false;
       this.isConnecting = false;
       this.isConnected = false;
-      this.lastError = err.message;
+      this.lastError = 'Feed authorization or connection failed';
 
       const isAuthFail = err.isAuthError || this.isAuthError(err.message);
       if (isAuthFail) {
@@ -194,7 +224,7 @@ export class UpstoxStreamerV3 {
           this.reconnectTimer = null;
         }
 
-        console.warn(`[UPSTOX V3 STREAMER] Authentication notice: Upstox access token has expired or is invalid ("${err.message}"). Continuous streamer reconnect paused; calibrated market feed active.`);
+        console.warn('[UPSTOX V3 STREAMER] Authentication rejected; reconnect paused.');
 
         // Attempt automatic refresh via TOTP handler if registered
         if (this.tokenRefreshHandler && !this.isRefreshingToken) {
@@ -202,7 +232,7 @@ export class UpstoxStreamerV3 {
           try {
             console.log('[UPSTOX V3 STREAMER] Triggering automatic TOTP token refresh...');
             const freshToken = await this.tokenRefreshHandler();
-            if (freshToken) {
+            if (generation===this.generation&&freshToken&&freshToken!==accessToken) {
               console.log('[UPSTOX V3 STREAMER] Auto-refresh succeeded with fresh token. Reconnecting...');
               this.isRefreshingToken = false;
               return this.connect(freshToken);
@@ -217,7 +247,7 @@ export class UpstoxStreamerV3 {
         return false;
       }
 
-      console.warn('[UPSTOX V3 STREAMER] Connection error:', err.message);
+      console.warn('[UPSTOX V3 STREAMER] Connection failed.');
       this.scheduleReconnect();
       return false;
     }
@@ -255,6 +285,7 @@ export class UpstoxStreamerV3 {
   public subscribeInstruments(keys: string[]): void {
     const newKeys: string[] = [];
     for (const k of keys) {
+      if(typeof k!=='string'||k.length>128||!k.includes('|')||this.subscribedKeys.size>=2000)continue;
       if (!this.subscribedKeys.has(k)) {
         this.subscribedKeys.add(k);
         newKeys.push(k);
@@ -269,7 +300,7 @@ export class UpstoxStreamerV3 {
    * Decodes incoming Google Protobuf binary buffer
    */
   private handleBinaryMessage(data: Buffer): void {
-    if (!this.FeedResponseType) return;
+    if (!this.FeedResponseType||data.length>8*1024*1024) return;
 
     try {
       const decoded: any = this.FeedResponseType.decode(data);
@@ -354,9 +385,11 @@ export class UpstoxStreamerV3 {
   }
 
   private cleanupSocket(): void {
+    if(this.heartbeatTimer){clearInterval(this.heartbeatTimer);this.heartbeatTimer=null;}
     if (this.ws) {
       try {
         this.ws.removeAllListeners();
+        this.ws.on('error',()=>{});
         this.ws.terminate();
       } catch (e) {
         // ignore

@@ -22,7 +22,11 @@ export function mapMarketFeedContractToQuantSnapshot(
 ): QuantOptionSnapshot {
   const ts = marketTs || new Date().toISOString();
   // dataQuality: 'OK' when complete, else 'DATA_INSUFFICIENT' based on available/ltpAvailable flags
-  const isComplete = contract.available !== false && contract.ltpAvailable !== false && (contract.ltp || 0) > 0;
+  const missingFields=['exchangeTimestamp','bidQty','askQty','verifiedGreeks'];
+  if(contract.oiAvailable!==true)missingFields.push('oi');
+  if(contract.volumeAvailable!==true)missingFields.push('volume');
+  if(contract.changeInOIAvailable!==true)missingFields.push('oiChange');
+  if(contract.bookAvailable!==true)missingFields.push('bid','ask');
 
   return {
     marketTs: ts,
@@ -44,8 +48,8 @@ export function mapMarketFeedContractToQuantSnapshot(
     gamma: Number(contract.gamma || 0),
     theta: Number(contract.theta || 0),
     vega: Number(contract.vega || 0),
-    source: isLive ? 'upstox_live' : 'market_feed',
-    dataQuality: isComplete ? 'OK' : 'DATA_INSUFFICIENT'
+    source: contract.quoteSource==='UPSTOX_CHAIN_UNTIMED'?'UPSTOX_CHAIN_UNTIMED':contract.quoteSource==='PRACTICE'?'PRACTICE':'UNVERIFIED_SOURCE',
+    dataQuality:'DATA_INSUFFICIENT',missingFields
   };
 }
 
@@ -144,9 +148,10 @@ export class MarketDataAdapter {
     const warnings: string[] = [];
 
     // Check timestamps
-    const sampleTs = new Date(snapshots[0].marketTs).getTime();
-    const latencyMs = Math.max(0, now - sampleTs);
-    const priceFreshness = latencyMs < 10000; // < 10s fresh
+    const ages=snapshots.map(s=>now-Date.parse(s.marketTs));
+    const knownClock=ages.every(a=>Number.isFinite(a)&&a>=0);
+    const latencyMs=knownClock?Math.max(...ages):99999;
+    const priceFreshness=knownClock&&latencyMs<10000&&snapshots.every(s=>s.dataQuality==='OK'&&!s.missingFields?.includes('exchangeTimestamp'));
 
     if (!priceFreshness) {
       score -= 20;
@@ -159,9 +164,9 @@ export class MarketDataAdapter {
     let missingGreeks = 0;
 
     for (const s of snapshots) {
-      if (s.bid > s.ask && s.ask > 0) invertedSpreads++;
-      if (s.oi === undefined || s.oi === null) missingOi++;
-      if (!s.iv || s.iv <= 0 || s.delta === undefined) missingGreeks++;
+      if(!Number.isFinite(s.bid)||!Number.isFinite(s.ask)||s.bid<=0||s.ask<s.bid||s.missingFields?.includes('bid'))invertedSpreads++;
+      if(!Number.isSafeInteger(s.oi)||s.oi<0||s.missingFields?.includes('oi'))missingOi++;
+      if(![s.iv,s.delta,s.gamma,s.theta,s.vega].every(Number.isFinite)||s.iv<=0||s.missingFields?.includes('verifiedGreeks'))missingGreeks++;
     }
 
     const bidAskOrderValid = invertedSpreads === 0;
@@ -182,7 +187,9 @@ export class MarketDataAdapter {
       warnings.push(`Greeks missing on ${missingGreeks} strikes`);
     }
 
-    const status = score >= 70 ? 'OK' : score >= 40 ? 'DATA_INSUFFICIENT' : 'STALE';
+    const unverified=snapshots.some(s=>s.dataQuality!=='OK'||s.source==='PRACTICE'||s.source==='UPSTOX_CHAIN_UNTIMED'||s.source==='UNVERIFIED_SOURCE');
+    if(unverified){score=Math.min(score,39);warnings.push('Untimed, modeled or unverified option observations; execution evidence unavailable');}
+    const status=unverified?'DATA_INSUFFICIENT':!priceFreshness?'STALE':score>=70?'OK':'DATA_INSUFFICIENT';
 
     return {
       score: Math.max(0, score),
@@ -190,7 +197,7 @@ export class MarketDataAdapter {
       latencyMs,
       checks: {
         priceFreshness,
-        spreadAcceptable: true,
+        spreadAcceptable: bidAskOrderValid&&snapshots.every(s=>(s.ask-s.bid)/((s.ask+s.bid)/2)<=0.2),
         oiConsistency,
         greeksComputed,
         bidAskOrderValid
@@ -254,7 +261,8 @@ export class MarketDataAdapter {
       theta: Number(row.theta || 0),
       vega: Number(row.vega || 0),
       source: row.source,
-      dataQuality: row.data_quality as 'OK' | 'DATA_INSUFFICIENT' | 'STALE'
+      dataQuality: 'DATA_INSUFFICIENT' as const,
+      missingFields:['exchangeTimestamp','verifiedGreeks',...(row.oi===null?['oi']:[]),...(row.bid===null||row.ask===null?['bid','ask']:[])]
     }));
 
     if (mapped.length > 0 && !expiry) {

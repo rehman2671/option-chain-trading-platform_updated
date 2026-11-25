@@ -42,6 +42,10 @@ export type OIBuildupType =
   | 'NEUTRAL';
 
 export interface OptionContract {
+  quoteSource?: 'UPSTOX_CHAIN_UNTIMED'|'PRACTICE'|'UNVERIFIED';
+  changeInOIAvailable?: boolean;
+  bookAvailable?: boolean;
+  greeksSource?: 'MODELED';
   strikePrice: number;
   type: OptionType;
   ltp: number;

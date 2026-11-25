@@ -5564,6 +5564,11 @@ class DatabaseEngine {
   // QUANT INTELLIGENCE PERSISTENCE METHODS (Migration 008)
   // -------------------------------------------------------------
 
+  private quantSnapshotField(s:any,key:string):number|null{
+    if(Array.isArray(s.missingFields)&&s.missingFields.includes(key))return null;
+    const v=s[key];return typeof v==='number'&&Number.isFinite(v)?v:null;
+  }
+
   public saveQuantOptionSnapshot(s: any): void {
     if (!this.db) return;
     try {
@@ -5575,7 +5580,7 @@ class DatabaseEngine {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-        s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+        s.ltp, this.quantSnapshotField(s,'bid'), this.quantSnapshotField(s,'ask'), this.quantSnapshotField(s,'bidQty'), this.quantSnapshotField(s,'askQty'), this.quantSnapshotField(s,'volume'), this.quantSnapshotField(s,'oi'), this.quantSnapshotField(s,'oiChange'),
         s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
       );
     } catch (err) {
@@ -5597,7 +5602,7 @@ class DatabaseEngine {
         for (const s of items) {
           stmt.run(
             s.marketTs, s.ingestionTs || new Date().toISOString(), s.underlying, s.expiry, s.strike, s.optionType,
-            s.ltp, s.bid ?? null, s.ask ?? null, s.bidQty ?? null, s.askQty ?? null, s.volume ?? null, s.oi ?? null, s.oiChange ?? null,
+            s.ltp, this.quantSnapshotField(s,'bid'), this.quantSnapshotField(s,'ask'), this.quantSnapshotField(s,'bidQty'), this.quantSnapshotField(s,'askQty'), this.quantSnapshotField(s,'volume'), this.quantSnapshotField(s,'oi'), this.quantSnapshotField(s,'oiChange'),
             s.iv ?? null, s.delta ?? null, s.gamma ?? null, s.theta ?? null, s.vega ?? null, s.source || 'UNVERIFIED_SOURCE', s.dataQuality || 'UNVERIFIED'
           );
         }

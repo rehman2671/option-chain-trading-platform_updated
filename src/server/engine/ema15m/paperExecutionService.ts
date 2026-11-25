@@ -217,6 +217,7 @@ export class PaperExecutionService {
     currentSpotPrice: number,
     getEstimatedOptionPrice: (inst: any, strike: number, type: any, expiry: string, spot: number) => number
   ): void {
+    if(!Number.isFinite(currentSpotPrice)||currentSpotPrice<=0)return;
     const openTrades = dbEngine.getOpenEmaPaperTrades(instrument);
     if (!openTrades || openTrades.length === 0) return;
 
@@ -224,15 +225,19 @@ export class PaperExecutionService {
     const toClose: Array<{ id: string; exitPrice: number; exitReason: string; grossPnl: number; netPnl: number; exitTimestamp?: string }> = [];
 
     const settings = dbEngine.getEmaNotificationSettings('GLOBAL');
-    const trailingEnabled = settings.trailingSlEnabled !== false;
     const profitLockPts = settings.profitLockPoints ?? 70;
     const trailDistancePts = settings.trailDistancePoints ?? 30;
+    const trailingEnabled = settings.trailingSlEnabled !== false&&Number.isFinite(profitLockPts)&&profitLockPts>0&&Number.isFinite(trailDistancePts)&&trailDistancePts>0;
 
     for (const trade of openTrades) {
+      // This estimator/15m trail is MIS-only; positional risk is separate.
+      if(trade.productType!=='MIS')continue;
       const entryPrice = Number(trade.entryPrice);
       const qty = Number(trade.quantity);
-
-      let currentOptionPrice = entryPrice;
+      if(!Number.isFinite(entryPrice)||entryPrice<=0||!Number.isSafeInteger(qty)||qty<=0)continue;
+      if(!trade.optionType||!trade.strikePrice||!trade.expiryDate)continue;
+      let currentOptionPrice:number;
+      try{
       if (trade.optionType && trade.strikePrice && trade.expiryDate) {
         currentOptionPrice = getEstimatedOptionPrice(
           trade.instrument,
@@ -242,12 +247,15 @@ export class PaperExecutionService {
           currentSpotPrice
         );
       } else {
-        currentOptionPrice = currentSpotPrice;
+        continue;
       }
+      }catch{continue;}
+      if(!Number.isFinite(currentOptionPrice)||currentOptionPrice<0)continue;
 
       // Both BUY CE and BUY PE profit when option premium increases
       const grossPnl = StrategyRules.calculateOptionGrossPnl(entryPrice, currentOptionPrice, qty);
       const netPnl = StrategyRules.calculateOptionNetPnl(grossPnl, 40);
+      if(!Number.isFinite(grossPnl)||!Number.isFinite(netPnl))continue;
       const unrealizedPnl = grossPnl;
 
       let shouldExit = false;
@@ -298,17 +306,6 @@ export class PaperExecutionService {
           exitTimestamp: new Date().toISOString()
         });
 
-        dbEngine.logEmaExecutionEvent({
-          id: `evt-paper-exit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          signalId: trade.signalId,
-          executionId: trade.id,
-          executionMode: 'PAPER',
-          stage: exitReason === 'SL_HIT' ? 'PAPER_STOP_LOSS' : 'PAPER_EXIT',
-          status: 'SUCCESS',
-          instrument: trade.instrument,
-          details: { tradeId: trade.id, exitReason, entryPrice, exitPrice: currentOptionPrice, grossPnl, netPnl },
-          timestamp: new Date().toISOString()
-        });
       } else {
         toUpdate.push({
           id: trade.id,
@@ -321,6 +318,14 @@ export class PaperExecutionService {
     }
 
     dbEngine.batchUpdateEmaPaperTrades({ toUpdate, toClose });
+    // Only report a simulated exit as successful after durable closure readback.
+    for(const item of toClose){
+      const persisted=dbEngine.getEmaPaperTradeById(item.id);
+      if(!persisted||persisted.status!=='CLOSED'||persisted.exitPrice!==item.exitPrice||persisted.exitReason!==item.exitReason)continue;
+      dbEngine.logEmaExecutionEvent({id:'evt-paper-exit-'+item.id+'-'+Date.now(),signalId:persisted.signalId,executionId:item.id,
+       executionMode:'PAPER',stage:item.exitReason==='SL_HIT'?'PAPER_STOP_LOSS':'PAPER_EXIT',status:'SUCCESS',instrument:persisted.instrument,
+       details:{tradeId:item.id,exitReason:item.exitReason,exitPrice:item.exitPrice,grossPnl:item.grossPnl,netPnl:item.netPnl,source:'MODELED_MIS_ESTIMATE'},timestamp:item.exitTimestamp??new Date().toISOString()});
+    }
   }
 
   /**
