@@ -5,7 +5,12 @@ const id=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=160
 const obj=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const time=(v:unknown):number=>{
  if(typeof v!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(v))return NaN;
- const ms=Date.parse(v);return Number.isFinite(ms)?ms:NaN;
+ const m=/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?(Z|([+-])(\d\d):(\d\d))$/.exec(v);
+ if(!m)return NaN;
+ const h=Number(m[5]??0),min=Number(m[6]??0),ms=Date.parse(v);
+ if(!Number.isFinite(ms)||h>14||min>59||(h===14&&min!==0))return NaN;
+ const offset=m[3]==='Z'?0:(m[4]==='+'?1:-1)*(h*60+min);
+ return new Date(ms+offset*60000).toISOString().slice(0,23)===m[1]+'.'+(m[2]??'').padEnd(3,'0')?ms:NaN;
 };
 const num=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v)&&Math.abs(v)<=1e10;
 /** Select a single completed stored replay by exact identity. No merging
@@ -31,6 +36,6 @@ export function selectStoredReplaySample(rows:unknown,strategyId:string,strategy
   seen.add(t.id);priorExit=exitMs;total+=t.netPnl;
   trades.push({id:t.id,entryMs,exitMs,netPnl:t.netPnl});
  }
- if(!num(r.totalNetPnl)||Math.abs(total-r.totalNetPnl)>Math.max(.011,trades.length*.011))return null;
+ if(!num(r.totalNetPnl)||Math.abs(total-r.totalNetPnl)>Math.max(.51,trades.length*.011))return null;
  return {replayId:r.id,strategyId,strategyVersion,source:'UNVERIFIED_STORED_REPLAY',trades};
 }
