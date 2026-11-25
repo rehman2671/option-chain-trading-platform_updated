@@ -23,6 +23,7 @@ import { portfolioRiskEngine } from '../risk/portfolioRiskEngine.js';
 import { hypothesisEngine } from '../research/hypothesisEngine.js';
 import { backtestEngine } from '../research/backtestEngine.js';
 import { walkForwardEngine } from '../research/walkForwardEngine.js';
+import {selectStoredReplaySample} from '../research/storedReplaySample.js';
 import { monteCarloEngine } from '../research/monteCarloEngine.js';
 import { overfitDetector } from '../research/overfitDetector.js';
 import { strategyHealthEngine } from '../learning/strategyHealthEngine.js';
@@ -378,20 +379,31 @@ quantRouter.get(['/option-flow', '/option-intelligence'], (req, res) => {
 });
 
 // 15. Walk-Forward Testing Engine (Section 42 & B6)
+// Stored quant replay data is the existing shared research catalog, not
+// personal broker or paper positions. Never accept caller-provided return arrays.
+function researchReplaySample(strategyId:string,replayId:unknown){
+  if(typeof strategyId!=='string'||!strategyId||strategyId.length>160||
+     (replayId!==undefined&&typeof replayId!=='string'))return null;
+  const stored=dbEngine.getQuantStrategies().filter((s:any)=>s.id===strategyId);
+  if(stored.length>1)return null;
+  const strategy=stored[0]??CANONICAL_STRATEGIES.find(s=>s.id===strategyId);
+  if(!strategy)return null;
+  return selectStoredReplaySample(dbEngine.getQuantBacktests(strategyId),strategyId,strategy.version,replayId as string|undefined);
+}
 quantRouter.post('/walk-forward/run', (req, res) => {
   try {
-    const { strategyId, windowsCount } = req.body;
-    const result = walkForwardEngine.runWalkForward(
-      strategyId || 'STRAT_BULL_CALL_SPREAD_01',
-      windowsCount || 4
-    );
+    const { strategyId, windowsCount, replayId } = req.body??{};
+    const id=strategyId||'STRAT_BULL_CALL_SPREAD_01';
+    const sample=researchReplaySample(id,replayId);
+    const result=walkForwardEngine.runWalkForward(id,windowsCount??4,sample??undefined);
+    res.setHeader('Cache-Control','no-store');
     quantAuditLogger.log({
       actor: 'researcher',
       action: 'WALK_FORWARD_RUN',
       entityType: 'STRATEGY',
       entityId: strategyId || 'STRAT_BULL_CALL_SPREAD_01',
       afterState: { passed: result.passed, efficiency: result.efficiencyRatio },
-      reason: `Walk-forward validation evaluated across ${result.windowsCount} rolling windows.`
+      reason: `Descriptive stored replay partition count: ${result.windowsCount}; independent OOS not established.`
     });
     res.json(result);
   } catch (err: any) {
@@ -402,18 +414,19 @@ quantRouter.post('/walk-forward/run', (req, res) => {
 // 16. Monte Carlo Robustness Engine (Section 44 & B6: 2000 runs)
 quantRouter.post('/monte-carlo/run', (req, res) => {
   try {
-    const { strategyId, simulationsCount } = req.body;
-    const result = monteCarloEngine.runSimulation(
-      strategyId || 'STRAT_BULL_CALL_SPREAD_01',
-      simulationsCount || 2000
-    );
+    const { strategyId, simulationsCount, replayId } = req.body??{};
+    const id=strategyId||'STRAT_BULL_CALL_SPREAD_01';
+    const sample=researchReplaySample(id,replayId);
+    const result=monteCarloEngine.runSimulation(id,simulationsCount??2000,sample?.trades.map(t=>t.netPnl)??[]);
+    if(sample&&result.evidenceStatus==='INPUT_SAMPLE_BOOTSTRAP'){result.replayId=sample.replayId;result.replaySource=sample.source;}
+    res.setHeader('Cache-Control','no-store');
     quantAuditLogger.log({
       actor: 'researcher',
       action: 'MONTE_CARLO_SIMULATION',
       entityType: 'STRATEGY',
       entityId: strategyId || 'STRAT_BULL_CALL_SPREAD_01',
       afterState: { simulations: result.simulationsCount, medianPnl: result.medianPnl, p5: result.percentile5Pnl },
-      reason: '2000 bootstrap runs evaluated empirical return and drawdown distributions.'
+      reason: `Stored replay bootstrap count: ${result.simulationsCount}; sample provenance unverified and ruin risk not established.`
     });
     res.json(result);
   } catch (err: any) {
