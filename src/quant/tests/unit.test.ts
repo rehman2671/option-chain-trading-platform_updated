@@ -158,7 +158,7 @@ describe('4. Research Quality Gates (Section 89 & Part B6)', () => {
 });
 
 describe('5. Parameter Stability Engine (Section 46)', () => {
-  it('detects robust parameter plateaus across neighborhoods', () => {
+  it('does not fabricate robust parameter plateaus without replay evidence', () => {
     const report = parameterStabilityEngine.testParameterNeighborhood(
       'strat_bull_call',
       'RSI_Threshold',
@@ -167,9 +167,9 @@ describe('5. Parameter Stability Engine (Section 46)', () => {
       2
     );
 
-    assert.strictEqual(report.perturbations.length, 5);
-    assert.ok(report.plateauWidthPct > 0);
-    assert.ok(report.stabilityVerdict);
+    assert.strictEqual(report.perturbations.length, 0);
+    assert.equal(report.isStable,false);
+    assert.equal(report.evidenceStatus,'NO_PERTURBATION_EVIDENCE');
   });
 });
 
